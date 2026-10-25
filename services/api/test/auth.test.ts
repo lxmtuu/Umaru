@@ -180,3 +180,27 @@ describe("auth", () => {
     expect(badToken.statusCode).toBe(401);
   });
 });
+
+describe("xác thực qua header dự phòng", () => {
+  it("chấp nhận x-umaru-token như Bearer (khi proxy bỏ Authorization)", async () => {
+    const ctx = await createTestContext();
+    try {
+      const user = await registerUser(ctx, "alias_user");
+      const withAlias = await ctx.app.inject({
+        method: "GET",
+        url: "/api/v1/users/@me",
+        headers: { "x-umaru-token": user.token },
+      });
+      expect(withAlias.statusCode).toBe(200);
+      expect(withAlias.json<{ username: string }>().username).toBe("alias_user");
+
+      const noToken = await ctx.app.inject({ method: "GET", url: "/api/v1/users/@me" });
+      expect(noToken.statusCode).toBe(401);
+      expect(noToken.json<{ error: { message: string } }>().error.message).toBe(
+        "Thiếu access token",
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+});

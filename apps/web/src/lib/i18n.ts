@@ -249,8 +249,13 @@ export type Locale = "en" | "vi";
 const LOCALE_KEY = "umaru.locale";
 
 function initialLocale(): Locale {
-  const stored = typeof localStorage === "undefined" ? null : localStorage.getItem(LOCALE_KEY);
-  return stored === "vi" ? "vi" : "en";
+  try {
+    // Đọc có thể ném lỗi khi storage bị chặn (iframe khác site, chế độ riêng tư).
+    const stored = typeof localStorage === "undefined" ? null : localStorage.getItem(LOCALE_KEY);
+    return stored === "vi" ? "vi" : "en";
+  } catch {
+    return "en";
+  }
 }
 
 interface LocaleState {
@@ -261,7 +266,11 @@ interface LocaleState {
 export const useLocale = create<LocaleState>((set) => ({
   locale: initialLocale(),
   setLocale(locale) {
-    if (typeof localStorage !== "undefined") localStorage.setItem(LOCALE_KEY, locale);
+    try {
+      if (typeof localStorage !== "undefined") localStorage.setItem(LOCALE_KEY, locale);
+    } catch {
+      /* storage bị chặn: chỉ đổi trong phiên này */
+    }
     set({ locale });
   },
 }));

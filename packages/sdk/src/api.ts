@@ -74,7 +74,12 @@ export class UmaruApi {
         ...(init.body !== undefined && !isFormData(init.body)
           ? { "content-type": "application/json" }
           : {}),
-        ...(token !== null ? { authorization: `Bearer ${token}` } : {}),
+        // Gửi token ở cả hai header: `Authorization` là chuẩn, `x-umaru-token`
+        // là đường dự phòng vì nhiều reverse proxy bỏ header `Authorization`
+        // (xem services/api/src/auth/guard.ts).
+        ...(token !== null
+          ? { authorization: `Bearer ${token}`, "x-umaru-token": token }
+          : {}),
         ...init.headers,
       },
     });
@@ -356,7 +361,10 @@ export class UmaruApi {
     const url = `${this.baseUrl}${API_PREFIX}/attachments/${attachmentId}`;
     const token = this.getToken();
     const response = await this.fetchImpl(url, {
-      headers: token !== null ? { authorization: `Bearer ${token}` } : {},
+      headers:
+        token !== null
+          ? { authorization: `Bearer ${token}`, "x-umaru-token": token }
+          : {},
     });
     if (!response.ok) {
       throw new ApiError(response.status, `API ${url} thất bại: ${response.status}`);
