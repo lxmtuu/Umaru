@@ -34,7 +34,19 @@ const WS_OPEN = 1;
 export interface GatewayClientOptions {
   /** URL gateway đầy đủ do GET /gateway trả về. */
   url: string;
+  /** Access token lúc tạo client. Bỏ qua nếu có `getToken`. */
   token: string;
+  /**
+   * Đọc token **hiện tại** mỗi lần identify/resume. Dùng khi app có thể refresh
+   * token trong lúc socket đang sống (web truyền `getAccessToken`).
+   */
+  getToken?: () => string | null;
+  /**
+   * Gọi khi server đóng `4000` (token hết hạn/không hợp lệ), spec §2.1: client
+   * refresh rồi reconnect. Trả access token mới, hoặc `null` khi không refresh
+   * được → client về `closed` (đăng xuất mềm) thay vì thử lại vô hạn.
+   */
+  onAuthFailure?: () => Promise<string | null>;
   wsFactory?: (url: string) => WebSocketLike;
   random?: () => number;
   /** Số lần retry tối đa trước khi bỏ cuộc (mặc định 20). */
@@ -59,6 +71,12 @@ export class GatewayClient {
   private awaitingHeartbeatAck = false;
   private reconnectAttempt = 0;
   private closedByUser = false;
+  /** Token lấy được từ `onAuthFailure`, ưu tiên hơn `options.token`. */
+  private refreshedToken: string | null = null;
+  private authFailureCount = 0;
+  private authRefreshInFlight = false;
+  /** hẹn giờ cho heartbeat đầu tiên (jitter) — tách khỏi interval định kỳ. */
+  private heartbeatJitterTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly listeners = new Map<GatewayEventName, Set<EventHandler<never>>>();
   private readonly stateListeners = new Set<(state: GatewayState) => void>();
@@ -115,6 +133,10 @@ export class GatewayClient {
     this.setState("closed");
   }
 
+  private currentToken(): string | null {
+    return this.refreshedToken ?? this.options.getToken?.() ?? this.options.token;
+  }
+
   /** Session hiện tại (để persist và resume sau restart). */
   getSession(): { sessionId: string; seq: number } | null {
     return this.sessionId === null ? null : { sessionId: this.sessionId, seq: this.seq };
@@ -133,16 +155,17 @@ export class GatewayClient {
   }
 
   private handleOpen(): void {
+    const token = this.currentToken() ?? this.options.token;
     if (this.sessionId !== null) {
       this.send({
         op: GatewayOpcode.Resume,
-        d: { token: this.options.token, sessionId: this.sessionId, seq: this.seq },
+        d: { token, sessionId: this.sessionId, seq: this.seq },
       });
     } else {
       this.send({
         op: GatewayOpcode.Identify,
         d: {
-          token: this.options.token,
+          token,
           properties: {
             os: typeof navigator !== "undefined" ? (navigator.platform || "unknown") : "node",
             browser: "umaru",
@@ -194,7 +217,15 @@ export class GatewayClient {
     }
   }
 
+  /**
+   * Dedupe theo `s` (spec §9): `READY` mở một session mới nên đặt lại bộ đếm,
+   * còn mọi dispatch khác phải tăng dần. Frame trùng/`s` cũ bị bỏ — replay sau
+   * resume có thể chồng lấn nếu server gửi lại, và xử lý trùng tin nhắn hai lần
+   * là lỗi thấy được (tin nhắn lặp trong khung chat).
+   */
   private handleDispatch(payload: DispatchPayload): void {
+    const isNewSession = payload.t === "READY";
+    if (!isNewSession && payload.s <= this.seq) return;
     this.seq = payload.s;
     const { t, d } = payload;
     switch (t) {
@@ -202,11 +233,14 @@ export class GatewayClient {
         const data = d as GatewayEventMap["READY"];
         this.sessionId = data.sessionId;
         this.reconnectAttempt = 0;
+        this.authFailureCount = 0;
+        this.refreshedToken = null;
         this.setState("ready");
         break;
       }
       case "RESUMED":
         this.reconnectAttempt = 0;
+        this.authFailureCount = 0;
         this.setState("ready");
         break;
       default:
@@ -223,13 +257,30 @@ export class GatewayClient {
     }
   }
 
+  /**
+   * Heartbeat có **jitter ở nhịp đầu** (spec §5): hàng nghìn client nhận HELLO
+   * cùng lúc mà gửi đúng chu kỳ thì server bị "thundering herd" mỗi lần restart.
+   * Lệch ngẫu nhiên trong một interval là đủ tản tải, các nhịp sau vẫn đều.
+   *
+   * Đặt nhịp đầu muộn (không phải sớm) để không bao giờ đánh thức server trước
+   * thời điểm nó chờ, và không vượt trần 2 frame dư của bucket HEARTBEAT.
+   */
   private startHeartbeat(intervalMs: number): void {
     this.stopHeartbeat();
     this.awaitingHeartbeatAck = false;
-    this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), intervalMs);
+    const jitterMs = Math.floor(this.random() * intervalMs);
+    this.heartbeatJitterTimer = setTimeout(() => {
+      this.heartbeatJitterTimer = null;
+      this.sendHeartbeat();
+      this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), intervalMs);
+    }, jitterMs);
   }
 
   private stopHeartbeat(): void {
+    if (this.heartbeatJitterTimer !== null) {
+      clearTimeout(this.heartbeatJitterTimer);
+      this.heartbeatJitterTimer = null;
+    }
     if (this.heartbeatTimer !== null) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -265,6 +316,8 @@ export class GatewayClient {
    * Xử lý close theo mã (spec §2.1):
    * - `4003` (session không còn) → xoá session để lần sau IDENTIFY, không RESUME vô ích.
    * - `4004` (rate limited) → chờ ≥ 5 s mới nối lại, tránh vòng lặp tự đốt rate limit.
+   * - `4000` (token hết hạn) → gọi `onAuthFailure` để refresh rồi nối lại (spec §2.1);
+   *   không có hook hoặc refresh hỏng → `closed` (đăng xuất mềm).
    * - Còn lại → backoff thường.
    */
   private handleClose(code: number | null = null): void {
@@ -278,8 +331,42 @@ export class GatewayClient {
       this.sessionId = null;
       this.seq = 0;
     }
+    if (code === 4000) {
+      void this.recoverAuth();
+      return;
+    }
     const delay = computeBackoffMs({ attempt: this.reconnectAttempt, random: this.random });
     this.scheduleReconnect(code === 4004 ? Math.max(delay, 5_000) : delay);
+  }
+
+  /**
+   * `4000` → xin token mới. Giới hạn 2 lần liên tiếp để token hỏng/refresh hỏng
+   * không tạo vòng lặp vô hạn; thành công thì `READY`/`RESUMED` đặt lại bộ đếm.
+   */
+  private async recoverAuth(): Promise<void> {
+    this.authFailureCount += 1;
+    const refresh = this.options.onAuthFailure;
+    if (refresh === undefined || this.authFailureCount > 2 || this.authRefreshInFlight) {
+      this.setState("closed");
+      return;
+    }
+    this.authRefreshInFlight = true;
+    this.setState("reconnecting");
+    let token: string | null = null;
+    try {
+      token = await refresh();
+    } catch {
+      token = null;
+    } finally {
+      this.authRefreshInFlight = false;
+    }
+    if (token === null || token.length === 0) {
+      this.setState("closed");
+      return;
+    }
+    this.refreshedToken = token;
+    // Session cũ vẫn còn hạn (server giữ TTL) → resume để không mất event nào.
+    this.scheduleReconnect(500);
   }
 
   private clearTimers(): void {

@@ -588,7 +588,20 @@ export const useChat = create<ChatState>()((set, get) => ({
     gateway?.close();
 
     const { url } = await api.getGatewayUrl();
-    const client = new GatewayClient({ url, token });
+    const client = new GatewayClient({
+      url,
+      token,
+      // Access token sống 15 phút; socket có thể sống lâu hơn. Đọc token hiện tại
+      // mỗi lần identify/resume thay vì giữ bản chụp lúc mở kết nối.
+      getToken: getAccessToken,
+      // Server đóng 4000 = token hết hạn (spec §2.1). Dùng chung `refreshSession`
+      // với REST để hai nơi không tranh nhau refresh; hỏng thì trả null → client
+      // về `closed` và `refreshSession` đã xoá token, app quay lại màn đăng nhập.
+      onAuthFailure: async () => {
+        const refreshed = await refreshSession();
+        return refreshed ? getAccessToken() : null;
+      },
+    });
     gateway = client;
 
     client.onStateChange((state) => set({ gatewayStatus: state }));

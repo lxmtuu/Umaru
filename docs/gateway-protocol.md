@@ -92,10 +92,10 @@ Validate (đã có trong `decodeGatewayPayload`): `op` phải thuộc tập trê
 
 ### 3.3 Heartbeat & phát hiện zombie
 
-- Client gửi `OP 1` mỗi `heartbeat_interval`. Nếu **ack trước chưa tới** mà đã tới lượt kế tiếp → coi kết nối đã chết, đóng socket và reconnect (SDK đã làm).
+- Client gửi `OP 1` mỗi `heartbeat_interval`. Nếu **ack trước chưa tới** mà đã tới lượt kế tiếp → coi kết nối đã chết, đóng socket và reconnect (SDK đã làm). Nội dung `d` là `s` gần nhất client đã nhận (hoặc `null` khi chưa có) — dùng để server biết client tụt lại bao xa.
 - Server phải trả `OP 11` trong **cùng interval**; trễ 2 interval liên tiếp → server đóng `4001`.
 - Server gửi `OP 1` (không kèm dữ liệu) khi cần heartbeat ngay (ví dụ sau khi resume replay xong) — client phản hồi tức thì.
-- v1 client heartbeat đều theo interval, **chưa jitter** (mục 9). Server phải chịu được "thundering herd" nhỏ khi restart.
+- **Nhịp đầu có jitter** (SDK đã làm): sau `HELLO`, client chờ ngẫu nhiên `[0, heartbeat_interval)` rồi mới gửi heartbeat đầu, sau đó đều theo interval. Hàng nghìn client nhận `HELLO` cùng lúc mà gửi đúng chu kỳ sẽ dồn thành "thundering herd" mỗi lần server restart; lệch ngẫu nhiên một interval là đủ tản tải. Jitter đặt nhịp đầu **muộn hơn**, không sớm hơn, nên không vượt trần 2 frame dư của bucket HEARTBEAT (§7).
 
 ---
 
@@ -272,9 +272,8 @@ Tinh chỉnh bằng biến môi trường: `RATE_LIMITS=off` (mặc định bậ
 - **Badge chưa đọc không phát event qua gateway**: client tự tăng đếm khi nhận `MESSAGE_CREATE` (bỏ qua tin của chính mình) và gọi `POST /channels/:id/read` khi mở kênh. Đổi trạng thái đã đọc từ thiết bị khác chưa đồng bộ realtime — mở lại app (READY) mới cập nhật; event `READ_STATE_UPDATE` để P1.
 - Khi user tạo guild hoặc join invite, server đồng bộ lại quyền hiển thị cho session đang mở (`refreshUserVisibility`) vì READY đã chạy trước đó.
 - **DM** là `Channel` có `type: "dm"`, `guildId: null`; quyền xem suy ra từ bảng `channel_members` (không qua role/overwrite) và được nạp vào `visibleChannels` khi READY, khi tạo DM (`grantChannelAccess`) và khi resume. `DM_CHANNEL_CREATE` không vào replay log (transient) — client lấy lại danh sách qua `GET /users/@me/channels` nếu lỡ.
-- Client chưa **dedupe theo `s`** (chỉ ghi nhận `s`); server replay đã lọc `s > seq` nên chưa gây lỗi, nhưng nên thêm.
-- Client chưa tự **refresh token** khi gặp `4000` (nhưng đã xử lý `4003` = xoá session để IDENTIFY lại, và `4004` = chờ ≥ 5 s mới nối lại).
+- **Client đã dedupe theo `s`**: `READY` (session mới) đặt lại bộ đếm, mọi dispatch khác phải có `s` lớn hơn `s` đã nhận, frame trùng/`s` cũ bị bỏ. Trước đây server replay đã lọc `s > seq` nên chưa lỗi, nhưng chồng lấn khi replay là chuyện có thể xảy ra và hậu quả thấy được (tin nhắn lặp).
+- **Client đã tự refresh token khi gặp `4000`**: SDK nhận hook `onAuthFailure` (web nối vào `refreshSession()` dùng chung với REST), refresh xong resume lại session cũ; refresh hỏng hoặc không có hook → `closed` (đăng xuất mềm) chứ không thử lại vô hạn (giới hạn 2 lần liên tiếp). Đã xử lý cả `4003` (xoá session để IDENTIFY lại) và `4004` (chờ ≥ 5 s).
 - Chưa có sharding (`shard` luôn 0).
-- Heartbeat chưa jitter.
 - Chưa có nén frame; `OP 3`/`OP 4` (client → server) để trống có chủ đích ở v1.
 - Presence hiện là in-memory theo session của process; chưa đọc/ghi Redis.
