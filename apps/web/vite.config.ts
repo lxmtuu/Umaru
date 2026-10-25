@@ -5,8 +5,13 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    host: "127.0.0.1",
+    // Bind mọi interface để chạy được trong container / preview từ xa
+    // (127.0.0.1 chỉ dùng được khi trình duyệt cùng máy với dev server).
+    host: true,
     port: 5173,
+    // Cho phép Host header của môi trường preview (proxy ngoài) — dev local
+    // vẫn dùng http://localhost:5173 bình thường.
+    allowedHosts: true,
     proxy: {
       // Same-origin ở dev: tránh CORS, và ws gateway đi qua đúng proxy này.
       "/api": {

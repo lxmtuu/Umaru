@@ -18,6 +18,7 @@ const en = {
   switchToRegister: "New here? Create an account",
   switchToLogin: "Already have an account? Log in",
   logout: "Log out",
+  notSignedIn: "Not signed in",
   loading: "Loading…",
   servers: "Servers",
   directMessages: "Direct messages",
@@ -122,6 +123,7 @@ const vi: Record<MessageKey, string> = {
   switchToRegister: "Chưa có tài khoản? Đăng ký",
   switchToLogin: "Đã có tài khoản? Đăng nhập",
   logout: "Đăng xuất",
+  notSignedIn: "Chưa đăng nhập",
   loading: "Đang tải…",
   servers: "Server",
   directMessages: "Tin nhắn riêng",
@@ -234,15 +236,22 @@ export const useLocale = create<LocaleState>((set) => ({
   },
 }));
 
+function format(key: MessageKey, locale: Locale, vars?: Record<string, string | number>): string {
+  let text: string = dictionaries[locale][key] ?? en[key];
+  if (vars !== undefined) {
+    for (const [name, value] of Object.entries(vars)) {
+      text = text.replaceAll(`{${name}}`, String(value));
+    }
+  }
+  return text;
+}
+
 export function useT(): (key: MessageKey, vars?: Record<string, string | number>) => string {
   const locale = useLocale((state) => state.locale);
-  return (key, vars) => {
-    let text: string = dictionaries[locale][key] ?? en[key];
-    if (vars !== undefined) {
-      for (const [name, value] of Object.entries(vars)) {
-        text = text.replaceAll(`{${name}}`, String(value));
-      }
-    }
-    return text;
-  };
+  return (key, vars) => format(key, locale, vars);
+}
+
+/** Dùng ngoài React (store, SDK wrapper) — vẫn theo locale đang chọn, không hardcode. */
+export function translate(key: MessageKey, vars?: Record<string, string | number>): string {
+  return format(key, useLocale.getState().locale, vars);
 }

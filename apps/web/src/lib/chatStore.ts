@@ -14,6 +14,7 @@ import type {
 import { parsePermissions, serializePermissions } from "@umaru/protocol";
 import { ApiError, GatewayClient, type GatewayState } from "@umaru/sdk";
 import { create } from "zustand";
+import { translate } from "./i18n.js";
 import {
   api,
   authedApi,
@@ -269,7 +270,7 @@ export const useChat = create<ChatState>()((set, get) => ({
 
   async connectGateway() {
     const token = getAccessToken();
-    if (token === null) throw new Error("Chưa đăng nhập");
+    if (token === null) throw new Error(translate("notSignedIn"));
     gateway?.close();
 
     const { url } = await api.getGatewayUrl();

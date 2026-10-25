@@ -8,7 +8,7 @@ import { registerDmRoutes } from "./dms/routes.js";
 import { registerGatewayRoutes } from "./gateway/routes.js";
 import { GatewayHub } from "./gateway/hub.js";
 import { registerGuildRoutes } from "./guilds/routes.js";
-import { registerErrorHandler } from "./http.js";
+import { badRequest, registerErrorHandler } from "./http.js";
 import { registerMessageRoutes } from "./messages/routes.js";
 import { registerOverwriteRoutes } from "./overwrites/routes.js";
 import { registerReadStateRoutes } from "./read-states/routes.js";
@@ -38,6 +38,24 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
 
   const tokens = createTokenService(config.jwtSecret, config.accessTokenTtlSec);
   const hub = new GatewayHub({ pool, config, tokens });
+
+  /**
+   * Tham số đường dẫn dạng id (`:channelId`, `:messageId`, `:memberId`...) đi
+   * thẳng vào câu SQL `WHERE id = $1` với cột BIGINT. Không kiểm trước thì
+   * `GET /channels/abc/messages` làm PostgreSQL ném `22P02` → 500 kèm log lỗi
+   * hệ thống, trong khi đúng phải là 400 (client gửi sai). Kiểm một lần ở đây
+   * thay vì lặp lại trong từng route.
+   */
+  app.addHook("preValidation", async (request) => {
+    const params = request.params;
+    if (typeof params !== "object" || params === null) return;
+    for (const [key, value] of Object.entries(params as Record<string, unknown>)) {
+      if (!/Id$/.test(key) || typeof value !== "string") continue;
+      if (!/^\d{1,20}$/.test(value)) {
+        throw badRequest(`"${key}" phải là snowflake (chuỗi số)`);
+      }
+    }
+  });
 
   app.get("/health", async () => ({ ok: true, ...hub.getStats() }));
 

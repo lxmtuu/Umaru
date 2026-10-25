@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent,
 import { useChat } from "../lib/chatStore.js";
 import { useLocale, useT } from "../lib/i18n.js";
 import { ChannelSettings } from "./ChannelSettings.js";
+import { MessageContent } from "./MessageContent.js";
 import { RoleSettings } from "./RoleSettings.js";
 
 export function ChatScreen() {
@@ -701,9 +702,9 @@ export function ChatScreen() {
                             </div>
                           </form>
                         ) : (
-                          <p className="whitespace-pre-wrap break-words text-sm text-slate-200">
-                            {message.content}
-                          </p>
+                          <div className="text-sm text-slate-200">
+                            <MessageContent content={message.content} />
+                          </div>
                         )}
 
                         {confirmDeleteId === message.id && (
