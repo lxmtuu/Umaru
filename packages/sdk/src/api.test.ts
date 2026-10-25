@@ -279,6 +279,41 @@ describe("UmaruApi", () => {
     expect(blob.size).toBe(2);
   });
 
+  it("createGroupDm gửi recipientIds + name (nếu có)", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { channel: { id: "9" } } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.createGroupDm(["2", "3"]);
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/channels");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ recipientIds: ["2", "3"] });
+
+    await api.createGroupDm(["2", "3"], "Nhóm");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({
+      recipientIds: ["2", "3"],
+      name: "Nhóm",
+    });
+  });
+
+  it("addGroupRecipient / removeGroupRecipient / renameGroupDm đúng đường dẫn", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { channel: { id: "9" } } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+
+    await api.addGroupRecipient("9", "5");
+    expect(calls[0]?.url).toBe("/api/v1/channels/9/recipients");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ userId: "5" });
+
+    await api.removeGroupRecipient("9", "@me");
+    // `@` được encode cho an toàn (server vẫn hiểu `@me` sau khi decode).
+    expect(calls[1]?.url).toBe("/api/v1/channels/9/recipients/%40me");
+    expect(calls[1]?.init?.method).toBe("DELETE");
+
+    await api.renameGroupDm("9", null);
+    expect(calls[2]?.url).toBe("/api/v1/channels/9");
+    expect(calls[2]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({ name: null });
+  });
+
   it("pinMessage/unpinMessage gọi đúng method + đường dẫn", async () => {
     const { fetchImpl, calls } = fakeFetch({ status: 200, body: { id: "5", pinned: true } });
     const api = new UmaruApi({ baseUrl: "", fetchImpl });

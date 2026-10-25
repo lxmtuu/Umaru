@@ -26,6 +26,7 @@ import {
   type RoleRow,
 } from "../mappers.js";
 import { loadMemberSummary } from "../bootstrap.js";
+import { loadDmSummary, renameGroupDm } from "../dms/group.js";
 import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
@@ -283,7 +284,19 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
     async (request, reply) => {
       const userId = requireUserId(request);
       const context = await loadChannelContext(pool, userId as Snowflake, request.params.channelId);
-      if (context.guild === null) throw notFound("Kênh không tồn tại");
+      if (context.guild === null) {
+        // `loadChannelContext` đã kiểm tư cách thành viên; chỉ group DM mới có
+        // tên để đổi (DM 1-1 luôn hiển thị theo tên người kia).
+        if (context.channel.type !== "group_dm") throw notFound("Kênh không tồn tại");
+        const body = request.body as Record<string, unknown> | undefined;
+        if (body === undefined || !("name" in body)) {
+          throw badRequest('Thiếu trường "name"');
+        }
+        await renameGroupDm(pool, publisher, request.params.channelId, body.name);
+        const summary = await loadDmSummary(pool, request.params.channelId, userId);
+        if (summary === null) throw notFound("Nhóm không tồn tại");
+        return reply.send(summary);
+      }
       if (!canManageChannels(context.permissions | context.guild.permissions)) {
         throw forbidden("Cần quyền MANAGE_CHANNELS");
       }

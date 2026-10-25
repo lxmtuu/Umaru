@@ -20,6 +20,7 @@ import { ApiError, GatewayClient, type GatewayState } from "@umaru/sdk";
 import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
 import { clearAvatarCache, validateAvatar } from "./avatars.js";
+import { dmPeer, dmTitle } from "./dms.js";
 import { translate } from "./i18n.js";
 import { readVerificationToken, withoutVerificationToken } from "./verification.js";
 import {
@@ -105,6 +106,10 @@ interface ChatState {
   searchHasMore: boolean;
   /** Tin cần cuộn tới và tô sáng sau khi nhảy từ kết quả tìm kiếm. */
   highlightMessageId: string | null;
+  /** Panel thành viên của group DM đang mở (đổi tên, thêm/mời ra, rời nhóm). */
+  groupPanelOpen: boolean;
+  /** Đang gọi API nhóm → khoá nút để không bấm hai lần. */
+  groupBusy: boolean;
   /** Panel "Tin đã ghim" của kênh đang mở. */
   pinsOpen: boolean;
   /** Tin ghim của `pinsChannelId`; null = chưa tải. */
@@ -232,6 +237,18 @@ interface ChatState {
     targetType: "role" | "member",
     targetId: string,
   ): Promise<boolean>;
+  /** Tạo group DM với 2–9 người khác rồi mở luôn. */
+  createGroupDm(recipientIds: string[], name?: string): Promise<boolean>;
+  /** Thêm một người vào group DM đang mở. */
+  addGroupMember(userId: string): Promise<boolean>;
+  /** Mời một người ra khỏi nhóm (chỉ chủ nhóm). */
+  removeGroupMember(userId: string): Promise<boolean>;
+  /** Rời nhóm đang mở; nhóm của mình biến khỏi sidebar ngay. */
+  leaveGroupDm(): Promise<boolean>;
+  /** Đổi tên nhóm (`null` = bỏ tên). */
+  renameGroupDm(name: string | null): Promise<boolean>;
+  openGroupPanel(): void;
+  closeGroupPanel(): void;
   /** Mở/đóng panel tin ghim của kênh đang mở (mở là tải lại). */
   openPins(): Promise<void>;
   closePins(): void;
@@ -291,7 +308,12 @@ export const ADMIN_PAGE_SIZE = 25;
 const SEARCH_JUMP_MAX_PAGES = 8;
 /** Tránh bắn POST /read theo từng tin khi kênh đang mở nhận tin liên tục. */
 /** Đóng panel ghim + xoá dữ liệu của kênh trước (tránh hiện nhầm ghim khi đổi kênh). */
-const CLOSED_PINS = { pinsOpen: false, pins: null, pinsChannelId: null } as const;
+const CLOSED_PINS = {
+  pinsOpen: false,
+  pins: null,
+  pinsChannelId: null,
+  groupPanelOpen: false,
+} as const;
 const ackedAt = new Map<string, number>();
 const ACK_THROTTLE_MS = 3_000;
 
@@ -333,6 +355,8 @@ const initialState = {
   searchLoading: false,
   searchHasMore: false,
   highlightMessageId: null,
+  groupPanelOpen: false,
+  groupBusy: false,
   pinsOpen: false,
   pins: null,
   pinsLoading: false,
@@ -382,11 +406,17 @@ export function applyProfile(state: ChatState, profile: ProfileFields): Partial<
   return {
     me: state.me !== null && state.me.id === profile.id ? { ...state.me, ...fields } : state.me,
     members,
-    dms: state.dms.map((dm) =>
-      dm.recipient.userId === profile.id
-        ? { ...dm, recipient: { ...dm.recipient, ...fields } }
-        : dm,
-    ),
+    dms: state.dms.map((dm) => {
+      const recipients = dm.recipients.map((member) =>
+        member.userId === profile.id ? { ...member, ...fields } : member,
+      );
+      // Giữ `recipient` (DM 1-1) đồng bộ với phần tử tương ứng trong `recipients`.
+      const recipient =
+        dm.recipient !== null && dm.recipient.userId === profile.id
+          ? { ...dm.recipient, ...fields }
+          : dm.recipient;
+      return { ...dm, recipients, recipient };
+    }),
   };
 }
 
@@ -613,6 +643,28 @@ export const useChat = create<ChatState>()((set, get) => ({
     client.on("DM_CHANNEL_CREATE", (summary) => {
       // Chỉ thêm vào sidebar: không tự nhảy vào cuộc, không đụng badge của người nhận.
       set({ dms: upsertDm(get().dms, summary) });
+    });
+
+    // Đổi tên nhóm / có người mới vào → summary đầy đủ, thay tại chỗ.
+    client.on("DM_CHANNEL_UPDATE", (summary) => {
+      set({ dms: upsertDm(get().dms, summary) });
+    });
+
+    // Bị mời ra khỏi nhóm (hoặc nhóm bị xoá): bỏ khỏi sidebar, đang mở thì về Home.
+    client.on("DM_CHANNEL_DELETE", (data) => {
+      const current = get();
+      const wasActive = current.activeChannelId === (data.channelId as string);
+      set({
+        dms: current.dms.filter((dm) => dm.channel.id !== data.channelId),
+        ...(wasActive
+          ? {
+              activeChannelId: null,
+              activeGuildId: null,
+              groupPanelOpen: false,
+              pinsOpen: false,
+            }
+          : {}),
+      });
     });
 
     client.on("MESSAGE_CREATE", (message) => {
@@ -1359,6 +1411,101 @@ export const useChat = create<ChatState>()((set, get) => ({
     }
   },
 
+  async createGroupDm(recipientIds, name) {
+    set({ groupBusy: true });
+    try {
+      const summary = await authedApi.createGroupDm(recipientIds, name);
+      set({
+        dms: upsertDm(get().dms, summary),
+        activeGuildId: null,
+        activeChannelId: summary.channel.id,
+        groupBusy: false,
+        groupPanelOpen: false,
+        mentionsOpen: false,
+        settingsOpen: false,
+        channelSettingsChannelId: null,
+      });
+      get().markRead(summary.channel.id);
+      await get().loadMessages(summary.channel.id);
+      return true;
+    } catch (error) {
+      set({ groupBusy: false, error: describeError(error) });
+      return false;
+    }
+  },
+  async addGroupMember(userId) {
+    const channelId = get().activeChannelId;
+    if (channelId === null) return false;
+    set({ groupBusy: true });
+    try {
+      const summary = await authedApi.addGroupRecipient(channelId, userId);
+      set({ dms: upsertDm(get().dms, summary), groupBusy: false });
+      return true;
+    } catch (error) {
+      set({ groupBusy: false, error: describeError(error) });
+      return false;
+    }
+  },
+  async removeGroupMember(userId) {
+    const channelId = get().activeChannelId;
+    if (channelId === null) return false;
+    set({ groupBusy: true });
+    try {
+      await authedApi.removeGroupRecipient(channelId, userId);
+      // DM_CHANNEL_UPDATE của server sẽ gửi lại summary; cập nhật ngay tại chỗ
+      // để danh sách không nhấp nháy chờ mạng.
+      set({
+        dms: get().dms.map((dm) =>
+          dm.channel.id === channelId
+            ? { ...dm, recipients: dm.recipients.filter((m) => m.userId !== userId) }
+            : dm,
+        ),
+        groupBusy: false,
+      });
+      return true;
+    } catch (error) {
+      set({ groupBusy: false, error: describeError(error) });
+      return false;
+    }
+  },
+  async leaveGroupDm() {
+    const channelId = get().activeChannelId;
+    if (channelId === null) return false;
+    set({ groupBusy: true });
+    try {
+      await authedApi.removeGroupRecipient(channelId, "@me");
+      set({
+        dms: get().dms.filter((dm) => dm.channel.id !== channelId),
+        activeChannelId: null,
+        activeGuildId: null,
+        groupPanelOpen: false,
+        groupBusy: false,
+      });
+      return true;
+    } catch (error) {
+      set({ groupBusy: false, error: describeError(error) });
+      return false;
+    }
+  },
+  async renameGroupDm(name) {
+    const channelId = get().activeChannelId;
+    if (channelId === null) return false;
+    set({ groupBusy: true });
+    try {
+      const summary = await authedApi.renameGroupDm(channelId, name);
+      set({ dms: upsertDm(get().dms, summary), groupBusy: false });
+      return true;
+    } catch (error) {
+      set({ groupBusy: false, error: describeError(error) });
+      return false;
+    }
+  },
+  openGroupPanel() {
+    set({ groupPanelOpen: true, pinsOpen: false, searchOpen: false, mentionsOpen: false });
+  },
+  closeGroupPanel() {
+    set({ groupPanelOpen: false });
+  },
   async openPins() {
     const channelId = get().activeChannelId;
     if (channelId === null) return;
@@ -1433,7 +1580,9 @@ export const useChat = create<ChatState>()((set, get) => ({
       await authedApi.blockUser(userId);
       // DM với người vừa chặn bị server ẩn → bỏ khỏi sidebar ngay, không đợi tải lại.
       set({
-        dms: get().dms.filter((dm) => dm.recipient.userId !== userId),
+        // Group DM chứa người vừa chặn vẫn phải còn: block là chuyện hai người,
+        // không được làm cả nhóm biến mất (xem services/api/src/blocks.ts).
+        dms: get().dms.filter((dm) => dmPeer(dm)?.userId !== userId),
         banner: { kind: "success", text: translate("userBlocked") },
         error: null,
       });

@@ -61,53 +61,90 @@ interface OverwriteRow {
 
 interface DmRow {
   id: string;
-  recipient_id: string;
-  username: string;
-  display_name: string;
-  avatar_url: string | null;
+  type: "dm" | "group_dm";
+  group_name: string | null;
+  owner_id: string | null;
+  /**
+   * Gộp từ `string_agg`: mỗi người là `id\x1eusername\x1edisplayName\x1eavatarUrl`,
+   * các người cách nhau `\x1f`.
+   */
+  members: string;
 }
 
 /**
- * DM 1-1 của một user kèm thông tin người ở đầu bên kia.
- * DM luôn có đúng 2 channel_member → JOIN ra 1 dòng/người.
+ * Cuộc trò chuyện riêng của một user (DM 1-1 **và** group DM), mới nhất trước.
+ *
+ * Một truy vấn gộp cho cả hai loại: `string_agg` gom mọi người **khác mình** trong
+ * kênh thành một chuỗi, client tách ra. Tránh N+1 khi sidebar có nhiều nhóm.
+ *
+ * DM 1-1 mà một trong hai đã chặn thì biến khỏi danh sách của **cả hai** (giữ
+ * nguyên hành vi cũ). Group DM **không** bị ẩn vì block là chuyện giữa hai
+ * người — một người chặn không được làm cả nhóm biến mất với người kia.
  */
 export async function loadDms(pool: Pool, userId: Snowflake): Promise<DmChannelSummary[]> {
   const result = await pool.query<DmRow>(
-    `SELECT c.id, u.id AS recipient_id, u.username, u.display_name, u.avatar_url
+    `SELECT c.id,
+            c.type,
+            g.name AS group_name,
+            g.owner_id,
+            -- Hai ký tự điều khiển làm phân cách: tên hiển thị có thể chứa dấu
+            -- hai chấm hoặc dấu phẩy nên không dùng ký tự in được.
+            string_agg(
+              concat_ws(chr(30), u.id, u.username, u.display_name, coalesce(u.avatar_url, '')),
+              chr(31) ORDER BY u.id
+            ) AS members
        FROM channels c
        JOIN channel_members mine ON mine.channel_id = c.id AND mine.user_id = $1
        JOIN channel_members theirs ON theirs.channel_id = c.id AND theirs.user_id <> $1
        JOIN users u ON u.id = theirs.user_id
-      WHERE c.type = 'dm' AND c.guild_id IS NULL
-        -- DM có người đã chặn (một trong hai chiều) biến khỏi danh sách của cả hai.
-        AND NOT EXISTS (
-          SELECT 1 FROM relationships rb
-           WHERE rb.type = 'blocked'
-             AND ((rb.user_id = $1 AND rb.target_id = theirs.user_id)
-               OR (rb.user_id = theirs.user_id AND rb.target_id = $1))
+       LEFT JOIN group_dms g ON g.channel_id = c.id
+      WHERE c.type IN ('dm', 'group_dm') AND c.guild_id IS NULL
+        AND (
+          c.type = 'group_dm'
+          -- DM 1-1: ẩn nếu có block theo bất kỳ chiều nào giữa hai người.
+          OR NOT EXISTS (
+            SELECT 1 FROM relationships rb
+             WHERE rb.type = 'blocked'
+               AND ((rb.user_id = $1 AND rb.target_id = theirs.user_id)
+                 OR (rb.user_id = theirs.user_id AND rb.target_id = $1))
+          )
         )
+      GROUP BY c.id, c.type, g.name, g.owner_id
       ORDER BY c.id DESC`,
     [userId],
   );
-  return result.rows.map((row) => ({
-    channel: {
-      id: row.id as Snowflake,
-      guildId: null,
-      type: "dm",
-      name: null,
-      topic: null,
-      categoryId: null,
-      position: 0,
-    },
-    recipient: {
-      userId: row.recipient_id as Snowflake,
-      username: row.username,
-      displayName: row.display_name,
-      avatarUrl: row.avatar_url,
-      // Người nhận DM không thuộc guild nào của mình → không có role để hiện.
-      roleIds: [],
-    },
-  }));
+  return result.rows.map((row) => {
+    const recipients = row.members
+      .split("\x1f")
+      .filter((part) => part.length > 0)
+      .map((part) => {
+        const [id = "", username = "", displayName = "", avatarUrl = ""] = part.split("\x1e");
+        return {
+          userId: id as Snowflake,
+          username,
+          displayName,
+          avatarUrl: avatarUrl === "" ? null : avatarUrl,
+          // Người trong DM không thuộc guild nào của mình → không có role để hiện.
+          roleIds: [],
+        } satisfies GuildMemberSummary;
+      });
+    const isGroup = row.type === "group_dm";
+    return {
+      channel: {
+        id: row.id as Snowflake,
+        guildId: null,
+        type: row.type,
+        name: isGroup ? row.group_name : null,
+        topic: null,
+        categoryId: null,
+        position: 0,
+      },
+      recipient: isGroup ? null : (recipients[0] ?? null),
+      recipients,
+      ownerId: row.owner_id === null ? null : (row.owner_id as Snowflake),
+      name: isGroup ? row.group_name : null,
+    };
+  });
 }
 
 /**

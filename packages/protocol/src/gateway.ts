@@ -116,8 +116,18 @@ export interface GuildSnapshot {
 /** DM 1-1: channel không thuộc guild nào + thông tin người ở đầu bên kia. */
 export interface DmChannelSummary {
   channel: Channel;
-  recipient: GuildMemberSummary;
+  /** DM 1-1: người bên kia. Group DM: `null` (xem `recipients`). */
+  recipient: GuildMemberSummary | null;
+  /** Mọi người khác trong cuộc, không gồm chính mình (1-1: đúng 1 phần tử). */
+  recipients: GuildMemberSummary[];
+  /** Chủ nhóm — chỉ group DM mới có; người tạo lúc đầu. */
+  ownerId: Snowflake | null;
+  /** Tên nhóm do người dùng đặt; `null` = hiển thị bằng cách ghép tên thành viên. */
+  name: string | null;
 }
+
+/** Số người tối đa trong group DM (tính cả mình) — giống Discord. */
+export const MAX_GROUP_DM_MEMBERS = 10;
 
 export type GatewayEventName = keyof GatewayEventMap;
 
@@ -188,6 +198,10 @@ export interface GatewayEventMap {
   ROLE_DELETE: { guildId: Snowflake; roleId: Snowflake };
   /** DM mới được mở — `recipient` là người ở đầu bên kia (khác nhau theo phía nhận). */
   DM_CHANNEL_CREATE: DmChannelSummary;
+  /** Tên nhóm hoặc danh sách thành viên đổi → gửi lại toàn bộ summary. */
+  DM_CHANNEL_UPDATE: DmChannelSummary;
+  /** Bị mời ra khỏi nhóm (hoặc nhóm bị xoá) → client bỏ khỏi sidebar. */
+  DM_CHANNEL_DELETE: { channelId: Snowflake };
   VOICE_STATE_UPDATE: {
     guildId: Snowflake | null;
     channelId: Snowflake | null;

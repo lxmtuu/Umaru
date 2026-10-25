@@ -53,8 +53,11 @@ describe("applyProfile", () => {
     },
     dms: [
       {
-        channel: { id: "99" },
+        channel: { id: "99", type: "dm" },
         recipient: { userId: "1", username: "toi", displayName: "Tôi", avatarUrl: null },
+        recipients: [{ userId: "1", username: "toi", displayName: "Tôi", avatarUrl: null }],
+        ownerId: null,
+        name: null,
       },
     ],
   } as unknown as Parameters<typeof applyProfile>[0];
@@ -71,7 +74,8 @@ describe("applyProfile", () => {
     expect(patch.members?.["10"]?.[0]?.avatarUrl).toBe("/api/v1/users/1/avatar/5");
     // Người khác không bị đổi.
     expect(patch.members?.["10"]?.[1]?.avatarUrl).toBeNull();
-    expect(patch.dms?.[0]?.recipient.avatarUrl).toBe("/api/v1/users/1/avatar/5");
+    expect(patch.dms?.[0]?.recipient?.avatarUrl).toBe("/api/v1/users/1/avatar/5");
+    expect(patch.dms?.[0]?.recipients[0]?.avatarUrl).toBe("/api/v1/users/1/avatar/5");
     // Presence không bị ghi đè bởi USER_UPDATE.
     expect(patch.me?.status).toBe("online");
   });

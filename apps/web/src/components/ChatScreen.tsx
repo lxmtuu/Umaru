@@ -19,7 +19,9 @@ import { MessageAttachments } from "./MessageAttachments.js";
 import { MessageContent } from "./MessageContent.js";
 import { legalPath } from "../lib/legalRoute.js";
 import { resultText, snippetAround, splitHighlight } from "../lib/search.js";
+import { dmAvatarUrl, dmInitial, dmPeer, dmTitle, isGroupDm } from "../lib/dms.js";
 import { Avatar } from "./Avatar.js";
+import { GroupDmPanel } from "./GroupDmPanel.js";
 import { ProfileDialog } from "./ProfileDialog.js";
 import { RoleSettings } from "./RoleSettings.js";
 import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
@@ -43,6 +45,8 @@ export function ChatScreen() {
   const [showNewDm, setShowNewDm] = useState(false);
   /** Hộp thoại hồ sơ (đổi ảnh đại diện). */
   const [showProfile, setShowProfile] = useState(false);
+  /** Người đang được chọn trong hộp thoại "Tin nhắn mới" (≥2 → tạo nhóm). */
+  const [dmSelection, setDmSelection] = useState<string[]>([]);
   const [guildName, setGuildName] = useState("");
   const [channelName, setChannelName] = useState("");
   const [channelType, setChannelType] = useState<"guild_text" | "category">("guild_text");
@@ -63,7 +67,10 @@ export function ChatScreen() {
   const memberById = useMemo(() => {
     const map = new Map<string, GuildMemberSummary>();
     for (const member of members) map.set(member.userId as string, member);
-    for (const dm of state.dms) map.set(dm.recipient.userId as string, dm.recipient);
+    // Group DM cũng là nguồn tên/avatar cho người ngoài guild của mình.
+    for (const dm of state.dms) {
+      for (const member of dm.recipients) map.set(member.userId as string, member);
+    }
     for (const dmMembers of Object.values(state.members)) {
       for (const member of dmMembers) map.set(member.userId as string, member);
     }
@@ -79,8 +86,10 @@ export function ChatScreen() {
       }
     }
     for (const dm of state.dms) {
-      if (dm.recipient.userId === state.me?.id) continue;
-      map.set(dm.recipient.userId as string, dm.recipient);
+      for (const member of dm.recipients) {
+        if (member.userId === state.me?.id) continue;
+        map.set(member.userId as string, member);
+      }
     }
     return [...map.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
   }, [state.members, state.dms, state.me]);
@@ -156,7 +165,7 @@ export function ChatScreen() {
   /** Tên hiển thị của kênh hiện tại: tên kênh guild hoặc người ở đầu DM. */
   const activeTitle =
     activeDm !== null
-      ? activeDm.recipient.displayName
+      ? dmTitle(activeDm)
       : (activeChannel?.name ?? (home ? t("directMessages") : t("servers")));
   const typingNames = (channelId === null ? [] : (state.typing[channelId] ?? []))
     .filter((entry) => entry.expiresAt > now && entry.userId !== state.me?.id)
@@ -427,7 +436,14 @@ export function ChatScreen() {
               </button>
             )}
             <button
-              onClick={() => (home ? setShowNewDm(true) : setShowCreateChannel(true))}
+              onClick={() => {
+                if (!home) {
+                  setShowCreateChannel(true);
+                  return;
+                }
+                setDmSelection([]);
+                setShowNewDm(true);
+              }}
               disabled={!home && guildId === null}
               title={home ? t("newMessage") : t("addChannel")}
               className="rounded p-1 text-slate-400 hover:bg-white/5 hover:text-slate-100 disabled:opacity-40"
@@ -459,11 +475,11 @@ export function ChatScreen() {
                     }`}
                   >
                     <Avatar
-                      avatarUrl={dm.recipient.avatarUrl}
-                      name={dm.recipient.displayName}
+                      avatarUrl={dmAvatarUrl(dm)}
+                      name={dmInitial(dm)}
                     />
                     <span className={`truncate ${unread > 0 || mentions > 0 ? "font-semibold" : ""}`}>
-                      {dm.recipient.displayName}
+                      {dmTitle(dm)}
                     </span>
                     <UnreadBadge
                       unread={unread}
@@ -640,6 +656,23 @@ export function ChatScreen() {
       {/* Main */}
       <main className="relative flex min-w-0 flex-1 flex-col bg-slate-900/30">
         <header className="flex items-center justify-between border-b border-white/5 px-4 py-3">
+          {activeDm !== null && isGroupDm(activeDm) && (
+            <button
+              type="button"
+              onClick={() =>
+                void (state.groupPanelOpen ? state.closeGroupPanel() : state.openGroupPanel())
+              }
+              title={t("groupDm")}
+              aria-pressed={state.groupPanelOpen}
+              className={`mr-2 shrink-0 rounded px-1 text-xs ${
+                state.groupPanelOpen
+                  ? "bg-white/10 text-slate-100"
+                  : "text-slate-400 hover:bg-white/5 hover:text-slate-100"
+              }`}
+            >
+              👥
+            </button>
+          )}
           <h1 className="truncate text-sm font-semibold">
             {state.blocksOpen
               ? `🛡 ${t("blockedUsers")}`
@@ -762,6 +795,8 @@ export function ChatScreen() {
             loading={state.blocksLoading}
             onUnblock={(userId) => void state.unblockUser(userId)}
           />
+        ) : state.groupPanelOpen && activeDm !== null && isGroupDm(activeDm) ? (
+          <GroupDmPanel dm={activeDm} />
         ) : state.pinsOpen ? (
           <PinsPanel
             pins={state.pins}
@@ -1276,31 +1311,64 @@ export function ChatScreen() {
         <Modal
           title={t("newMessage")}
           onClose={() => setShowNewDm(false)}
-          onSubmit={() => undefined}
-          submitLabel=""
+          onSubmit={() => {
+            // 1 người → DM 1-1; từ 2 người → group DM (server chặn trần 10).
+            if (dmSelection.length === 0) {
+              setShowNewDm(false);
+              return;
+            }
+            const [first, ...rest] = dmSelection;
+            setShowNewDm(false);
+            if (rest.length === 0) void state.openDm(first!);
+            else void state.createGroupDm(dmSelection);
+          }}
+          submitLabel={
+            dmSelection.length >= 2
+              ? `${t("startGroup")} (${dmSelection.length + 1})`
+              : t("startDirectMessage")
+          }
           cancelLabel={t("cancel")}
         >
           {dmCandidates.length === 0 ? (
             <p className="py-2 text-xs text-slate-400">{t("noDmCandidates")}</p>
           ) : (
-            <ul className="max-h-64 overflow-y-auto">
-              {dmCandidates.map((member) => (
-                <li key={member.userId}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowNewDm(false);
-                      void state.openDm(member.userId as string);
-                    }}
-                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/5"
-                  >
-                    <Avatar avatarUrl={member.avatarUrl} name={member.displayName} />
-                    <span className="truncate">{member.displayName}</span>
-                    <span className="ml-auto text-xs text-slate-500">@{member.username}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <>
+              <p className="mb-1 text-[11px] text-slate-500">{t("groupPickHint")}</p>
+              <ul className="max-h-64 overflow-y-auto">
+                {dmCandidates.map((member) => {
+                  const id = member.userId as string;
+                  const picked = dmSelection.includes(id);
+                  return (
+                    <li key={id}>
+                      <button
+                        type="button"
+                        aria-pressed={picked}
+                        onClick={() =>
+                          setDmSelection(
+                            picked
+                              ? dmSelection.filter((entry) => entry !== id)
+                              : [...dmSelection, id],
+                          )
+                        }
+                        className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-white/5 ${
+                          picked ? "bg-emerald-400/10 text-emerald-100" : "text-slate-200"
+                        }`}
+                      >
+                        <Avatar avatarUrl={member.avatarUrl} name={member.displayName} />
+                        <span className="truncate">{member.displayName}</span>
+                        <span className="ml-auto text-xs text-slate-500">@{member.username}</span>
+                        {picked && <span className="text-xs text-emerald-300">✓</span>}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {dmSelection.length > 0 && (
+                <p className="mt-2 text-[11px] text-slate-400">
+                  {t("groupSelected", { count: dmSelection.length + 1 })}
+                </p>
+              )}
+            </>
           )}
         </Modal>
       )}
@@ -1448,7 +1516,9 @@ function PinsPanel({
     for (const list of Object.values(state.members)) {
       for (const member of list) map.set(member.userId as string, member);
     }
-    for (const dm of state.dms) map.set(dm.recipient.userId as string, dm.recipient);
+    for (const dm of state.dms) {
+      for (const member of dm.recipients) map.set(member.userId as string, member);
+    }
     return map;
   }, [state.members, state.dms]);
 

@@ -297,6 +297,38 @@ export class UmaruApi {
     });
   }
 
+  /** Tạo group DM mới với 2–9 người khác (tối đa 10 người tính cả mình). */
+  createGroupDm(recipientIds: string[], name?: string): Promise<DmChannelSummary> {
+    return this.request<DmChannelSummary>(`${API_PREFIX}/users/@me/channels`, {
+      method: "POST",
+      body: JSON.stringify(name === undefined ? { recipientIds } : { recipientIds, name }),
+    });
+  }
+
+  /** Thêm người vào group DM (mọi thành viên đều mời được). */
+  addGroupRecipient(channelId: string, userId: string): Promise<DmChannelSummary> {
+    return this.request<DmChannelSummary>(`${API_PREFIX}/channels/${channelId}/recipients`, {
+      method: "POST",
+      body: JSON.stringify({ userId }),
+    });
+  }
+
+  /** Rời nhóm (`userId` = "@me") hoặc mời người khác ra (chỉ chủ nhóm). */
+  removeGroupRecipient(channelId: string, userId: string): Promise<void> {
+    return this.request<void>(
+      `${API_PREFIX}/channels/${channelId}/recipients/${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /** Đổi tên nhóm; `null`/rỗng = bỏ tên, quay lại ghép tên thành viên. */
+  renameGroupDm(channelId: string, name: string | null): Promise<DmChannelSummary> {
+    return this.request<DmChannelSummary>(`${API_PREFIX}/channels/${channelId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
   createInvite(guildId: string, channelId: string): Promise<{ code: string }> {
     return this.request<{ code: string }>(`${API_PREFIX}/guilds/${guildId}/invites`, {
       method: "POST",

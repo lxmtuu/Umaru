@@ -46,8 +46,12 @@ export async function isBlockedBetween(
 }
 
 /**
- * DM có bị "khoá" bởi block không (tính cả chiều ngược).
- * Kênh không phải DM → luôn `false`.
+ * DM 1-1 có bị "khoá" bởi block không (tính cả chiều ngược).
+ *
+ * Chỉ áp cho `type = 'dm'`: **group DM không bị ẩn** vì block là chuyện giữa hai
+ * người — một người chặn không được làm cả nhóm biến mất với những người còn
+ * lại (cùng triết lý với "tin trong kênh server vẫn hiển thị bình thường").
+ * Kênh server/category → luôn `false`.
  */
 export async function isDmBlocked(
   pool: Pool,
