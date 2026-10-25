@@ -4,6 +4,7 @@ import {
   type DmChannelSummary,
   type GuildMemberSummary,
   type Snowflake,
+  type UserProfile,
 } from "@umaru/protocol";
 import type { FastifyInstance } from "fastify";
 import { createAuthGuard, requireUserId } from "../auth/guard.js";
@@ -13,13 +14,14 @@ import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
 import { isBlockedBetween } from "../blocks.js";
 import { checkCanStartDm } from "../friends/relations.js";
-import { HttpError, badRequest, forbidden, notFound, readId } from "../http.js";
+import { HttpError, badRequest, conflict, forbidden, notFound, readId } from "../http.js";
 import { loadDms } from "../bootstrap.js";
 import {
   broadcastGroupUpdate,
   loadDmSummary,
   loadGroupChannel,
 } from "./group.js";
+import { MAX_PENDING_DM_REQUESTS, isPendingRequest, profileFromRow } from "./requests.js";
 
 export interface DmDeps {
   pool: Pool;
@@ -72,14 +74,30 @@ export function registerDmRoutes(app: FastifyInstance, deps: DmDeps): void {
 
     const recipientRow = await loadUserRow(pool, recipientId);
 
-    // Quyền riêng tư DM: chỉ chặn việc **mở cuộc mới**. Nếu kênh đã tồn tại thì
+    // Quyền riêng tư DM: chỉ áp cho việc **mở cuộc mới**. Nếu kênh đã tồn tại thì
     // bên dưới trả lại kênh cũ — cắt ngang một cuộc đang có sẽ làm mất lịch sử
     // của cả hai bên, và tin đã gửi thì không ai thu hồi được (xem friends/relations.ts).
+    //
+    // `friends_only` **không** chặn nữa mà biến cuộc mở mới thành *yêu cầu nhắn
+    // tin*: người nhận chỉ thấy nó trong danh sách chờ duyệt và có quyền đồng ý /
+    // từ chối. Chặn thẳng thì người gửi không có cách nào nói câu đầu tiên, còn
+    // người nhận thì không biết ai đang muốn liên lạc.
     const existingChannel = await findDmChannel(pool, userId, recipientId);
-    if (existingChannel === null) {
-      const verdict = await checkCanStartDm(pool, userId, recipientId);
-      if (verdict === "friends_only") {
-        throw forbidden("Người này chỉ nhận tin nhắn từ bạn bè");
+    const needsRequest =
+      existingChannel === null && (await checkCanStartDm(pool, userId, recipientId)) === "friends_only";
+    if (needsRequest) {
+      // Trần yêu cầu đang chờ: chống biến tài khoản thành máy spam lời mời.
+      const pending = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM dm_requests WHERE sender_id = $1",
+        [userId],
+      );
+      if (Number(pending.rows[0]?.count ?? "0") >= MAX_PENDING_DM_REQUESTS) {
+        // 409 chứ không phải 429: đây là trần **tồn đọng**, thử lại sau vài giây
+        // không giúp gì — phải đợi có người đồng ý/từ chối (giống trần 50 lời mời
+        // kết bạn). Body 429 trong toàn hệ thống luôn kèm `retry_after`.
+        throw conflict(
+          `Bạn đang có ${MAX_PENDING_DM_REQUESTS} yêu cầu nhắn tin chờ duyệt — đợi họ trả lời rồi hẵng gửi tiếp`,
+        );
       }
     }
 
@@ -115,6 +133,12 @@ export function registerDmRoutes(app: FastifyInstance, deps: DmDeps): void {
           `INSERT INTO channel_members (channel_id, user_id) VALUES ($1, $2), ($1, $3)`,
           [channelId, userId, recipientId],
         );
+        if (needsRequest) {
+          await client.query(
+            "INSERT INTO dm_requests (channel_id, sender_id, recipient_id) VALUES ($1, $2, $3)",
+            [channelId, userId, recipientId],
+          );
+        }
         created = true;
       }
       await client.query("COMMIT");
@@ -139,18 +163,31 @@ export function registerDmRoutes(app: FastifyInstance, deps: DmDeps): void {
       recipients: [toSummary(recipientRow)],
       ownerId: null,
       name: null,
+      requestPending: await isPendingRequest(pool, channelId),
     };
 
     if (created) {
-      // Session hai bên phải được phép nhận fan-out ngay, kể cả khi vừa mở.
-      publisher.grantChannelAccess(channelId, [userId, recipientId]);
-      // Chỉ báo khi cuộc trò chuyện mới thật sự được tạo. Mở lại DM cũ mà vẫn
-      // bắn event sẽ làm client bên kia nhảy vào cuộc (và xoá badge chưa đọc).
-      publisher.publishToUser(recipientId, "DM_CHANNEL_CREATE", {
-        ...summary,
-        recipient: await loadSummary(pool, userId),
-        recipients: [await loadSummary(pool, userId)],
-      });
+      if (summary.requestPending) {
+        // Người nhận **không** được cấp quyền xem kênh: họ chỉ thấy yêu cầu trong
+        // danh sách chờ duyệt (kèm preview), nên không nhận fan-out tin nhắn.
+        publisher.publishToUser(recipientId, "MESSAGE_REQUEST_CREATE", {
+          channelId: channelId as Snowflake,
+          sender: await loadProfile(pool, userId),
+          createdAt: new Date().toISOString(),
+          preview: null,
+          messageCount: 0,
+        });
+      } else {
+        // Session hai bên phải được phép nhận fan-out ngay, kể cả khi vừa mở.
+        publisher.grantChannelAccess(channelId, [userId, recipientId]);
+        // Chỉ báo khi cuộc trò chuyện mới thật sự được tạo. Mở lại DM cũ mà vẫn
+        // bắn event sẽ làm client bên kia nhảy vào cuộc (và xoá badge chưa đọc).
+        publisher.publishToUser(recipientId, "DM_CHANNEL_CREATE", {
+          ...summary,
+          recipient: await loadSummary(pool, userId),
+          recipients: [await loadSummary(pool, userId)],
+        });
+      }
     }
 
     return reply.code(created ? 201 : 200).send(summary);
@@ -390,6 +427,10 @@ async function loadUserRow(pool: Pool, userId: string): Promise<UserSummaryRow> 
 
 async function loadSummary(pool: Pool, userId: string): Promise<GuildMemberSummary> {
   return toSummary(await loadUserRow(pool, userId));
+}
+
+async function loadProfile(pool: Pool, userId: string): Promise<UserProfile> {
+  return profileFromRow(await loadUserRow(pool, userId));
 }
 
 function toSummary(row: UserSummaryRow): GuildMemberSummary {

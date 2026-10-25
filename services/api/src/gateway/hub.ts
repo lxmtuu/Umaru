@@ -426,6 +426,17 @@ export class GatewayHub implements EventPublisher {
     }
   }
 
+  revokeChannelAccess(channelId: string, userIds: string[]): void {
+    for (const session of this.sessions.values()) {
+      if (!userIds.includes(session.userId)) continue;
+      if (!session.visibleChannels.delete(channelId)) continue;
+      this.dispatch(session, "CHANNEL_DELETE", {
+        id: channelId as Channel["id"],
+        guildId: null,
+      });
+    }
+  }
+
   async refreshGuildVisibility(guildId: string): Promise<void> {
     const userIds = new Set<string>();
     for (const session of this.sessions.values()) {

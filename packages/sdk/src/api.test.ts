@@ -529,4 +529,21 @@ describe("UmaruApi", () => {
     expect(calls[4]?.init?.method).toBe("PATCH");
     expect(settings.dmPrivacy).toBe("friends");
   });
+
+  it("message requests: list/accept/decline", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    await api.listMessageRequests();
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/message-requests");
+    expect(calls[0]?.init?.method).toBeUndefined();
+
+    await api.acceptMessageRequest("77");
+    expect(calls[1]?.url).toBe("/api/v1/users/@me/message-requests/77/accept");
+    expect(calls[1]?.init?.method).toBe("POST");
+
+    await api.declineMessageRequest("77");
+    expect(calls[2]?.url).toBe("/api/v1/users/@me/message-requests/77/decline");
+    expect(calls[2]?.init?.method).toBe("POST");
+  });
 });

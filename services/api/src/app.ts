@@ -9,6 +9,7 @@ import { createMailer, type Mailer } from "./mail.js";
 import { createTokenService, type TokenService } from "./auth/tokens.js";
 import type { Config } from "./config.js";
 import type { Pool } from "./db.js";
+import { registerDmRequestRoutes } from "./dms/requests.js";
 import { registerDmRoutes } from "./dms/routes.js";
 import { registerFriendRoutes } from "./friends/routes.js";
 import { registerGatewayRoutes } from "./gateway/routes.js";
@@ -101,6 +102,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerMessageRoutes(api, { pool, config, tokens, publisher: hub });
       registerOverwriteRoutes(api, { pool, config, tokens, publisher: hub });
       registerDmRoutes(api, { pool, config, tokens, publisher: hub });
+      registerDmRequestRoutes(api, { pool, config, tokens, publisher: hub });
       registerReadStateRoutes(api, { pool, tokens });
       registerSearchRoutes(api, { pool, tokens });
       registerSafetyRoutes(api, { pool, tokens, config, reportNotifier, publisher: hub });

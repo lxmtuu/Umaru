@@ -27,6 +27,12 @@ export interface EventPublisher {
   ): void;
   /** Cho phép session nhận fan-out của kênh mới (DM tạo lúc user đang online). */
   grantChannelAccess(channelId: string, userIds: string[]): void;
+  /**
+   * Ngược lại `grantChannelAccess`: ngừng fan-out + phát `CHANNEL_DELETE`
+   * (`guildId: null`) để client bỏ kênh khỏi sidebar. Dùng khi từ chối yêu cầu
+   * nhắn tin (kênh bị xoá) — session đang mở sẽ không thấy kênh ma.
+   */
+  revokeChannelAccess(channelId: string, userIds: string[]): void;
   /** Tính lại tập kênh hiển thị cho mọi session đang mở của một guild. */
   refreshGuildVisibility(guildId: string): Promise<void>;
   /** Tính lại guild + kênh cho mọi session của một user (tạo guild, join invite). */

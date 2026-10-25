@@ -1,11 +1,17 @@
-import type { DmPrivacy, FriendList, FriendRequestSummary, FriendSummary } from "@umaru/protocol";
+import type {
+  DmPrivacy,
+  FriendList,
+  FriendRequestSummary,
+  FriendSummary,
+  MessageRequestSummary,
+} from "@umaru/protocol";
 import { useState } from "react";
 import { useT } from "../lib/i18n.js";
 import { Avatar } from "./Avatar.js";
 
 /**
- * Panel bạn bè: 3 tab (bạn bè / lời mời đến / đã gửi) + ô thêm bạn + cài đặt
- * ai được nhắn tin cho mình.
+ * Panel bạn bè: 4 tab (bạn bè / lời mời đến / đã gửi / yêu cầu nhắn tin) + ô
+ * thêm bạn + cài đặt ai được nhắn tin cho mình.
  *
  * Panel không tự sửa danh sách sau khi bấm: server phát `FRIEND_ADD` /
  * `FRIEND_REMOVE` cho cả hai phía và store áp vào, nên hai bên luôn khớp nhau.
@@ -14,28 +20,37 @@ export function FriendsPanel({
   friends,
   loading,
   query,
+  requests,
+  requestsLoading,
   onQueryChange,
   onAdd,
   onAccept,
   onRemove,
   onDmPrivacy,
+  onAcceptRequest,
+  onDeclineRequest,
 }: {
   friends: FriendList | null;
   loading: boolean;
   query: string;
+  requests: MessageRequestSummary[];
+  requestsLoading: boolean;
   onQueryChange: (query: string) => void;
   onAdd: (username: string) => void;
   onAccept: (userId: string) => void;
   onRemove: (userId: string) => void;
   onDmPrivacy: (privacy: DmPrivacy) => void;
+  onAcceptRequest: (channelId: string) => void;
+  onDeclineRequest: (channelId: string) => void;
 }) {
   const t = useT();
-  const [tab, setTab] = useState<"friends" | "incoming" | "outgoing">("friends");
+  const [tab, setTab] = useState<"friends" | "incoming" | "outgoing" | "requests">("friends");
 
   const tabs: Array<{ key: typeof tab; label: string; count: number }> = [
     { key: "friends", label: t("friendsTabAll"), count: friends?.friends.length ?? 0 },
     { key: "incoming", label: t("friendsTabIncoming"), count: friends?.incoming.length ?? 0 },
     { key: "outgoing", label: t("friendsTabOutgoing"), count: friends?.outgoing.length ?? 0 },
+    { key: "requests", label: t("messageRequests"), count: requests.length },
   ];
 
   return (
@@ -102,6 +117,48 @@ export function FriendsPanel({
       <div className="flex-1 overflow-y-auto py-2">
         {friends === null && loading ? (
           <p className="px-4 py-6 text-center text-sm text-slate-500">{t("loading")}</p>
+        ) : tab === "requests" ? (
+          requestsLoading && requests.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-slate-500">{t("loading")}</p>
+          ) : requests.length === 0 ? (
+            <EmptyRow text={t("messageRequestsEmpty")} />
+          ) : (
+            requests.map((request) => (
+              <div key={request.channelId} className="flex items-start gap-3 px-4 py-2">
+                <Avatar
+                  avatarUrl={request.sender.avatarUrl}
+                  name={request.sender.displayName}
+                  size="size-8"
+                  textClass="text-xs"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-slate-100">
+                    {request.sender.displayName}
+                  </p>
+                  <p className="truncate text-[11px] text-slate-500">
+                    @{request.sender.username} · {t("messageRequestWantsToMessage")}
+                  </p>
+                  {request.preview !== null && (
+                    <p className="mt-0.5 line-clamp-2 text-[11px] text-slate-400">{request.preview}</p>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    onClick={() => onAcceptRequest(request.channelId)}
+                    className="rounded bg-emerald-500/90 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-400"
+                  >
+                    {t("friendAccept")}
+                  </button>
+                  <button
+                    onClick={() => onDeclineRequest(request.channelId)}
+                    className="rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-slate-200 hover:bg-rose-500/20 hover:text-rose-200"
+                  >
+                    {t("friendDecline")}
+                  </button>
+                </div>
+              </div>
+            ))
+          )
         ) : tab === "friends" ? (
           <FriendRows
             entries={friends?.friends ?? []}

@@ -213,10 +213,13 @@ Không cần replay: danh sách đầy đủ lấy bằng `GET /users/@me/friend
 và tải lại khi mở.
 
 Cổng quyền riêng tư DM nằm ở server (`POST /users/@me/channels`): `dm_privacy =
-'friends'` chỉ chặn **mở cuộc mới**, DM đã tồn tại vẫn mở và nhắn được (không
-cắt ngang cuộc đang có). Người lạ nhận **403** kèm lý do, không phải 404 — che
-giấu tài khoản không phải mục tiêu; block vẫn thắng (403 vì chặn). Mặc định
-`'everyone'` để không đổi hành vi sau deploy.
+'friends'` chỉ áp cho việc **mở cuộc mới**, DM đã tồn tại vẫn mở và nhắn được
+(không cắt ngang cuộc đang có). Cuộc mở mới khi đó thành **yêu cầu nhắn tin**
+(bảng `dm_requests`): với người nhận, kênh không nằm trong `READY.dms` và không
+vào `visibleChannels` → không nhận `MESSAGE_CREATE`; họ thấy nó trong
+`GET /users/@me/message-requests` (người gửi + preview) và tự đồng ý/từ chối.
+Người gửi thấy kênh bình thường kèm `requestPending: true`. Block vẫn thắng
+(403 vì chặn). Mặc định `'everyone'` để không đổi hành vi sau deploy.
 
 ---
 
@@ -250,6 +253,8 @@ giấu tài khoản không phải mục tiêu; block vẫn thắng (403 vì ch�
 | `FRIEND_ADD` | user (cả hai phía) | ✗ | `FriendSummary` = `{ user, since }` — thành bạn (đồng ý, hoặc hai lời mời chéo nhau) |
 | `FRIEND_REMOVE` | user (cả hai phía) | ✗ | `{ userId }` — huỷ kết bạn, từ chối/huỷ lời mời, hoặc do một bên **chặn** (chặn cắt luôn quan hệ bạn bè) |
 | `USER_SETTINGS_UPDATE` | session của chính user | ✗ | `UserSettings` = `{ dmPrivacy: "everyone" \| "friends" }` — cài đặt của chính mình vừa đổi (tab/thiết bị khác cập nhật theo) |
+| `MESSAGE_REQUEST_CREATE` | user (người nhận) | ✗ | `MessageRequestSummary` = `{ channelId, sender, createdAt, preview, messageCount }` — người lạ vừa mở DM với mình trong khi mình đặt "chỉ bạn bè". Không kèm `DM_CHANNEL_CREATE` (họ chưa được thấy kênh) |
+| `MESSAGE_REQUEST_REMOVE` | user (người nhận) | ✗ | `{ channelId }` — yêu cầu đã xử lý xong: đồng ý, từ chối, kết bạn với người gửi, hoặc bị chặn |
 | `VOICE_STATE_UPDATE` | channel + chính người liên quan | ✓ (bền) | `{ guildId, channelId \| null, userId, selfMute, selfDeaf, joinedAt }` — `channelId: null` = rời phòng; cùng shape với `VoiceState` (xem §5.3). Chưa có `speaking` (đi qua SFU khi có audio) |
 
 Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake luôn là **string**; thời gian là ISO-8601 UTC (trừ `TYPING_START.timestamp` là epoch ms).

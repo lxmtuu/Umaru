@@ -224,22 +224,43 @@ describe("quyền riêng tư DM", () => {
     expect(dm.statusCode).toBe(201);
   });
 
-  it("friends: người lạ → 403 kèm lý do, bạn bè → mở được", async () => {
+  it("friends: người lạ mở DM = yêu cầu chờ duyệt; kết bạn xong thì thành DM thật", async () => {
     const patched = await setPrivacy(bob.token, "friends");
     expect(patched.statusCode).toBe(200);
     expect(patched.json<{ dmPrivacy: string }>().dmPrivacy).toBe("friends");
 
-    // carol và bob chưa từng là bạn, chưa có DM nào → chặn.
-    const denied = await openDm(carol.token, bob.id);
-    expect(denied.statusCode).toBe(403);
-    expect(denied.json<{ error: { message: string } }>().error.message).toContain("bạn bè");
+    // carol và bob chưa từng là bạn, chưa có DM nào → tạo **yêu cầu**, không 403.
+    const requested = await openDm(carol.token, bob.id);
+    expect(requested.statusCode).toBe(201);
+    const requestSummary = requested.json<{ channel: { id: string }; requestPending: boolean }>();
+    expect(requestSummary.requestPending).toBe(true);
 
-    // Kết bạn rồi thì mở được.
-    // (bob mời carol, carol đồng ý)
+    // bob chưa thấy cuộc này trong danh sách DM của mình.
+    const bobDms = await ctx.app.inject({
+      method: "GET",
+      url: "/api/v1/users/@me/channels",
+      headers: auth(bob.token),
+    });
+    expect(bobDms.json<Array<{ channel: { id: string } }>>().map((dm) => dm.channel.id)).not.toContain(
+      requestSummary.channel.id,
+    );
+
+    // Kết bạn → yêu cầu tự được duyệt, DM hiện ra với cả hai.
     expect((await addFriend(bob.token, carol.username)).statusCode).toBe(201);
     expect((await accept(carol.token, bob.id)).statusCode).toBe(200);
-    const allowed = await openDm(carol.token, bob.id);
-    expect(allowed.statusCode).toBe(201);
+    const afterFriends = await ctx.app.inject({
+      method: "GET",
+      url: "/api/v1/users/@me/channels",
+      headers: auth(bob.token),
+    });
+    expect(
+      afterFriends.json<Array<{ channel: { id: string } }>>().map((dm) => dm.channel.id),
+    ).toContain(requestSummary.channel.id);
+
+    // Mở lại: kênh cũ, không còn chờ duyệt.
+    const reopened = await openDm(carol.token, bob.id);
+    expect(reopened.statusCode).toBe(200);
+    expect(reopened.json<{ requestPending: boolean }>().requestPending).toBe(false);
   });
 
   it("DM đã tồn tại vẫn mở lại được sau khi unfriend (không cắt ngang cuộc đang có)", async () => {

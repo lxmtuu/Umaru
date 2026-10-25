@@ -64,6 +64,7 @@ interface OverwriteRow {
 
 interface DmRow {
   id: string;
+  request_pending: boolean;
   type: "dm" | "group_dm";
   group_name: string | null;
   owner_id: string | null;
@@ -90,6 +91,9 @@ export async function loadDms(pool: Pool, userId: Snowflake): Promise<DmChannelS
             c.type,
             g.name AS group_name,
             g.owner_id,
+            -- Yêu cầu chờ duyệt: chỉ **người gửi** thấy kênh trong danh sách (kèm
+            -- cờ này); người nhận bị lọc ở WHERE bên dưới cho tới khi họ đồng ý.
+            EXISTS (SELECT 1 FROM dm_requests dr WHERE dr.channel_id = c.id) AS request_pending,
             -- Hai ký tự điều khiển làm phân cách: tên hiển thị có thể chứa dấu
             -- hai chấm hoặc dấu phẩy nên không dùng ký tự in được.
             coalesce(string_agg(
@@ -105,6 +109,12 @@ export async function loadDms(pool: Pool, userId: Snowflake): Promise<DmChannelS
        LEFT JOIN users u ON u.id = theirs.user_id
        LEFT JOIN group_dms g ON g.channel_id = c.id
       WHERE c.type IN ('dm', 'group_dm') AND c.guild_id IS NULL
+        -- Yêu cầu nhắn tin chưa được duyệt: người nhận **không** thấy kênh, nên
+        -- không nhận được fan-out tin nhắn (visibleChannels dựng từ đây) — người
+        -- gửi vẫn thấy bình thường, kèm cờ requestPending.
+        AND NOT EXISTS (
+          SELECT 1 FROM dm_requests dr WHERE dr.channel_id = c.id AND dr.recipient_id = $1
+        )
         -- DM 1-1 luôn phải có người bên kia; group DM thì không.
         AND (c.type = 'group_dm' OR theirs.user_id IS NOT NULL)
         AND (
@@ -151,6 +161,7 @@ export async function loadDms(pool: Pool, userId: Snowflake): Promise<DmChannelS
       recipients,
       ownerId: row.owner_id === null ? null : (row.owner_id as Snowflake),
       name: isGroup ? row.group_name : null,
+      requestPending: row.request_pending,
     };
   });
 }

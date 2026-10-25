@@ -500,6 +500,12 @@ export function ChatScreen() {
                     <span className={`truncate ${unread > 0 || mentions > 0 ? "font-semibold" : ""}`}>
                       {dmTitle(dm)}
                     </span>
+                    {/* Mình là người gửi yêu cầu nhắn tin: người kia chưa đồng ý. */}
+                    {dm.requestPending && (
+                      <span title={t("messageRequestPending")} aria-label={t("messageRequestPending")}>
+                        ⏳
+                      </span>
+                    )}
                     <UnreadBadge
                       unread={unread}
                       mentions={mentions}
@@ -741,6 +747,11 @@ export function ChatScreen() {
                 }`}
               >
                 👥
+                {state.messageRequests.length > 0 && !state.friendsOpen && (
+                  <span className="ml-0.5 rounded-full bg-rose-500 px-1 text-[9px] font-bold text-white">
+                    {state.messageRequests.length}
+                  </span>
+                )}
               </button>
               <button
                 onClick={() =>
@@ -909,6 +920,10 @@ export function ChatScreen() {
           <FriendsPanel
             friends={state.friends}
             loading={state.friendsLoading}
+            requests={state.messageRequests}
+            requestsLoading={state.messageRequestsLoading}
+            onAcceptRequest={(channelId) => void state.acceptMessageRequest(channelId)}
+            onDeclineRequest={(channelId) => void state.declineMessageRequest(channelId)}
             query={state.friendQuery}
             onQueryChange={(value) => state.setFriendQuery(value)}
             onAdd={(username) => void state.addFriend(username)}

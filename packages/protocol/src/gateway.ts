@@ -127,6 +127,26 @@ export interface DmChannelSummary {
   ownerId: Snowflake | null;
   /** Tên nhóm do người dùng đặt; `null` = hiển thị bằng cách ghép tên thành viên. */
   name: string | null;
+  /**
+   * `true` = DM này đang là **yêu cầu chờ duyệt** do chính mình gửi (người kia
+   * đặt `dm_privacy = 'friends'`). Chỉ người gửi thấy cờ này — người nhận không
+   * có kênh trong danh sách cho tới khi họ đồng ý (xem `MessageRequestSummary`).
+   */
+  requestPending: boolean;
+}
+
+/**
+ * Một yêu cầu nhắn tin đang chờ **mình** duyệt: người lạ đã mở DM, mình chưa
+ * đồng ý nên kênh không nằm trong danh sách DM bình thường.
+ */
+export interface MessageRequestSummary {
+  channelId: Snowflake;
+  /** Người đã mở cuộc trò chuyện. */
+  sender: UserProfile;
+  createdAt: string;
+  /** Nội dung tin mới nhất (cắt 200 ký tự) — đủ để quyết định, không tải cả lịch sử. */
+  preview: string | null;
+  messageCount: number;
 }
 
 /** Số người tối đa trong group DM (tính cả mình) — giống Discord. */
@@ -233,6 +253,9 @@ export interface GatewayEventMap {
   DM_CHANNEL_UPDATE: DmChannelSummary;
   /** Bị mời ra khỏi nhóm (hoặc nhóm bị xoá) → client bỏ khỏi sidebar. */
   DM_CHANNEL_DELETE: { channelId: Snowflake };
+  MESSAGE_REQUEST_CREATE: MessageRequestSummary;
+  /** Đã xử lý xong (đồng ý, từ chối, kết bạn, chặn) → bỏ khỏi danh sách chờ. */
+  MESSAGE_REQUEST_REMOVE: { channelId: Snowflake };
   VOICE_STATE_UPDATE: VoiceStateUpdate;
   /** Có người gửi lời mời kết bạn cho mình (kèm người gửi để vẽ ngay). */
   FRIEND_REQUEST_CREATE: FriendRequestSummary;

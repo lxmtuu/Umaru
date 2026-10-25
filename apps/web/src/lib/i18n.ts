@@ -247,6 +247,10 @@ const en = {
   dmPrivacyLabel: "Who can message me",
   dmPrivacyEveryone: "Everyone",
   dmPrivacyFriends: "Friends only",
+  messageRequests: "Requests",
+  messageRequestsEmpty: "No message requests.",
+  messageRequestWantsToMessage: "wants to message you",
+  messageRequestPending: "Waiting for them to accept",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -494,6 +498,10 @@ const vi: Record<MessageKey, string> = {
   dmPrivacyLabel: "Ai được nhắn tin cho tôi",
   dmPrivacyEveryone: "Mọi người",
   dmPrivacyFriends: "Chỉ bạn bè",
+  messageRequests: "Yêu cầu",
+  messageRequestsEmpty: "Không có yêu cầu nhắn tin nào.",
+  messageRequestWantsToMessage: "muốn nhắn tin cho bạn",
+  messageRequestPending: "Đang chờ họ đồng ý",
 };
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, vi };

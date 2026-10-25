@@ -64,7 +64,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 | Group DM (tới 10 người, không thuộc server nào) | Rất hay dùng — ✅ đã có (thêm/mời ra, đổi tên, rời nhóm, realtime) | P1 |
 | Cuộc gọi thoại/video trong DM | Dùng chung hạ tầng voice | P1 (sau khi có voice channels) |
 | "Bạn chung", "Server chung" | Mutuals | P2 |
-| Tin nhắn yêu cầu (Message Requests) từ người lạ | An toàn cho người dùng nữ/bị làm phiền — 🔸 đã có bản rút gọn: cài đặt `dm_privacy = friends` (chỉ bạn bè mở DM mới); hộp "yêu cầu chờ duyệt" vẫn còn thiếu | P1 |
+| Tin nhắn yêu cầu (Message Requests) từ người lạ | An toàn cho người dùng nữ/bị làm phiền — ✅ đã có (kênh chờ duyệt không lộ vào danh sách/không đẩy tin, đồng ý/từ chối, tự duyệt khi kết bạn) | P1 |
 | DM folders, ghim tin nhắn DM | Organization | P3 |
 
 ### 1.3 Server (Guild)

@@ -1,5 +1,6 @@
 import type {
   FriendList,
+  MessageRequestSummary,
   VoiceState,
   Channel,
   ChannelOverwrite,
@@ -149,6 +150,9 @@ interface ChatState {
   friendQuery: string;
   /** Panel bạn bè đang mở (thay khung chat, giống panel người đã chặn). */
   friendsOpen: boolean;
+  /** Yêu cầu nhắn tin đang chờ mình duyệt (người lạ mở DM khi mình đặt "chỉ bạn bè"). */
+  messageRequests: MessageRequestSummary[];
+  messageRequestsLoading: boolean;
   /**
    * Ai đang ở phòng thoại nào (danh sách phẳng, mỗi người một phòng mỗi server).
    * Server là nguồn sự thật: mọi thay đổi đến qua `VOICE_STATE_UPDATE`.
@@ -329,6 +333,10 @@ interface ChatState {
   removeFriend(userId: string): Promise<boolean>;
   /** Đổi ai được nhắn tin cho mình (`everyone` | `friends`). */
   setDmPrivacy(privacy: "everyone" | "friends"): Promise<boolean>;
+  /** Đồng ý một yêu cầu nhắn tin → DM hiện trong sidebar và mở luôn. */
+  acceptMessageRequest(channelId: string): Promise<boolean>;
+  /** Từ chối → cuộc trò chuyện bị xoá với cả hai. */
+  declineMessageRequest(channelId: string): Promise<boolean>;
   notifyTyping(): void;
   clearNotice(): void;
   clearError(): void;
@@ -421,6 +429,8 @@ const initialState = {
   friendsLoading: false,
   friendQuery: "",
   friendsOpen: false,
+  messageRequests: [],
+  messageRequestsLoading: false,
   voiceStates: [],
   error: null,
   notice: null,
@@ -687,6 +697,12 @@ export const useChat = create<ChatState>()((set, get) => ({
         activeGuildId: guildId,
         activeChannelId: channelId,
       });
+      // Badge "yêu cầu nhắn tin" phải có ngay khi mở app, không đợi mở panel.
+      // Lỗi mạng ở đây không được làm hỏng READY nên chỉ nuốt và bỏ qua.
+      void authedApi.listMessageRequests().then(
+        (messageRequests) => set({ messageRequests }),
+        () => undefined,
+      );
       if (channelId !== null) {
         void get().loadMessages(channelId);
         // READY vừa trả badge cho kênh đang mở → coi như đã đọc.
@@ -881,6 +897,21 @@ export const useChat = create<ChatState>()((set, get) => ({
         },
       });
     });
+    client.on("MESSAGE_REQUEST_CREATE", (request) => {
+      const current = get();
+      set({
+        messageRequests: [
+          request,
+          ...current.messageRequests.filter((row) => row.channelId !== request.channelId),
+        ],
+      });
+    });
+    client.on("MESSAGE_REQUEST_REMOVE", (data) => {
+      set({
+        messageRequests: get().messageRequests.filter((row) => row.channelId !== data.channelId),
+      });
+    });
+
     client.on("USER_SETTINGS_UPDATE", (settings) => {
       const current = get().friends;
       if (current === null) return;
@@ -2009,12 +2040,17 @@ export const useChat = create<ChatState>()((set, get) => ({
       settingsOpen: false,
       channelSettingsChannelId: null,
       friendsLoading: true,
+      messageRequestsLoading: true,
     });
     try {
-      const friends = await authedApi.listFriends();
-      set({ friends, friendsLoading: false });
+      // Tải song song: panel vẽ cả hai danh sách cùng lúc, không cần đợi nhau.
+      const [friends, messageRequests] = await Promise.all([
+        authedApi.listFriends(),
+        authedApi.listMessageRequests(),
+      ]);
+      set({ friends, messageRequests, friendsLoading: false, messageRequestsLoading: false });
     } catch (error) {
-      set({ friendsLoading: false, error: describeError(error) });
+      set({ friendsLoading: false, messageRequestsLoading: false, error: describeError(error) });
     }
   },
   closeFriends() {
@@ -2059,6 +2095,34 @@ export const useChat = create<ChatState>()((set, get) => ({
       const settings = await authedApi.updateSettings({ dmPrivacy: privacy });
       const current = get().friends;
       if (current !== null) set({ friends: { ...current, dmPrivacy: settings.dmPrivacy } });
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+  async acceptMessageRequest(channelId) {
+    try {
+      const summary = await authedApi.acceptMessageRequest(channelId);
+      set({
+        messageRequests: get().messageRequests.filter((row) => row.channelId !== channelId),
+        dms: upsertDm(get().dms, summary),
+        friendsOpen: false,
+      });
+      // Mở luôn cuộc vừa duyệt: người dùng vừa bấm "Đồng ý" là muốn đọc nó.
+      await get().selectDm(channelId);
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+  async declineMessageRequest(channelId) {
+    try {
+      await authedApi.declineMessageRequest(channelId);
+      set({
+        messageRequests: get().messageRequests.filter((row) => row.channelId !== channelId),
+      });
       return true;
     } catch (error) {
       set({ error: describeError(error) });

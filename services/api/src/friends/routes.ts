@@ -14,6 +14,8 @@ import { isBlockedBetween } from "../blocks.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
 import { badRequest, conflict, forbidden, notFound } from "../http.js";
+import { clearDmRequestsBetween } from "../dms/requests.js";
+import { loadDmSummary } from "../dms/group.js";
 import { BucketStore } from "../rateLimit.js";
 
 export interface FriendDeps {
@@ -143,6 +145,25 @@ export function registerFriendRoutes(app: FastifyInstance, deps: FriendDeps): vo
       throw error;
     } finally {
       client.release();
+    }
+
+    // Đã là bạn thì không còn gì để "chờ duyệt": xoá yêu cầu nhắn tin đang chờ
+    // giữa hai người, nếu không kênh sẽ vĩnh viễn không hiện với người nhận dù
+    // hai người đã kết bạn. Phát `DM_CHANNEL_CREATE` để DM hiện ra ngay.
+    for (const channelId of await clearDmRequestsBetween(pool, a, b)) {
+      const summary = await loadDmSummary(pool, channelId, a);
+      const forB = await loadDmSummary(pool, channelId, b);
+      publisher.grantChannelAccess(channelId, [a, b]);
+      for (const [userId, payload] of [
+        [a, summary],
+        [b, forB],
+      ] as const) {
+        if (payload === null) continue;
+        publisher.publishToUser(userId, "MESSAGE_REQUEST_REMOVE", {
+          channelId: channelId as Snowflake,
+        });
+        publisher.publishToUser(userId, "DM_CHANNEL_CREATE", payload);
+      }
     }
   }
 

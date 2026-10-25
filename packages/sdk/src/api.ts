@@ -19,6 +19,7 @@ import type {
   FriendList,
   FriendSummary,
   FriendRequestSummary,
+  MessageRequestSummary,
   UserSettings,
 } from "@umaru/protocol";
 
@@ -628,6 +629,26 @@ export class UmaruApi {
     return this.request<FriendRequestSummary | FriendSummary>(`${API_PREFIX}/users/@me/friends`, {
       method: "POST",
       body: JSON.stringify({ username }),
+    });
+  }
+
+  /** Yêu cầu nhắn tin đang chờ mình duyệt (người lạ mở DM khi mình đặt "chỉ bạn bè"). */
+  listMessageRequests(): Promise<MessageRequestSummary[]> {
+    return this.request<MessageRequestSummary[]>(`${API_PREFIX}/users/@me/message-requests`);
+  }
+
+  /** Đồng ý → cuộc trò chuyện thành DM bình thường (trả summary để client mở luôn). */
+  acceptMessageRequest(channelId: string): Promise<DmChannelSummary> {
+    return this.request<DmChannelSummary>(
+      `${API_PREFIX}/users/@me/message-requests/${channelId}/accept`,
+      { method: "POST" },
+    );
+  }
+
+  /** Từ chối → cuộc trò chuyện bị xoá với cả hai bên (không giữ nội dung). */
+  declineMessageRequest(channelId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/message-requests/${channelId}/decline`, {
+      method: "POST",
     });
   }
 
