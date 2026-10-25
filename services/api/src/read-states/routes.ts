@@ -10,10 +10,11 @@ import { loadChannelContext } from "../access.js";
 import { createAuthGuard, requireUserId } from "../auth/guard.js";
 import type { TokenService } from "../auth/tokens.js";
 import type { Pool } from "../db.js";
+import type { EventPublisher } from "../events.js";
 import { badRequest, readId, readLimit } from "../http.js";
 import { loadAttachmentsByMessage } from "../attachments.js";
 import { notBlockedAuthorSql } from "../blocks.js";
-import { loadBootstrap } from "../bootstrap.js";
+import { loadBootstrap, loadReadStates } from "../bootstrap.js";
 
 interface MentionRow {
   id: string;
@@ -43,6 +44,7 @@ interface MentionRow {
 export interface ReadStateDeps {
   pool: Pool;
   tokens: TokenService;
+  publisher: EventPublisher;
 }
 
 /**
@@ -90,6 +92,13 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
         [userId, channelId, messageId],
       );
 
+      // Cùng một người, nhiều thiết bị: tab khác (điện thoại) phải thấy badge
+      // tắt ngay, không đợi mở lại kênh. Số liệu lấy lại từ DB (không tự tính ở
+      // client) vì `GREATEST` có thể đã bị tab khác đẩy mốc xa hơn.
+      const [readState] = await loadReadStates(pool, userId as Snowflake, [channelId]);
+      if (readState !== undefined) {
+        deps.publisher.publishToUser(userId, "READ_STATE_UPDATE", readState);
+      }
       return reply.code(204).send();
     },
   );

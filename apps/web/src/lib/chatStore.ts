@@ -716,6 +716,19 @@ export const useChat = create<ChatState>()((set, get) => ({
       }
     });
 
+    // Đọc trên thiết bị khác: badge của tab này tắt ngay, không đợi mở lại kênh.
+    // Số liệu là của server (đã tính theo mốc GREATEST) nên chỉ việc thay thế.
+    client.on("READ_STATE_UPDATE", (readState) => {
+      const current = get();
+      const unread = { ...current.unread };
+      const mentions = { ...current.mentions };
+      if (readState.unread > 0) unread[readState.channelId] = readState.unread;
+      else delete unread[readState.channelId];
+      if (readState.mentions > 0) mentions[readState.channelId] = readState.mentions;
+      else delete mentions[readState.channelId];
+      set({ unread, mentions });
+    });
+
     client.on("DM_CHANNEL_CREATE", (summary) => {
       // Chỉ thêm vào sidebar: không tự nhảy vào cuộc, không đụng badge của người nhận.
       set({ dms: upsertDm(get().dms, summary) });

@@ -256,6 +256,7 @@ export interface GatewayEventMap {
   MESSAGE_REQUEST_CREATE: MessageRequestSummary;
   /** Đã xử lý xong (đồng ý, từ chối, kết bạn, chặn) → bỏ khỏi danh sách chờ. */
   MESSAGE_REQUEST_REMOVE: { channelId: Snowflake };
+  READ_STATE_UPDATE: ReadState;
   VOICE_STATE_UPDATE: VoiceStateUpdate;
   /** Có người gửi lời mời kết bạn cho mình (kèm người gửi để vẽ ngay). */
   FRIEND_REQUEST_CREATE: FriendRequestSummary;

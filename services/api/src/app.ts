@@ -103,7 +103,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerOverwriteRoutes(api, { pool, config, tokens, publisher: hub });
       registerDmRoutes(api, { pool, config, tokens, publisher: hub });
       registerDmRequestRoutes(api, { pool, config, tokens, publisher: hub });
-      registerReadStateRoutes(api, { pool, tokens });
+      registerReadStateRoutes(api, { pool, tokens, publisher: hub });
       registerSearchRoutes(api, { pool, tokens });
       registerSafetyRoutes(api, { pool, tokens, config, reportNotifier, publisher: hub });
       registerAdminRoutes(api, { pool, tokens, config });

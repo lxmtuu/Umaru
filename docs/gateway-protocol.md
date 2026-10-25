@@ -255,13 +255,14 @@ Người gửi thấy kênh bình thường kèm `requestPending: true`. Block v
 | `USER_SETTINGS_UPDATE` | session của chính user | ✗ | `UserSettings` = `{ dmPrivacy: "everyone" \| "friends" }` — cài đặt của chính mình vừa đổi (tab/thiết bị khác cập nhật theo) |
 | `MESSAGE_REQUEST_CREATE` | user (người nhận) | ✗ | `MessageRequestSummary` = `{ channelId, sender, createdAt, preview, messageCount }` — người lạ vừa mở DM với mình trong khi mình đặt "chỉ bạn bè". Không kèm `DM_CHANNEL_CREATE` (họ chưa được thấy kênh) |
 | `MESSAGE_REQUEST_REMOVE` | user (người nhận) | ✗ | `{ channelId }` — yêu cầu đã xử lý xong: đồng ý, từ chối, kết bạn với người gửi, hoặc bị chặn |
+| `READ_STATE_UPDATE` | session của chính user | ✗ | `ReadState` = `{ channelId, lastReadMessageId, unread, mentions }` — sau mỗi lần ack; tính lại từ DB nên luôn khớp `GREATEST`. Client thay đúng ba con số, không tự suy luận |
 | `VOICE_STATE_UPDATE` | channel + chính người liên quan | ✓ (bền) | `{ guildId, channelId \| null, userId, selfMute, selfDeaf, joinedAt }` — `channelId: null` = rời phòng; cùng shape với `VoiceState` (xem §5.3). Chưa có `speaking` (đi qua SFU khi có audio) |
 
 Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake luôn là **string**; thời gian là ISO-8601 UTC (trừ `TYPING_START.timestamp` là epoch ms).
 
 ### 6.1 Sự kiện dự kiến thêm (không phải v1)
 
-`GUILD_UPDATE`, `GUILD_DELETE`, `GUILD_MEMBER_REMOVE`, `MESSAGE_REACTION_ADD/REMOVE`, `CHANNEL_PINS_UPDATE`, `READ_STATE_UPDATE`, `INVITE_CREATE/DELETE`, `VOICE_SPEAKING` (tách khỏi `VOICE_STATE_UPDATE` nếu tần suất gây nhiễu). Thêm event = thêm key vào `GatewayEventMap`, **không** tăng version (client bỏ qua event lạ).
+`GUILD_UPDATE`, `GUILD_DELETE`, `GUILD_MEMBER_REMOVE`, `MESSAGE_REACTION_ADD/REMOVE`, `CHANNEL_PINS_UPDATE`, `INVITE_CREATE/DELETE`, `VOICE_SPEAKING` (tách khỏi `VOICE_STATE_UPDATE` nếu tần suất gây nhiễu). Thêm event = thêm key vào `GatewayEventMap`, **không** tăng version (client bỏ qua event lạ).
 
 ---
 
@@ -319,7 +320,7 @@ Tinh chỉnh bằng biến môi trường: `RATE_LIMITS=off` (mặc định bậ
 - `channelPermissions` được đẩy lại qua `PERMISSIONS_UPDATE` mỗi khi `refreshUserVisibility`/`refreshGuildVisibility` chạy: tạo/sửa/xoá kênh, tạo guild, nhận invite, các thao tác role (`PATCH`/`DELETE` role, gán/thu role) và **mọi thay đổi overwrite theo kênh**. Cùng lúc đó gateway gửi `CHANNEL_DELETE` cho kênh vừa mất quyền xem và `CHANNEL_CREATE` cho kênh vừa được xem — client không cần reconnect. Client luôn coi đây là gợi ý UI: quyền thật vẫn do server kiểm tra ở REST/gateway.
 - Overwrite đặt trên **category** được kế thừa xuống channel con (category áp trước, kênh đè sau) — danh sách `CHANNEL_*` phản ánh đúng những gì server đã tính sẵn, client không tự suy luận. `PATCH /channels/:id` đổi `parentId` cũng phát `CHANNEL_UPDATE` + `PERMISSIONS_UPDATE` vì quyền hiệu dụng có thể đổi theo category mới; chỉ đổi `position` (kéo-thả) thì **không** gọi `refreshGuildVisibility` — chỉ phát `CHANNEL_UPDATE` cho các kênh đổi vị trí, vì tập kênh hiển thị không đổi.
 - Chỉ số `position` trong `Channel` là thứ tự **trong nhóm kênh cùng `parentId`**. Client gửi lại chính chỉ số này khi thả (`PATCH { parentId?, position }`), không gửi cả thứ tự; server kẹp chỉ số về 0..n nên client không cần đồng bộ danh sách đầy đủ trước khi thả.
-- **Badge chưa đọc không phát event qua gateway**: client tự tăng đếm khi nhận `MESSAGE_CREATE` (bỏ qua tin của chính mình) và gọi `POST /channels/:id/read` khi mở kênh. Đổi trạng thái đã đọc từ thiết bị khác chưa đồng bộ realtime — mở lại app (READY) mới cập nhật; event `READ_STATE_UPDATE` để P1.
+- **Badge chưa đọc**: client tự tăng đếm khi nhận `MESSAGE_CREATE` (bỏ qua tin của chính mình) và gọi `POST /channels/:id/read` khi mở kênh. Server phát **`READ_STATE_UPDATE`** (transient, tới **mọi** session của chính người đó) sau mỗi lần ack, mang state **đọc lại từ DB** chứ không phải giá trị client vừa gửi — `GREATEST` có thể đã bị tab khác đẩy mốc xa hơn. Nhờ vậy đọc trên điện thoại thì tab laptop tắt badge ngay, không phải chờ mở lại kênh hay reconnect.
 - Khi user tạo guild hoặc join invite, server đồng bộ lại quyền hiển thị cho session đang mở (`refreshUserVisibility`) vì READY đã chạy trước đó.
 - **DM** là `Channel` có `type: "dm"`, `guildId: null`; quyền xem suy ra từ bảng `channel_members` (không qua role/overwrite) và được nạp vào `visibleChannels` khi READY, khi tạo DM (`grantChannelAccess`) và khi resume. `DM_CHANNEL_CREATE` không vào replay log (transient) — client lấy lại danh sách qua `GET /users/@me/channels` nếu lỡ.
 - **Client đã dedupe theo `s`**: `READY` (session mới) đặt lại bộ đếm, mọi dispatch khác phải có `s` lớn hơn `s` đã nhận, frame trùng/`s` cũ bị bỏ. Trước đây server replay đã lọc `s > seq` nên chưa lỗi, nhưng chồng lấn khi replay là chuyện có thể xảy ra và hậu quả thấy được (tin nhắn lặp).

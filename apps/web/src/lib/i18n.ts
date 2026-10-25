@@ -251,6 +251,8 @@ const en = {
   messageRequestsEmpty: "No message requests.",
   messageRequestWantsToMessage: "wants to message you",
   messageRequestPending: "Waiting for them to accept",
+  permConnect: "Join voice channels",
+  permSpeak: "Speak in voice channels",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -502,6 +504,8 @@ const vi: Record<MessageKey, string> = {
   messageRequestsEmpty: "Không có yêu cầu nhắn tin nào.",
   messageRequestWantsToMessage: "muốn nhắn tin cho bạn",
   messageRequestPending: "Đang chờ họ đồng ý",
+  permConnect: "Vào kênh thoại",
+  permSpeak: "Nói trong kênh thoại",
 };
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, vi };
