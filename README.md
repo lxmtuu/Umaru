@@ -60,7 +60,7 @@ Test backend cũng cần Postgres (tạo sẵn database `umaru_test`):
 ```bash
 docker exec umaru-pg-dev createdb -U umaru umaru_test   # một lần
 pnpm --filter @umaru/api test     # 172 test: auth, quyền, role, overwrite + category, thứ tự kênh, cursor, gateway ws, DM, read state + mention, tìm kiếm, xác thực email, chặn/báo cáo, hàng đợi báo cáo cho admin, path param, tệp đính kèm (multipart, quyền, dọn file), avatar (magic bytes, trần dung lượng, `USER_UPDATE`)
-pnpm test                          # toàn bộ: 172 api + 29 protocol + 34 SDK + 76 web (markdown, tệp đính kèm, avatar, session, tìm kiếm, xác thực email, pháp lý, render)
+pnpm test                          # toàn bộ: 172 api + 29 protocol + 34 SDK + 79 web (markdown, tệp đính kèm, avatar, session, tìm kiếm, xác thực email, pháp lý, render)
 ```
 
 API đã có (`/api/v1`): `auth/register|login|refresh|logout`, `users/@me`, `users/@me/avatar` (PUT/DELETE), `users/:id/avatar/:uploadId` (phục vụ ảnh đại diện), `users/@me/guilds`, `users/@me/channels` (list/create **DM 1-1**), `users/@me/read-states`, `users/@me/mentions` (mentions inbox), `guilds` (+`channels`, `roles`), `channels/:id/messages` (cursor `before`; **multipart** khi gửi kèm tệp), `attachments/:id` (tải tệp, kiểm `VIEW_CHANNEL`), `channels/:id` (PATCH tên/topic/**category**/**position**), `channels/:id/overwrites` (ghi đè quyền theo kênh), `channels/:id/read`, `messages/:id`, `channels/:id/messages/search` + `guilds/:id/messages/search` (tìm tin, `q` 2–100 ký tự), `channels/:id/typing`, invites, `auth/verify-email` (+`/resend`), `users/@me/blocks` (chặn/bỏ chặn), `reports` (báo cáo vi phạm), `admin/status` + `admin/reports` (hàng đợi cho người vận hành), `gateway` + `gateway/ws`.
