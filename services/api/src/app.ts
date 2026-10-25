@@ -1,6 +1,8 @@
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
+import { hasAnyAdminConfigured } from "./admin/access.js";
+import { registerAdminRoutes } from "./admin/routes.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import { createMailer, type Mailer } from "./mail.js";
 import { createTokenService, type TokenService } from "./auth/tokens.js";
@@ -90,6 +92,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerReadStateRoutes(api, { pool, tokens });
       registerSearchRoutes(api, { pool, tokens });
       registerSafetyRoutes(api, { pool, tokens, config });
+      registerAdminRoutes(api, { pool, tokens, config });
       registerUploadRoutes(api, { pool, config, tokens });
       registerGatewayRoutes(api, hub, tokens, config);
     },
@@ -99,6 +102,13 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   app.addHook("onClose", async () => {
     hub.dispose();
   });
+
+  // Cảnh báo cấu hình thiếu: báo cáo vẫn được ghi nhưng không ai đọc được.
+  if (!hasAnyAdminConfigured(config)) {
+    app.log.warn(
+      "Chưa đặt ADMIN_USER_IDS/ADMIN_USERNAMES — hàng đợi báo cáo (/admin/reports) không ai truy cập được",
+    );
+  }
 
   return { app, hub, tokens, mailer };
 }

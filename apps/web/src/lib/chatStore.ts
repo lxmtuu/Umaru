@@ -6,8 +6,10 @@ import type {
   GuildMemberSummary,
   Message,
   MessageMention,
+  AdminReport,
   MessageSearchHit,
   ReportInput,
+  ReportStatus,
   PresenceStatus,
   Role,
   Snowflake,
@@ -111,6 +113,14 @@ interface ChatState {
   reportTarget: ReportTarget | null;
   /** Đang gửi báo cáo — khoá nút để không gửi hai lần. */
   reportSending: boolean;
+  /** `null` = chưa kiểm tra; dùng để ẩn lối vào khu quản trị. */
+  admin: boolean | null;
+  /** Hàng đợi báo cáo cho admin; `null` = chưa tải. */
+  adminReports: AdminReport[] | null;
+  adminCounts: Record<ReportStatus, number> | null;
+  adminHasMore: boolean;
+  adminStatusFilter: ReportStatus;
+  adminLoading: boolean;
   typing: Record<string, TypingEntry[]>;
   presence: Record<string, PresenceStatus>;
   error: string | null;
@@ -221,6 +231,14 @@ interface ChatState {
   closeReport(): void;
   /** Gửi báo cáo; `true` khi thành công (hộp thoại tự đóng). */
   submitReport(input: Omit<ReportInput, "messageId" | "userId">): Promise<boolean>;
+  /** Hỏi server xem tài khoản hiện tại có quyền xem hàng đợi báo cáo không. */
+  checkAdmin(): Promise<boolean>;
+  /** Tải hàng đợi báo cáo (admin). `status` mới sẽ đổi tab đang xem. */
+  loadAdminReports(status?: ReportStatus): Promise<void>;
+  /** Nối thêm một trang cũ hơn theo cursor `before`. */
+  loadMoreAdminReports(): Promise<void>;
+  /** Đổi trạng thái xử lý; dòng được thay tại chỗ, không tải lại cả trang. */
+  updateReportStatus(reportId: string, status: ReportStatus): Promise<boolean>;
   /** Gửi lại mail xác thực; ở dev có token echo thì xác thực luôn. */
   resendVerification(): Promise<void>;
   /** Xác thực email bằng token trong link (`?verifyToken=...`). */
@@ -240,6 +258,8 @@ const MENTION_PAGE_SIZE = 50;
 export const SEARCH_PAGE_SIZE = 25;
 /** Độ dài tối thiểu của từ khoá — trùng với ràng buộc phía server. */
 export const SEARCH_MIN_LENGTH = 2;
+/** Số báo cáo mỗi trang trong hàng đợi admin (server chặn tối đa 100). */
+export const ADMIN_PAGE_SIZE = 25;
 /** Số trang tin nhắn tải thêm tối đa khi nhảy tới một kết quả tìm kiếm cũ. */
 const SEARCH_JUMP_MAX_PAGES = 8;
 /** Tránh bắn POST /read theo từng tin khi kênh đang mở nhận tin liên tục. */
@@ -289,6 +309,12 @@ const initialState = {
   blocksLoading: false,
   reportTarget: null,
   reportSending: false,
+  admin: null,
+  adminReports: null,
+  adminCounts: null,
+  adminHasMore: false,
+  adminStatusFilter: "open" as ReportStatus,
+  adminLoading: false,
   typing: {},
   presence: {},
   error: null,
@@ -377,6 +403,7 @@ export const useChat = create<ChatState>()((set, get) => ({
   async startSession() {
     const me = await authedApi.getCurrentUser();
     set({ screen: "chat", me, error: null });
+    void get().checkAdmin();
     await get().connectGateway();
   },
 
@@ -1286,6 +1313,97 @@ export const useChat = create<ChatState>()((set, get) => ({
       return true;
     } catch (error) {
       set({ reportSending: false, error: describeError(error) });
+      return false;
+    }
+  },
+  async checkAdmin() {
+    try {
+      const { admin } = await authedApi.getAdminStatus();
+      set({ admin });
+      return admin;
+    } catch {
+      // Lỗi mạng/quyền không được làm hỏng app — coi như không phải admin.
+      set({ admin: false });
+      return false;
+    }
+  },
+  async loadAdminReports(status) {
+    const filter = status ?? get().adminStatusFilter;
+    set({
+      adminStatusFilter: filter,
+      adminLoading: true,
+      adminReports: filter === get().adminStatusFilter ? get().adminReports : null,
+    });
+    try {
+      const page = await authedApi.listAdminReports({ status: filter, limit: ADMIN_PAGE_SIZE });
+      set({
+        adminReports: page.reports,
+        adminCounts: page.counts,
+        adminHasMore: page.hasMore,
+        adminLoading: false,
+      });
+    } catch (error) {
+      set({ adminLoading: false, adminReports: [], error: describeError(error) });
+    }
+  },
+  async loadMoreAdminReports() {
+    const loaded = get().adminReports;
+    if (loaded === null || loaded.length === 0 || !get().adminHasMore || get().adminLoading) {
+      return;
+    }
+    const before = loaded[loaded.length - 1]!.id as string;
+    set({ adminLoading: true });
+    try {
+      const page = await authedApi.listAdminReports({
+        status: get().adminStatusFilter,
+        before,
+        limit: ADMIN_PAGE_SIZE,
+      });
+      const known = new Set((get().adminReports ?? []).map((report) => report.id as string));
+      const merged = [...(get().adminReports ?? [])];
+      for (const report of page.reports) {
+        if (!known.has(report.id as string)) merged.push(report);
+      }
+      set({
+        adminReports: merged,
+        adminCounts: page.counts,
+        adminHasMore: page.hasMore,
+        adminLoading: false,
+      });
+    } catch (error) {
+      set({ adminLoading: false, error: describeError(error) });
+    }
+  },
+  async updateReportStatus(reportId, status) {
+    try {
+      const updated = await authedApi.setReportStatus(reportId, status);
+      const before = get().adminReports ?? [];
+      const previous = before.find((report) => report.id === reportId);
+      const filter = get().adminStatusFilter;
+
+      // Dòng rời khỏi tab đang lọc (ví dụ đóng một báo cáo trong tab "open").
+      const stillVisible = status === filter;
+      const counts = get().adminCounts;
+      set({
+        adminReports: stillVisible
+          ? before.map((report) => (report.id === reportId ? updated : report))
+          : before.filter((report) => report.id !== reportId),
+        // Cộng/trừ đúng chênh lệch: đổi sang chính trạng thái cũ không được đếm thêm.
+        adminCounts:
+          counts === null || previous === undefined || previous.status === status
+            ? counts
+            : {
+                ...counts,
+                [previous.status]: Math.max(0, counts[previous.status] - 1),
+                [status]: counts[status] + 1,
+              },
+        error: null,
+      });
+      // Báo cáo không nằm trong trang đang giữ (vừa đổi từ tab khác) → đồng bộ lại.
+      if (previous === undefined) await get().loadAdminReports();
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
       return false;
     }
   },

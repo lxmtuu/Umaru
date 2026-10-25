@@ -1,4 +1,6 @@
 import type {
+  AdminReport,
+  AdminReportPage,
   Channel,
   ChannelOverwrite,
   DmChannelSummary,
@@ -8,6 +10,7 @@ import type {
   MessageSearchHit,
   ReportInput,
   ReportResult,
+  ReportStatus,
   ReadState,
   Role,
   User,
@@ -185,6 +188,32 @@ export class UmaruApi {
     return this.request<ReportResult>(`${API_PREFIX}/reports`, {
       method: "POST",
       body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * Người vận hành nền tảng: xem hàng đợi báo cáo vi phạm.
+   * Thiếu quyền → `ApiError` 403 (client ẩn lối vào, nhưng quyền luôn kiểm ở server).
+   */
+  getAdminStatus(): Promise<{ admin: boolean }> {
+    return this.request<{ admin: boolean }>(`${API_PREFIX}/admin/status`);
+  }
+
+  listAdminReports(
+    options: { status?: ReportStatus; before?: string; limit?: number } = {},
+  ): Promise<AdminReportPage> {
+    const params = new URLSearchParams();
+    if (options.status !== undefined) params.set("status", options.status);
+    if (options.before !== undefined) params.set("before", options.before);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<AdminReportPage>(`${API_PREFIX}/admin/reports${query}`);
+  }
+
+  setReportStatus(reportId: string, status: ReportStatus): Promise<AdminReport> {
+    return this.request<AdminReport>(`${API_PREFIX}/admin/reports/${reportId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
     });
   }
 

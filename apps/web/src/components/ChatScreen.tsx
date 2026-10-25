@@ -583,6 +583,16 @@ export function ChatScreen() {
               >
                 {locale === "en" ? "EN" : "VI"}
               </button>
+              {state.admin === true && (
+                <a
+                  href="/admin/reports"
+                  title={t("adminReports")}
+                  aria-label={t("adminReports")}
+                  className="rounded px-1.5 py-0.5 text-[11px] text-amber-300/80 hover:bg-white/5 hover:text-amber-200"
+                >
+                  ⚑
+                </a>
+              )}
               <button
                 onClick={() =>
                   void (state.blocksOpen ? state.closeBlocks() : state.openBlocks())

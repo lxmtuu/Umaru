@@ -178,3 +178,39 @@ export interface BlockedUser {
   displayName: string;
   avatarUrl: string | null;
 }
+
+/** Người liên quan tới một báo cáo (chỉ admin thấy). */
+export interface ReportParty {
+  userId: Snowflake;
+  username: string;
+  displayName: string;
+}
+
+/**
+ * Một dòng trong hàng đợi báo cáo của admin.
+ *
+ * `snapshotContent` là bản sao nội dung tin **tại thời điểm báo cáo** — tin có
+ * thể đã bị sửa/xoá sau đó. Không chứa email hay thông tin đăng nhập của ai.
+ */
+export interface AdminReport {
+  id: Snowflake;
+  status: ReportStatus;
+  reason: ReportReason;
+  details: string | null;
+  snapshotContent: string | null;
+  messageId: Snowflake | null;
+  channelId: Snowflake | null;
+  channelName: string | null;
+  guildId: Snowflake | null;
+  guildName: string | null;
+  reporter: ReportParty;
+  target: ReportParty;
+  createdAt: string;
+}
+
+/** Kèm số lượng theo từng trạng thái để UI hiện tab mà không phải gọi thêm. */
+export interface AdminReportPage {
+  reports: AdminReport[];
+  counts: Record<ReportStatus, number>;
+  hasMore: boolean;
+}

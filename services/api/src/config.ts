@@ -34,7 +34,25 @@ export interface Config {
    * chưa có SMTP. Production mặc định TẮT — bật sẽ cho phép chiếm tài khoản.
    */
   emailVerificationEcho: boolean;
+  /**
+   * Ai được xem hàng đợi báo cáo vi phạm (`/admin/reports`).
+   *
+   * `ADMIN_USER_IDS` = danh sách snowflake, `ADMIN_USERNAMES` = danh sách
+   * username, phân tách bằng dấu phẩy. Để trống = **không ai** là admin (an
+   * toàn mặc định: quên cấu hình thì đóng, không mở nhầm).
+   */
+  adminUserIds: string[];
+  adminUsernames: string[];
   logger: boolean;
+}
+
+/** Tách danh sách phân tách bằng dấu phẩy, bỏ khoảng trắng và phần tử rỗng. */
+function splitList(raw: string | undefined): string[] {
+  if (raw === undefined) return [];
+  return raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
 }
 
 const DEFAULT_DEV_DATABASE_URL = "postgres://umaru:umaru@127.0.0.1:55432/umaru";
@@ -76,6 +94,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     emailVerificationResendCooldownSec: Number(
       env.EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC ?? "60",
     ),
+    adminUserIds: splitList(env.ADMIN_USER_IDS),
+    adminUsernames: splitList(env.ADMIN_USERNAMES).map((name) => name.toLowerCase()),
     emailVerificationEcho: env.EMAIL_VERIFICATION_ECHO
       ? env.EMAIL_VERIFICATION_ECHO !== "0"
       : !isProduction,

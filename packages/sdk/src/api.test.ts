@@ -342,4 +342,38 @@ describe("UmaruApi", () => {
     expect(calls[0]?.url).toBe("/api/v1/users/@me/blocks");
     expect(blocks).toHaveLength(1);
   });
+
+  it("listAdminReports dựng query status/before/limit và bỏ tham số không dùng", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { reports: [] } });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    await api.listAdminReports({ status: "open", limit: 50 });
+    await api.listAdminReports();
+
+    expect(calls[0]?.url).toBe("/api/v1/admin/reports?status=open&limit=50");
+    expect(calls[1]?.url).toBe("/api/v1/admin/reports");
+  });
+
+  it("setReportStatus gửi PATCH JSON và trả báo cáo đã cập nhật", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 200,
+      body: { id: "7", status: "closed" },
+    });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    const result = await api.setReportStatus("7", "closed");
+
+    expect(calls[0]?.url).toBe("/api/v1/admin/reports/7");
+    expect(calls[0]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ status: "closed" });
+    expect(result.status).toBe("closed");
+  });
+
+  it("getAdminStatus ném ApiError 403 khi không đủ quyền", async () => {
+    const { fetchImpl } = fakeFetch({ status: 403, body: {} });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+    const error = await api.getAdminStatus().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(403);
+  });
 });
