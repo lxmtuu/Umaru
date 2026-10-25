@@ -8,6 +8,8 @@ export interface User {
   displayName: string;
   avatarUrl: string | null;
   status: PresenceStatus;
+  /** Đã xác thực email chưa (client hiện nhắc khi còn `false`). */
+  emailVerified: boolean;
   createdAt: string; // ISO-8601
 }
 

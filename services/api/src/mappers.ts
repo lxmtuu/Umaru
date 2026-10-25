@@ -68,6 +68,7 @@ export function mapUser(row: UserRow, status: PresenceStatus = "offline"): User 
     displayName: row.display_name,
     avatarUrl: row.avatar_url,
     status,
+    emailVerified: row.email_verified_at !== null,
     createdAt: row.created_at.toISOString(),
   };
 }

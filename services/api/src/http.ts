@@ -19,6 +19,8 @@ export const forbidden = (message = "Không có quyền") =>
 export const notFound = (message = "Không tìm thấy") =>
   new HttpError(404, "NOT_FOUND", message);
 export const conflict = (message: string) => new HttpError(409, "CONFLICT", message);
+export const tooManyRequests = (message: string) =>
+  new HttpError(429, "TOO_MANY_REQUESTS", message);
 
 export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((error, _request, reply) => {

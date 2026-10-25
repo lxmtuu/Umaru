@@ -17,6 +17,7 @@ import { ApiError, GatewayClient, type GatewayState } from "@umaru/sdk";
 import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
 import { translate } from "./i18n.js";
+import { readVerificationToken, withoutVerificationToken } from "./verification.js";
 import {
   api,
   authedApi,
@@ -31,6 +32,12 @@ export type Screen = "boot" | "auth" | "chat";
 
 /** Phạm vi tìm kiếm: kênh đang mở, hoặc toàn server đang mở. */
 export type SearchScope = "channel" | "guild";
+
+/** Thông báo ngắn hiển thị trên đầu khung chat. */
+export interface Banner {
+  kind: "success" | "error";
+  text: string;
+}
 
 interface TypingEntry {
   userId: string;
@@ -88,6 +95,8 @@ interface ChatState {
   presence: Record<string, PresenceStatus>;
   error: string | null;
   notice: string | null;
+  /** Thông báo một dòng (xác thực email, gửi lại mail...) — tự tắt được. */
+  banner: Banner | null;
   busy: boolean;
 
   boot(): Promise<void>;
@@ -180,6 +189,11 @@ interface ChatState {
     targetType: "role" | "member",
     targetId: string,
   ): Promise<boolean>;
+  /** Gửi lại mail xác thực; ở dev có token echo thì xác thực luôn. */
+  resendVerification(): Promise<void>;
+  /** Xác thực email bằng token trong link (`?verifyToken=...`). */
+  verifyEmailToken(token: string): Promise<boolean>;
+  clearBanner(): void;
   notifyTyping(): void;
   clearNotice(): void;
   clearError(): void;
@@ -242,6 +256,7 @@ const initialState = {
   presence: {},
   error: null,
   notice: null,
+  banner: null,
   busy: false,
 };
 
@@ -249,6 +264,16 @@ export const useChat = create<ChatState>()((set, get) => ({
   ...initialState,
 
   async boot() {
+    // Link xác thực email có thể mở ở tab chưa đăng nhập → xử lý trước khi
+    // quyết định vào app hay vào màn đăng nhập.
+    if (typeof window !== "undefined") {
+      const token = readVerificationToken(window.location.search);
+      if (token !== null) {
+        // Xoá token khỏi URL ngay, kể cả khi xác thực lỗi.
+        window.history.replaceState({}, "", withoutVerificationToken(window.location.href));
+        await get().verifyEmailToken(token);
+      }
+    }
     if (getAccessToken() === null) {
       if (getRefreshToken() !== null && (await refreshSession())) {
         return get().startSession();
@@ -1146,6 +1171,58 @@ export const useChat = create<ChatState>()((set, get) => ({
     }
   },
 
+  async resendVerification() {
+    try {
+      const result = await authedApi.resendVerification();
+      // Dev không có SMTP: server trả token để xác thực luôn, khỏi phải mở log.
+      if (result.devVerificationToken !== undefined) {
+        await get().verifyEmailToken(result.devVerificationToken);
+        return;
+      }
+      set({
+        banner: { kind: "success", text: translate("verificationResent") },
+        error: null,
+      });
+    } catch (error) {
+      const apiError = error instanceof ApiError ? error : null;
+      set({
+        error: describeError(error),
+        banner:
+          apiError?.status === 429
+            ? { kind: "error", text: apiError.message }
+            : apiError?.status === 409
+              ? { kind: "success", text: translate("emailAlreadyVerified") }
+              : null,
+      });
+      if (apiError?.status === 409) {
+        // Trạng thái thật đã đổi ở server (tab khác vừa xác thực) — đọc lại.
+        await get().startSession().catch(() => undefined);
+      }
+    }
+  },
+  async verifyEmailToken(token) {
+    try {
+      const { user } = await api.verifyEmail(token);
+      set({
+        me: get().me === null ? get().me : { ...get().me!, emailVerified: user.emailVerified },
+        banner: {
+          kind: "success",
+          text: user.emailVerified ? translate("emailVerified") : translate("emailVerifiedFailed"),
+        },
+        error: null,
+      });
+      return user.emailVerified;
+    } catch (error) {
+      set({
+        banner: { kind: "error", text: translate("emailVerifiedFailed") },
+        error: describeError(error),
+      });
+      return false;
+    }
+  },
+  clearBanner() {
+    set({ banner: null });
+  },
   notifyTyping() {
     const channelId = get().activeChannelId;
     if (channelId === null) return;

@@ -19,6 +19,21 @@ export interface Config {
   uploadsDir: string;
   /** Trần kích thước một file — 10MB theo ROADMAP §1.4 (free tier). */
   maxUploadBytes: number;
+  /** `SMTP_URL` (vd `smtps://user:pass@smtp.example.com:465`). Bỏ trống = ghi mail ra log (dev). */
+  smtpUrl: string | null;
+  /** Địa chỉ gửi, hiện trong From của mail xác thực. */
+  mailFrom: string;
+  /** Gốc của web app — dùng để dựng link trong mail. */
+  publicWebUrl: string;
+  /** Hạn của link xác thực email. */
+  emailVerificationTtlHours: number;
+  /** Khoảng cách tối thiểu giữa hai lần gửi lại cho cùng một tài khoản. */
+  emailVerificationResendCooldownSec: number;
+  /**
+   * Trả token xác thực thẳng trong response (dev/test) để xác thực được khi
+   * chưa có SMTP. Production mặc định TẮT — bật sẽ cho phép chiếm tài khoản.
+   */
+  emailVerificationEcho: boolean;
   logger: boolean;
 }
 
@@ -54,6 +69,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     uploadsDir:
       env.UPLOADS_DIR ?? fileURLToPath(new URL("../.data/uploads/", import.meta.url)),
     maxUploadBytes: Number(env.MAX_UPLOAD_BYTES ?? String(10 * 1024 * 1024)),
+    smtpUrl: env.SMTP_URL ?? null,
+    mailFrom: env.MAIL_FROM ?? "Umaru <no-reply@umaru.local>",
+    publicWebUrl: env.PUBLIC_WEB_URL ?? "http://localhost:5173",
+    emailVerificationTtlHours: Number(env.EMAIL_VERIFICATION_TTL_HOURS ?? "24"),
+    emailVerificationResendCooldownSec: Number(
+      env.EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC ?? "60",
+    ),
+    emailVerificationEcho: env.EMAIL_VERIFICATION_ECHO
+      ? env.EMAIL_VERIFICATION_ECHO !== "0"
+      : !isProduction,
     logger: env.NODE_ENV !== "test" && env.LOG_LEVEL !== "silent",
   };
 }

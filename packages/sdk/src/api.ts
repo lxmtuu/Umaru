@@ -45,6 +45,18 @@ export interface AuthResult {
   expiresIn: number;
 }
 
+/** Kết quả đăng ký: như `AuthResult`, kèm dấu hiệu đã gửi mail xác thực. */
+export interface RegisterResult extends AuthResult {
+  emailVerificationSent?: boolean;
+  /** Chỉ có ở dev/test (`EMAIL_VERIFICATION_ECHO`) — production không trả về. */
+  devVerificationToken?: string;
+}
+
+export interface ResendVerificationResult {
+  sent: boolean;
+  devVerificationToken?: string;
+}
+
 export interface RegisterInput {
   username: string;
   displayName: string;
@@ -110,8 +122,8 @@ export class UmaruApi {
 
   // ---------- auth ----------
 
-  register(input: RegisterInput): Promise<AuthResult> {
-    return this.request<AuthResult>(`${API_PREFIX}/auth/register`, {
+  register(input: RegisterInput): Promise<RegisterResult> {
+    return this.request<RegisterResult>(`${API_PREFIX}/auth/register`, {
       method: "POST",
       body: JSON.stringify(input),
     });
@@ -128,6 +140,21 @@ export class UmaruApi {
     return this.request<AuthResult>(`${API_PREFIX}/auth/refresh`, {
       method: "POST",
       body: JSON.stringify({ refreshToken }),
+    });
+  }
+
+  /** Xác thực email bằng token trong link (không cần đăng nhập). */
+  verifyEmail(token: string): Promise<{ user: User }> {
+    return this.request<{ user: User }>(`${API_PREFIX}/auth/verify-email`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  }
+
+  /** Gửi lại mail xác thực (cần đăng nhập; server có cooldown). */
+  resendVerification(): Promise<ResendVerificationResult> {
+    return this.request<ResendVerificationResult>(`${API_PREFIX}/auth/verify-email/resend`, {
+      method: "POST",
     });
   }
 

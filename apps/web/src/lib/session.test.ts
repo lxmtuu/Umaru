@@ -46,6 +46,7 @@ const AUTH: AuthResult = {
     displayName: "Demo",
     avatarUrl: null,
     status: "offline",
+    emailVerified: true,
     createdAt: new Date().toISOString(),
   },
   accessToken: "access-token-1",

@@ -2,6 +2,7 @@ import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerAuthRoutes } from "./auth/routes.js";
+import { createMailer, type Mailer } from "./mail.js";
 import { createTokenService, type TokenService } from "./auth/tokens.js";
 import type { Config } from "./config.js";
 import type { Pool } from "./db.js";
@@ -20,12 +21,15 @@ import { MAX_FILES_PER_MESSAGE } from "./uploads/storage.js";
 export interface AppDeps {
   config: Config;
   pool: Pool;
+  /** Thay bằng hộp thư trong bộ nhớ khi test; mặc định suy ra từ `config.smtpUrl`. */
+  mailer?: Mailer;
 }
 
 export interface BuiltApp {
   app: FastifyInstance;
   hub: GatewayHub;
   tokens: TokenService;
+  mailer: Mailer;
 }
 
 export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
@@ -51,6 +55,8 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   registerErrorHandler(app);
 
   const tokens = createTokenService(config.jwtSecret, config.accessTokenTtlSec);
+  // Chưa có SMTP_URL → ghi mail ra log để dev tự bấm link (xem mail.ts).
+  const mailer = deps.mailer ?? createMailer(config, (line) => app.log.info(line));
   const hub = new GatewayHub({ pool, config, tokens });
 
   /**
@@ -75,7 +81,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
 
   await app.register(
     async (api) => {
-      registerAuthRoutes(api, { pool, tokens, config });
+      registerAuthRoutes(api, { pool, tokens, config, mailer });
       registerGuildRoutes(api, { pool, config, tokens, publisher: hub });
       registerMessageRoutes(api, { pool, config, tokens, publisher: hub });
       registerOverwriteRoutes(api, { pool, config, tokens, publisher: hub });
@@ -92,5 +98,5 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     hub.dispose();
   });
 
-  return { app, hub, tokens };
+  return { app, hub, tokens, mailer };
 }

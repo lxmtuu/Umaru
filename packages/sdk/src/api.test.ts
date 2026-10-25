@@ -257,4 +257,52 @@ describe("UmaruApi", () => {
 
     expect(calls[0]?.url).toBe("/api/v1/guilds/7/messages/search?q=abc");
   });
+
+  it("verifyEmail gửi POST token tới /auth/verify-email", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { user: { id: "1" } } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const result = await api.verifyEmail("tok-abc");
+
+    expect(calls[0]?.url).toBe("/api/v1/auth/verify-email");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ token: "tok-abc" });
+    expect(result.user).toEqual({ id: "1" });
+  });
+
+  it("resendVerification trả devVerificationToken khi server echo", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 202,
+      body: { sent: true, devVerificationToken: "tok-dev" },
+    });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+    const result = await api.resendVerification();
+
+    expect(calls[0]?.url).toBe("/api/v1/auth/verify-email/resend");
+    expect(result).toEqual({ sent: true, devVerificationToken: "tok-dev" });
+  });
+
+  it("register trả emailVerificationSent kèm token dev", async () => {
+    const { fetchImpl } = fakeFetch({
+      status: 201,
+      body: {
+        user: { id: "1" },
+        accessToken: "a",
+        refreshToken: "r",
+        tokenType: "Bearer",
+        expiresIn: 900,
+        emailVerificationSent: true,
+        devVerificationToken: "tok-1",
+      },
+    });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const result = await api.register({
+      username: "an",
+      displayName: "An",
+      email: "an@example.com",
+      password: "mat-khau-123",
+    });
+
+    expect(result.emailVerificationSent).toBe(true);
+    expect(result.devVerificationToken).toBe("tok-1");
+  });
 });

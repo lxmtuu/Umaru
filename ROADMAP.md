@@ -43,7 +43,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 
 | Chức năng | Mô tả | ƯU TIÊN |
 |-----------|-------|---------|
-| Đăng ký/đăng nhập email + xác thực email | Credential cơ bản, gửi mail xác minh | P0 |
+| Đăng ký/đăng nhập email + xác thực email | Credential cơ bản, gửi mail xác minh — ✅ đã có (SMTP qua `SMTP_URL`, dev ghi mail ra log) | P0 |
 | Đăng nhập OAuth2 (Google, Apple, GitHub...) | Giảm ma sát đăng ký | P1 |
 | Username + Display name (hệ thống mới, không còn `#0001`) | Discord đã bỏ discriminator | P0 |
 | Avatar, banner, bio, pronouns | Hồ sơ hiển thị | P1 |

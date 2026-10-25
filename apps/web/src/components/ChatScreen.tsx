@@ -636,6 +636,36 @@ export function ChatScreen() {
           </button>
         )}
 
+        {/* Kết quả xác thực email / gửi lại mail — tự đóng được. */}
+        {state.banner !== null && (
+          <button
+            onClick={() => state.clearBanner()}
+            role="status"
+            className={`border-b px-4 py-1.5 text-left text-xs ${
+              state.banner.kind === "success"
+                ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
+                : "border-rose-400/20 bg-rose-400/10 text-rose-200"
+            }`}
+          >
+            {state.banner.text}
+            <span className="ml-2 text-[11px] opacity-70">({t("dismiss")})</span>
+          </button>
+        )}
+
+        {/* Nhắc xác thực email: chỉ hiện khi đã đăng nhập mà email chưa xác thực. */}
+        {state.me !== null && !state.me.emailVerified && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-amber-400/20 bg-amber-400/10 px-4 py-1.5 text-xs text-amber-200">
+            <span aria-hidden>✉</span>
+            <span className="flex-1">{t("emailUnverified")}</span>
+            <button
+              onClick={() => void state.resendVerification()}
+              className="rounded border border-amber-300/40 px-2 py-0.5 font-medium hover:bg-amber-300/10"
+            >
+              {t("resendVerification")}
+            </button>
+          </div>
+        )}
+
         {state.searchOpen ? (
           <SearchPanel
             query={state.searchQuery}
