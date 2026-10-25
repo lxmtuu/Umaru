@@ -105,6 +105,13 @@ interface ChatState {
   searchHasMore: boolean;
   /** Tin cần cuộn tới và tô sáng sau khi nhảy từ kết quả tìm kiếm. */
   highlightMessageId: string | null;
+  /** Panel "Tin đã ghim" của kênh đang mở. */
+  pinsOpen: boolean;
+  /** Tin ghim của `pinsChannelId`; null = chưa tải. */
+  pins: Message[] | null;
+  pinsLoading: boolean;
+  /** Kênh sở hữu danh sách `pins` — đổi kênh là bỏ dữ liệu cũ. */
+  pinsChannelId: string | null;
   /** Panel "Người đã chặn" đang mở. */
   blocksOpen: boolean;
   /** Danh sách người đã chặn; null = chưa tải lần nào. */
@@ -225,6 +232,13 @@ interface ChatState {
     targetType: "role" | "member",
     targetId: string,
   ): Promise<boolean>;
+  /** Mở/đóng panel tin ghim của kênh đang mở (mở là tải lại). */
+  openPins(): Promise<void>;
+  closePins(): void;
+  /** Ghim hoặc bỏ ghim một tin; danh sách ghim cập nhật tại chỗ. */
+  togglePin(messageId: string): Promise<boolean>;
+  /** Nhảy tới một tin ghim trong kênh đang mở (tải thêm trang cũ nếu cần). */
+  jumpToPinnedMessage(messageId: string): Promise<void>;
   /** Mở panel người đã chặn + tải lại danh sách. */
   openBlocks(): Promise<void>;
   closeBlocks(): void;
@@ -276,6 +290,8 @@ export const ADMIN_PAGE_SIZE = 25;
 /** Số trang tin nhắn tải thêm tối đa khi nhảy tới một kết quả tìm kiếm cũ. */
 const SEARCH_JUMP_MAX_PAGES = 8;
 /** Tránh bắn POST /read theo từng tin khi kênh đang mở nhận tin liên tục. */
+/** Đóng panel ghim + xoá dữ liệu của kênh trước (tránh hiện nhầm ghim khi đổi kênh). */
+const CLOSED_PINS = { pinsOpen: false, pins: null, pinsChannelId: null } as const;
 const ackedAt = new Map<string, number>();
 const ACK_THROTTLE_MS = 3_000;
 
@@ -317,6 +333,10 @@ const initialState = {
   searchLoading: false,
   searchHasMore: false,
   highlightMessageId: null,
+  pinsOpen: false,
+  pins: null,
+  pinsLoading: false,
+  pinsChannelId: null,
   blocksOpen: false,
   blocks: null,
   blocksLoading: false,
@@ -368,6 +388,77 @@ export function applyProfile(state: ChatState, profile: ProfileFields): Partial<
         : dm,
     ),
   };
+}
+
+/**
+ * Đảm bảo tin `messageId` đã có trong bộ nhớ của kênh, rồi cuộn tới và tô sáng.
+ * Kết quả tìm kiếm / tin ghim có thể cũ hơn trang tin đang giữ → lật thêm trang
+ * (có giới hạn) thay vì quét cả kênh.
+ */
+async function revealMessage(
+  get: () => ChatState,
+  set: (partial: Partial<ChatState>) => void,
+  channelId: string,
+  messageId: string,
+): Promise<void> {
+  for (let page = 0; page <= SEARCH_JUMP_MAX_PAGES; page += 1) {
+    const loaded = get().messages[channelId];
+    if (loaded === undefined) {
+      await get().loadMessages(channelId);
+      continue;
+    }
+    if (loaded.some((message) => message.id === messageId)) break;
+    if (loaded.length === 0) break;
+    try {
+      const older = await authedApi.listMessages(channelId, { before: loaded[0]!.id as string });
+      if (older.length === 0) break;
+      set({
+        messages: {
+          ...get().messages,
+          [channelId]: [...[...older].reverse(), ...loaded],
+        },
+      });
+    } catch (error) {
+      set({ error: describeError(error) });
+      break;
+    }
+  }
+
+  set({ highlightMessageId: messageId });
+  // Cuộn sau khi React đã vẽ lại danh sách tin, rồi bỏ tô sáng.
+  setTimeout(() => {
+    document.getElementById(`message-${messageId}`)?.scrollIntoView({ block: "center" });
+  }, 0);
+  setTimeout(() => {
+    if (get().highlightMessageId === messageId) set({ highlightMessageId: null });
+  }, 2_500);
+}
+
+/** Cập nhật một tin đã có trong state + danh sách ghim (nếu đang mở đúng kênh). */
+export function patchMessage(
+  state: ChatState,
+  message: { id: string; channelId: string; pinned: boolean },
+): Partial<ChatState> {
+  const channelId = message.channelId;
+  const list = state.messages[channelId];
+  const messages =
+    list === undefined
+      ? state.messages
+      : {
+          ...state.messages,
+          [channelId]: list.map((item) =>
+            item.id === message.id ? { ...item, pinned: message.pinned } : item,
+          ),
+        };
+
+  let pins = state.pins;
+  if (pins !== null && state.pinsChannelId === channelId) {
+    const without = pins.filter((item) => item.id !== message.id);
+    const full = list?.find((item) => item.id === message.id);
+    pins = message.pinned && full !== undefined ? [full, ...without] : without;
+  }
+
+  return { messages, pins };
 }
 
 export const useChat = create<ChatState>()((set, get) => ({
@@ -582,6 +673,9 @@ export const useChat = create<ChatState>()((set, get) => ({
           current.mentionItems === null
             ? null
             : current.mentionItems.filter((item) => item.message.id !== data.id),
+        // Panel ghim có thể đang mở và chứa tin vừa bị xoá.
+        pins:
+          current.pins === null ? null : current.pins.filter((item) => item.id !== data.id),
       });
     });
 
@@ -603,6 +697,11 @@ export const useChat = create<ChatState>()((set, get) => ({
     // Avatar/tên đổi → mọi nơi đang hiển thị người đó cập nhật ngay, không F5.
     client.on("USER_UPDATE", (data) => {
       set(applyProfile(get(), data.user));
+    });
+
+    // Ghim/bỏ ghim → chip 📌 và panel ghim đổi ngay ở mọi client.
+    client.on("MESSAGE_PIN_UPDATE", (data) => {
+      set(patchMessage(get(), data));
     });
 
     client.on("PRESENCE_UPDATE", (data) => {
@@ -726,6 +825,7 @@ export const useChat = create<ChatState>()((set, get) => ({
     const channels = get().channels[guildId] ?? [];
     const channelId = pickChannel(channels, undefined);
     set({
+      ...CLOSED_PINS,
       activeGuildId: guildId,
       activeChannelId: channelId,
       mentionsOpen: false,
@@ -740,6 +840,7 @@ export const useChat = create<ChatState>()((set, get) => ({
 
   selectHome() {
     set({
+      ...CLOSED_PINS,
       activeGuildId: null,
       activeChannelId: null,
       mentionsOpen: false,
@@ -750,6 +851,7 @@ export const useChat = create<ChatState>()((set, get) => ({
 
   async selectDm(channelId) {
     set({
+      ...CLOSED_PINS,
       activeGuildId: null,
       activeChannelId: channelId,
       mentionsOpen: false,
@@ -764,6 +866,7 @@ export const useChat = create<ChatState>()((set, get) => ({
     try {
       const summary = await authedApi.createDm(recipientId);
       set({
+      ...CLOSED_PINS,
         dms: upsertDm(get().dms, summary),
         activeGuildId: null,
         activeChannelId: summary.channel.id,
@@ -780,6 +883,7 @@ export const useChat = create<ChatState>()((set, get) => ({
 
   async selectChannel(channelId) {
     set({
+      ...CLOSED_PINS,
       activeChannelId: channelId,
       mentionsOpen: false,
       settingsOpen: false,
@@ -913,40 +1017,7 @@ export const useChat = create<ChatState>()((set, get) => ({
     });
     get().markRead(channelId);
 
-    const messageId = hit.message.id as string;
-    // Kết quả cũ hơn trang tin đang giữ → lật thêm trang cho tới khi thấy tin
-    // (giới hạn số lần để không quét cả kênh chỉ vì một cú bấm).
-    for (let page = 0; page <= SEARCH_JUMP_MAX_PAGES; page += 1) {
-      const loaded = get().messages[channelId];
-      if (loaded === undefined) {
-        await get().loadMessages(channelId);
-        continue;
-      }
-      if (loaded.some((message) => message.id === messageId)) break;
-      if (loaded.length === 0) break;
-      try {
-        const older = await authedApi.listMessages(channelId, { before: loaded[0]!.id as string });
-        if (older.length === 0) break;
-        set({
-          messages: {
-            ...get().messages,
-            [channelId]: [...[...older].reverse(), ...loaded],
-          },
-        });
-      } catch (error) {
-        set({ error: describeError(error) });
-        break;
-      }
-    }
-
-    set({ highlightMessageId: messageId });
-    // Cuộn sau khi React đã vẽ lại danh sách tin, rồi bỏ tô sáng.
-    setTimeout(() => {
-      document.getElementById(`message-${messageId}`)?.scrollIntoView({ block: "center" });
-    }, 0);
-    setTimeout(() => {
-      if (get().highlightMessageId === messageId) set({ highlightMessageId: null });
-    }, 2_500);
+    await revealMessage(get, set, channelId, hit.message.id as string);
   },
   async loadMoreMentions() {
     const current = get();
@@ -1288,6 +1359,56 @@ export const useChat = create<ChatState>()((set, get) => ({
     }
   },
 
+  async openPins() {
+    const channelId = get().activeChannelId;
+    if (channelId === null) return;
+    set({
+      ...CLOSED_PINS,
+      pinsOpen: true,
+      pinsChannelId: channelId,
+      pinsLoading: true,
+      // Mỗi lúc chỉ một panel chiếm khung chính.
+      mentionsOpen: false,
+      searchOpen: false,
+      settingsOpen: false,
+      blocksOpen: false,
+      channelSettingsChannelId: null,
+    });
+    try {
+      const pins = await authedApi.listPinnedMessages(channelId);
+      // Người dùng đổi kênh trong lúc chờ → bỏ kết quả cũ.
+      if (get().pinsChannelId !== channelId) return;
+      set({ pins, pinsLoading: false });
+    } catch (error) {
+      set({ pinsLoading: false, error: describeError(error) });
+    }
+  },
+  closePins() {
+    set({ pinsOpen: false });
+  },
+  async togglePin(messageId) {
+    const channelId = get().activeChannelId;
+    if (channelId === null) return false;
+    const current = (get().messages[channelId] ?? []).find((message) => message.id === messageId);
+    const pinned = current?.pinned ?? false;
+    try {
+      const updated = pinned
+        ? await authedApi.unpinMessage(messageId)
+        : await authedApi.pinMessage(messageId);
+      // Cập nhật ngay; MESSAGE_PIN_UPDATE của chính mình về sau ghi đè cùng giá trị.
+      set(patchMessage(get(), updated));
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+  async jumpToPinnedMessage(messageId) {
+    const channelId = get().activeChannelId;
+    if (channelId === null) return;
+    set({ pinsOpen: false });
+    await revealMessage(get, set, channelId, messageId);
+  },
   async openBlocks() {
     set({
       blocksOpen: true,

@@ -152,6 +152,12 @@ export interface GatewayEventMap {
     editedAt: string | null;
   };
   MESSAGE_DELETE: { id: Snowflake; channelId: Snowflake };
+  /**
+   * Ghim/bỏ ghim. Tách khỏi `MESSAGE_UPDATE` vì sửa nội dung và ghim là hai
+   * thao tác khác quyền nhau (sửa: tác giả; ghim: `MANAGE_MESSAGES`), và client
+   * cần phân biệt để chỉ cập nhật đúng trường `pinned`.
+   */
+  MESSAGE_PIN_UPDATE: { id: Snowflake; channelId: Snowflake; pinned: boolean };
   TYPING_START: { channelId: Snowflake; userId: Snowflake; timestamp: number };
   PRESENCE_UPDATE: { userId: Snowflake; status: PresenceStatus };
   CHANNEL_CREATE: Channel;

@@ -643,6 +643,8 @@ export function ChatScreen() {
           <h1 className="truncate text-sm font-semibold">
             {state.blocksOpen
               ? `🛡 ${t("blockedUsers")}`
+              : state.pinsOpen
+              ? `📌 ${t("pinnedMessages")}`
               : state.searchOpen
               ? `🔍 ${t("search")}`
               : state.channelSettingsChannelId !== null
@@ -675,6 +677,19 @@ export function ChatScreen() {
                 }`}
               >
                 ⚙
+              </button>
+            )}
+            {channelId !== null && (
+              <button
+                onClick={() => void (state.pinsOpen ? state.closePins() : state.openPins())}
+                title={t("pinnedMessages")}
+                aria-label={t("pinnedMessages")}
+                aria-pressed={state.pinsOpen}
+                className={`rounded px-1 hover:bg-white/5 hover:text-slate-100 ${
+                  state.pinsOpen ? "bg-white/10 text-slate-100" : ""
+                }`}
+              >
+                📌
               </button>
             )}
             <button
@@ -746,6 +761,19 @@ export function ChatScreen() {
             blocks={state.blocks}
             loading={state.blocksLoading}
             onUnblock={(userId) => void state.unblockUser(userId)}
+          />
+        ) : state.pinsOpen ? (
+          <PinsPanel
+            pins={state.pins}
+            loading={state.pinsLoading}
+            locale={locale}
+            emptyLabel={t("noPins")}
+            loadingLabel={t("loading")}
+            hintLabel={t("pinLimitHint")}
+            unpinLabel={t("unpinMessage")}
+            canUnpin={activeDm !== null || canManageMessages(channelId)}
+            onSelect={(message) => void state.jumpToPinnedMessage(message.id as string)}
+            onUnpin={(message) => void state.togglePin(message.id as string)}
           />
         ) : state.searchOpen ? (
           <SearchPanel
@@ -855,6 +883,14 @@ export function ChatScreen() {
                               {t("you")}
                             </span>
                           )}
+                          {message.pinned && (
+                            <span
+                              title={t("pinnedChip")}
+                              className="rounded bg-amber-300/10 px-1 text-[10px] text-amber-200"
+                            >
+                              📌 {t("pinnedChip")}
+                            </span>
+                          )}
                           <time className="text-[11px] text-slate-500">
                             {new Date(message.createdAt).toLocaleTimeString(locale, {
                               hour: "2-digit",
@@ -906,8 +942,22 @@ export function ChatScreen() {
                               </>
                             )}
                           </span>
-                          {canModerate && !editing && (
+                          {(canModerate || activeDm !== null) && !editing && (
                             <span className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => void state.togglePin(message.id as string)}
+                                title={message.pinned ? t("unpinMessage") : t("pinMessage")}
+                                aria-label={message.pinned ? t("unpinMessage") : t("pinMessage")}
+                                aria-pressed={message.pinned}
+                                className={`rounded px-1 text-[11px] hover:bg-white/10 ${
+                                  message.pinned
+                                    ? "text-amber-300"
+                                    : "text-slate-400 hover:text-slate-100"
+                                }`}
+                              >
+                                {message.pinned ? "📌" : "📍"}
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => startEdit(message)}
@@ -1359,6 +1409,123 @@ function UnreadBadge({
     >
       {unread > 99 ? "99+" : unread}
     </span>
+  );
+}
+
+/**
+ * Panel danh sách tin ghim của kênh đang mở.
+ *
+ * Tên người gửi/avatar tra từ `useChat` (không truyền xuống như MentionsPanel)
+ * vì mỗi dòng chỉ là `Message` — tránh phải nhân bản bảng tra member ở đây.
+ */
+function PinsPanel({
+  pins,
+  loading,
+  locale,
+  emptyLabel,
+  loadingLabel,
+  hintLabel,
+  unpinLabel,
+  canUnpin,
+  onSelect,
+  onUnpin,
+}: {
+  pins: Message[] | null;
+  loading: boolean;
+  locale: string;
+  emptyLabel: string;
+  loadingLabel: string;
+  hintLabel: string;
+  unpinLabel: string;
+  canUnpin: boolean;
+  onSelect: (message: Message) => void;
+  onUnpin: (message: Message) => void;
+}) {
+  const state = useChat();
+  const me = state.me;
+  const byId = useMemo(() => {
+    const map = new Map<string, GuildMemberSummary>();
+    for (const list of Object.values(state.members)) {
+      for (const member of list) map.set(member.userId as string, member);
+    }
+    for (const dm of state.dms) map.set(dm.recipient.userId as string, dm.recipient);
+    return map;
+  }, [state.members, state.dms]);
+
+  if (pins === null || pins.length === 0) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm text-slate-500">
+        <span>{pins === null && loading ? loadingLabel : emptyLabel}</span>
+        <span className="text-[11px] text-slate-600">{hintLabel}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto py-2">
+      {pins.map((message) => {
+        const mine = message.authorId === me?.id;
+        const author = mine
+          ? {
+              displayName: me?.displayName ?? "",
+              avatarUrl: me?.avatarUrl ?? null,
+            }
+          : {
+              displayName:
+                byId.get(message.authorId as string)?.displayName ??
+                `#${(message.authorId as string).slice(-4)}`,
+              avatarUrl: byId.get(message.authorId as string)?.avatarUrl ?? null,
+            };
+        return (
+          <div
+            key={message.id}
+            className="flex gap-3 px-4 py-2 hover:bg-white/[0.03]"
+          >
+            <Avatar
+              avatarUrl={author.avatarUrl}
+              name={author.displayName}
+              size="mt-0.5 size-8"
+              textClass="text-xs"
+            />
+            <button
+              type="button"
+              onClick={() => onSelect(message)}
+              className="min-w-0 flex-1 text-left"
+            >
+              <div className="flex items-baseline gap-2">
+                <span className="truncate text-sm font-semibold text-slate-100">
+                  {author.displayName}
+                </span>
+                <time className="ml-auto shrink-0 text-[11px] text-slate-500">
+                  {new Date(message.createdAt).toLocaleString(locale, {
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </time>
+              </div>
+              <p className="line-clamp-3 whitespace-pre-wrap break-words text-xs text-slate-300">
+                {message.content.length > 0
+                  ? message.content
+                  : message.attachments.map((file) => file.filename).join(", ")}
+              </p>
+            </button>
+            {canUnpin && (
+              <button
+                type="button"
+                onClick={() => onUnpin(message)}
+                title={unpinLabel}
+                aria-label={unpinLabel}
+                className="shrink-0 self-start rounded px-1 text-[11px] text-slate-400 hover:bg-white/10 hover:text-slate-100"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

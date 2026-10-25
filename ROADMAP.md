@@ -107,6 +107,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 | Nháp tin nhắn (drafts), gửi theo lịch | P2 / P3 |
 | Kho tin đã gửi (Library: ảnh, file, link) | P2 |
 | Đánh dấu chưa đọc (mark unread), tab Mentions, badge | P0 (badge), P1 (mentions inbox) |
+| Ghim tin nhắn (pin) | ✅ đã có: ghim/bỏ ghim (tối đa 50/kênh), panel tin ghim, `MESSAGE_PIN_UPDATE` realtime | P1 |
 | Giới hạn độ dài: 2000 ký tự (free) / 4000 (Nitro) | P1 |
 
 ### 1.5 Thoại & Video (Voice/Video) — *khó nhất*

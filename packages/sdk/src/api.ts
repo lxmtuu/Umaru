@@ -526,6 +526,27 @@ export class UmaruApi {
     return response.blob();
   }
 
+  /**
+   * Ghim một tin (cần `MANAGE_MESSAGES` trong server; DM ai trong cuộc cũng
+   * ghim được). Trả về tin sau khi ghim (`pinned: true`).
+   */
+  pinMessage(messageId: string): Promise<Message> {
+    return this.request<Message>(`${API_PREFIX}/messages/${messageId}/pin`, { method: "PUT" });
+  }
+
+  /** Bỏ ghim (idempotent). */
+  unpinMessage(messageId: string): Promise<Message> {
+    return this.request<Message>(`${API_PREFIX}/messages/${messageId}/pin`, {
+      method: "DELETE",
+    });
+  }
+
+  /** Danh sách tin đã ghim của kênh, mới ghim trước (tối đa 50). */
+  listPinnedMessages(channelId: string, limit?: number): Promise<Message[]> {
+    const query = limit === undefined ? "" : `?limit=${limit}`;
+    return this.request<Message[]>(`${API_PREFIX}/channels/${channelId}/pins${query}`);
+  }
+
   deleteMessage(messageId: string): Promise<void> {
     return this.request<void>(`${API_PREFIX}/messages/${messageId}`, { method: "DELETE" });
   }

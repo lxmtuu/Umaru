@@ -36,6 +36,9 @@ export interface MessageDeps {
   publisher: EventPublisher;
 }
 
+/** Trần số tin ghim mỗi kênh — giống Discord; chặn phình danh sách ghim. */
+export const MAX_PINS_PER_CHANNEL = 50;
+
 /** Throttle typing: 1 lần/8s/user/channel (spec §7). */
 const typingTimestamps = new Map<string, number>();
 const TYPING_COOLDOWN_MS = 8_000;
@@ -237,6 +240,118 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         channelId: message.channel_id as Snowflake,
       });
       return reply.code(204).send();
+    },
+  );
+
+  /**
+   * Danh sách tin đã ghim của kênh (mới ghim trước).
+   *
+   * Chỉ cần `VIEW_CHANNEL` (ai đọc được lịch sử kênh thì xem được ghim), và DM
+   * bị chặn thì trả rỗng — cùng quy tắc với danh sách tin.
+   */
+  app.get<{ Params: { channelId: string }; Querystring: { limit?: string } }>(
+    "/channels/:channelId/pins",
+    { preHandler: guard },
+    async (request, reply) => {
+      const userId = requireUserId(request);
+      await loadChannelContext(pool, userId as Snowflake, request.params.channelId);
+      if (await isDmBlocked(pool, request.params.channelId, userId)) return reply.send([]);
+
+      const limit = readLimit(request.query.limit, MAX_PINS_PER_CHANNEL);
+      const result = await pool.query<MessageRow>(
+        `SELECT id, channel_id, author_id, content, reply_to_id, pinned, created_at, edited_at
+           FROM messages
+          WHERE channel_id = $1 AND pinned
+          ORDER BY id DESC
+          LIMIT $2`,
+        [request.params.channelId, limit],
+      );
+      return reply.send(await mapMessagesWithAttachments(pool, result.rows));
+    },
+  );
+
+  /** Ghim một tin. Idempotent: ghim lại tin đã ghim vẫn 200. */
+  app.put<{ Params: { messageId: string } }>(
+    "/messages/:messageId/pin",
+    { preHandler: guard },
+    async (request, reply) => {
+      const userId = requireUserId(request);
+      const message = await loadMessage(pool, request.params.messageId);
+      // DM: hai người trong cuộc đều ghim được (giống Discord). Server: cần
+      // MANAGE_MESSAGES, nếu không thì 403 rõ ràng thay vì im lặng.
+      const context = await loadChannelContext(pool, userId as Snowflake, message.channel_id);
+      if (context.guild !== null && !hasPermission(context.permissions, Permission.MANAGE_MESSAGES)) {
+        throw forbidden("Cần quyền quản lý tin nhắn để ghim");
+      }
+      if (await isDmBlocked(pool, message.channel_id, userId)) {
+        throw forbidden("Không thể ghim tin trong cuộc trò chuyện này");
+      }
+
+      if (!message.pinned) {
+        const count = await pool.query<{ total: string }>(
+          "SELECT count(*)::text AS total FROM messages WHERE channel_id = $1 AND pinned",
+          [message.channel_id],
+        );
+        if (Number(count.rows[0]?.total ?? "0") >= MAX_PINS_PER_CHANNEL) {
+          throw badRequest(
+            `Kênh đã có ${MAX_PINS_PER_CHANNEL} tin ghim — bỏ ghim bớt trước khi ghim thêm`,
+          );
+        }
+      }
+
+      const updated = await pool.query<MessageRow>(
+        `UPDATE messages SET pinned = true
+          WHERE id = $1
+          RETURNING id, channel_id, author_id, content, reply_to_id, pinned, created_at, edited_at`,
+        [message.id],
+      );
+      const row = updated.rows[0];
+      if (row === undefined) throw notFound("Tin nhắn không tồn tại");
+
+      // Ghim lại tin đã ghim không phát lại event (tránh nhiễu cho client).
+      if (!message.pinned) {
+        publisher.publishToChannel(row.channel_id, "MESSAGE_PIN_UPDATE", {
+          id: row.id as Snowflake,
+          channelId: row.channel_id as Snowflake,
+          pinned: true,
+        });
+      }
+      const [pinned] = await mapMessagesWithAttachments(pool, [row]);
+      return reply.send(pinned);
+    },
+  );
+
+  /** Bỏ ghim. Idempotent: bỏ ghim tin chưa ghim vẫn 200. */
+  app.delete<{ Params: { messageId: string } }>(
+    "/messages/:messageId/pin",
+    { preHandler: guard },
+    async (request, reply) => {
+      const userId = requireUserId(request);
+      const message = await loadMessage(pool, request.params.messageId);
+      // Cùng quy tắc với ghim: DM ai trong cuộc cũng được, server cần MANAGE_MESSAGES.
+      const context = await loadChannelContext(pool, userId as Snowflake, message.channel_id);
+      if (context.guild !== null && !hasPermission(context.permissions, Permission.MANAGE_MESSAGES)) {
+        throw forbidden("Cần quyền quản lý tin nhắn để bỏ ghim");
+      }
+
+      const updated = await pool.query<MessageRow>(
+        `UPDATE messages SET pinned = false
+          WHERE id = $1
+          RETURNING id, channel_id, author_id, content, reply_to_id, pinned, created_at, edited_at`,
+        [message.id],
+      );
+      const row = updated.rows[0];
+      if (row === undefined) throw notFound("Tin nhắn không tồn tại");
+
+      if (message.pinned) {
+        publisher.publishToChannel(row.channel_id, "MESSAGE_PIN_UPDATE", {
+          id: row.id as Snowflake,
+          channelId: row.channel_id as Snowflake,
+          pinned: false,
+        });
+      }
+      const [unpinned] = await mapMessagesWithAttachments(pool, [row]);
+      return reply.send(unpinned);
     },
   );
 

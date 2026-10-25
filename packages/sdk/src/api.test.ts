@@ -279,6 +279,27 @@ describe("UmaruApi", () => {
     expect(blob.size).toBe(2);
   });
 
+  it("pinMessage/unpinMessage gọi đúng method + đường dẫn", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { id: "5", pinned: true } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+
+    const pinned = await api.pinMessage("5");
+    expect(calls[0]?.url).toBe("/api/v1/messages/5/pin");
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(pinned.pinned).toBe(true);
+
+    await api.unpinMessage("5");
+    expect(calls[1]?.url).toBe("/api/v1/messages/5/pin");
+    expect(calls[1]?.init?.method).toBe("DELETE");
+  });
+
+  it("listPinnedMessages gọi kênh pins kèm limit", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.listPinnedMessages("42", 10);
+    expect(calls[0]?.url).toBe("/api/v1/channels/42/pins?limit=10");
+  });
+
   it("searchChannelMessages mã hoá q và cursor trong query string", async () => {
     const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
     const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
