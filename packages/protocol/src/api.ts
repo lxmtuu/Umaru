@@ -24,6 +24,45 @@ export interface UserProfile {
   avatarUrl: string | null;
 }
 
+/**
+ * Ai được mở DM với mình.
+ *
+ * - `everyone`: ai biết username cũng mở được (mặc định — giữ nguyên hành vi cũ).
+ * - `friends`: chỉ người đã kết bạn. Người lạ nhận **403** kèm lý do, không phải
+ *   404: che giấu sự tồn tại của tài khoản không phải mục tiêu (username vốn
+ *   công khai), còn nói rõ lý do giúp người ta biết phải kết bạn trước.
+ */
+export type DmPrivacy = "everyone" | "friends";
+
+export interface UserSettings {
+  dmPrivacy: DmPrivacy;
+}
+
+export interface FriendSummary {
+  user: UserProfile;
+  /** Thời điểm hai người thành bạn (ISO-8601) — danh sách sắp mới nhất trước. */
+  since: string;
+}
+
+export interface FriendRequestSummary {
+  user: UserProfile;
+  createdAt: string;
+}
+
+/**
+ * Toàn bộ trạng thái quan hệ của **chính mình** trong một lần gọi: client vẽ
+ * được cả ba tab (bạn bè / lời mời tới / lời mời đã gửi) mà không phải ghép
+ * nhiều endpoint.
+ */
+export interface FriendList {
+  dmPrivacy: DmPrivacy;
+  friends: FriendSummary[];
+  /** Người khác gửi lời mời cho mình. */
+  incoming: FriendRequestSummary[];
+  /** Mình đã gửi, đang chờ người kia đồng ý. */
+  outgoing: FriendRequestSummary[];
+}
+
 export type ChannelType = "guild_text" | "guild_voice" | "category" | "dm" | "group_dm";
 
 export interface Guild {

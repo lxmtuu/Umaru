@@ -16,6 +16,10 @@ import type {
   User,
   GuildMemberSummary,
   VoiceState,
+  FriendList,
+  FriendSummary,
+  FriendRequestSummary,
+  UserSettings,
 } from "@umaru/protocol";
 
 function buildSearchParams(query: string, options: { before?: string; limit?: number }): string {
@@ -606,6 +610,40 @@ export class UmaruApi {
     patch: { selfMute?: boolean; selfDeaf?: boolean },
   ): Promise<VoiceState> {
     return this.request<VoiceState>(`${API_PREFIX}/guilds/${guildId}/voice-state`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  /** Bạn bè + lời mời (hai chiều) + quyền riêng tư DM của mình. */
+  listFriends(): Promise<FriendList> {
+    return this.request<FriendList>(`${API_PREFIX}/users/@me/friends`);
+  }
+
+  /**
+   * Gửi lời mời kết bạn bằng `username`. Nếu người kia đã mời mình trước thì
+   * lời gọi này **đồng ý luôn** (server trả `FriendSummary` thay vì lời mời).
+   */
+  addFriend(username: string): Promise<FriendRequestSummary | FriendSummary> {
+    return this.request<FriendRequestSummary | FriendSummary>(`${API_PREFIX}/users/@me/friends`, {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    });
+  }
+
+  acceptFriendRequest(userId: string): Promise<FriendSummary> {
+    return this.request<FriendSummary>(`${API_PREFIX}/users/@me/friends/${userId}/accept`, {
+      method: "POST",
+    });
+  }
+
+  /** Huỷ kết bạn / từ chối lời mời / huỷ lời mời đã gửi (idempotent). */
+  removeFriend(userId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/friends/${userId}`, { method: "DELETE" });
+  }
+
+  updateSettings(patch: { dmPrivacy?: "everyone" | "friends" }): Promise<UserSettings> {
+    return this.request<UserSettings>(`${API_PREFIX}/users/@me/settings`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     });

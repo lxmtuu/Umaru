@@ -502,4 +502,31 @@ describe("UmaruApi", () => {
     expect(calls[2]?.init?.method).toBe("PATCH");
     expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({ selfDeaf: true });
   });
+
+  it("friends: listFriends/addFriend/accept/remove + updateSettings", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { dmPrivacy: "friends" } });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    await api.listFriends();
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/friends");
+    expect(calls[0]?.init?.method).toBeUndefined(); // GET
+
+    await api.addFriend("bob");
+    expect(calls[1]?.url).toBe("/api/v1/users/@me/friends");
+    expect(calls[1]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ username: "bob" });
+
+    await api.acceptFriendRequest("42");
+    expect(calls[2]?.url).toBe("/api/v1/users/@me/friends/42/accept");
+    expect(calls[2]?.init?.method).toBe("POST");
+
+    await api.removeFriend("42");
+    expect(calls[3]?.url).toBe("/api/v1/users/@me/friends/42");
+    expect(calls[3]?.init?.method).toBe("DELETE");
+
+    const settings = await api.updateSettings({ dmPrivacy: "friends" });
+    expect(calls[4]?.url).toBe("/api/v1/users/@me/settings");
+    expect(calls[4]?.init?.method).toBe("PATCH");
+    expect(settings.dmPrivacy).toBe("friends");
+  });
 });

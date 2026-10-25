@@ -1,4 +1,5 @@
 import type {
+  FriendList,
   VoiceState,
   Channel,
   ChannelOverwrite,
@@ -141,6 +142,13 @@ interface ChatState {
   adminLoading: boolean;
   typing: Record<string, TypingEntry[]>;
   presence: Record<string, PresenceStatus>;
+  /** Bạn bè + lời mời hai chiều + quyền riêng tư DM; `null` = chưa tải lần nào. */
+  friends: FriendList | null;
+  friendsLoading: boolean;
+  /** Ô nhập username trong panel bạn bè (giữ ở store để đổi tab không mất chữ). */
+  friendQuery: string;
+  /** Panel bạn bè đang mở (thay khung chat, giống panel người đã chặn). */
+  friendsOpen: boolean;
   /**
    * Ai đang ở phòng thoại nào (danh sách phẳng, mỗi người một phòng mỗi server).
    * Server là nguồn sự thật: mọi thay đổi đến qua `VOICE_STATE_UPDATE`.
@@ -309,6 +317,18 @@ interface ChatState {
   toggleVoiceMute(): Promise<void>;
   /** Bật/tắt tai nghe (deafen) của mình trong phòng đang ở. */
   toggleVoiceDeafen(): Promise<void>;
+  /** Mở panel bạn bè + tải lại danh sách. */
+  openFriends(): Promise<void>;
+  closeFriends(): void;
+  setFriendQuery(query: string): void;
+  /** Gửi lời mời kết bạn bằng username; trả `true` khi thành công. */
+  addFriend(username: string): Promise<boolean>;
+  /** Đồng ý lời mời; danh sách cập nhật khi server phát `FRIEND_ADD`. */
+  acceptFriend(userId: string): Promise<boolean>;
+  /** Huỷ kết bạn / từ chối lời mời / huỷ lời mời đã gửi. */
+  removeFriend(userId: string): Promise<boolean>;
+  /** Đổi ai được nhắn tin cho mình (`everyone` | `friends`). */
+  setDmPrivacy(privacy: "everyone" | "friends"): Promise<boolean>;
   notifyTyping(): void;
   clearNotice(): void;
   clearError(): void;
@@ -397,6 +417,10 @@ const initialState = {
   adminLoading: false,
   typing: {},
   presence: {},
+  friends: null,
+  friendsLoading: false,
+  friendQuery: "",
+  friendsOpen: false,
   voiceStates: [],
   error: null,
   notice: null,
@@ -817,6 +841,50 @@ export const useChat = create<ChatState>()((set, get) => ({
           ],
         };
       });
+    });
+
+    /**
+     * Quan hệ bạn bè: server là nguồn sự thật, client chỉ áp thay đổi. `FRIEND_ADD`
+     * và `FRIEND_REMOVE` phát cho **cả hai** phía nên danh sách hai bên không lệch.
+     */
+    client.on("FRIEND_REQUEST_CREATE", (request) => {
+      const current = get().friends;
+      if (current === null) return; // chưa mở panel: lần mở sẽ tải đủ
+      set({
+        friends: {
+          ...current,
+          incoming: [request, ...current.incoming.filter((r) => r.user.id !== request.user.id)],
+        },
+      });
+    });
+    client.on("FRIEND_ADD", (friend) => {
+      const current = get().friends;
+      if (current === null) return;
+      set({
+        friends: {
+          ...current,
+          friends: [friend, ...current.friends.filter((f) => f.user.id !== friend.user.id)],
+          incoming: current.incoming.filter((r) => r.user.id !== friend.user.id),
+          outgoing: current.outgoing.filter((r) => r.user.id !== friend.user.id),
+        },
+      });
+    });
+    client.on("FRIEND_REMOVE", (data) => {
+      const current = get().friends;
+      if (current === null) return;
+      set({
+        friends: {
+          ...current,
+          friends: current.friends.filter((f) => f.user.id !== data.userId),
+          incoming: current.incoming.filter((r) => r.user.id !== data.userId),
+          outgoing: current.outgoing.filter((r) => r.user.id !== data.userId),
+        },
+      });
+    });
+    client.on("USER_SETTINGS_UPDATE", (settings) => {
+      const current = get().friends;
+      if (current === null) return;
+      set({ friends: { ...current, dmPrivacy: settings.dmPrivacy } });
     });
 
     client.on("PRESENCE_UPDATE", (data) => {
@@ -1640,6 +1708,7 @@ export const useChat = create<ChatState>()((set, get) => ({
   async openBlocks() {
     set({
       blocksOpen: true,
+      friendsOpen: false,
       searchOpen: false,
       mentionsOpen: false,
       settingsOpen: false,
@@ -1927,6 +1996,73 @@ export const useChat = create<ChatState>()((set, get) => ({
       await authedApi.updateVoiceState(self.guildId, { selfDeaf: !self.selfDeaf });
     } catch (error) {
       set({ error: describeError(error) });
+    }
+  },
+  async openFriends() {
+    set({
+      friendsOpen: true,
+      blocksOpen: false,
+      pinsOpen: false,
+      searchOpen: false,
+      groupPanelOpen: false,
+      mentionsOpen: false,
+      settingsOpen: false,
+      channelSettingsChannelId: null,
+      friendsLoading: true,
+    });
+    try {
+      const friends = await authedApi.listFriends();
+      set({ friends, friendsLoading: false });
+    } catch (error) {
+      set({ friendsLoading: false, error: describeError(error) });
+    }
+  },
+  closeFriends() {
+    set({ friendsOpen: false });
+  },
+  setFriendQuery(query) {
+    set({ friendQuery: query });
+  },
+  async addFriend(username) {
+    try {
+      const result = await authedApi.addFriend(username);
+      // Kết quả có thể là "đã gửi lời mời" (có `createdAt`) hoặc "thành bạn luôn"
+      // (khi người kia đã mời mình trước, có `since`). Cả hai đều thành công.
+      set({ friendQuery: "", notice: translate("friendRequestSent", { username }) });
+      if ("since" in result) await get().openFriends();
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+  async acceptFriend(userId) {
+    try {
+      await authedApi.acceptFriendRequest(userId);
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+  async removeFriend(userId) {
+    try {
+      await authedApi.removeFriend(userId);
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+  async setDmPrivacy(privacy) {
+    try {
+      const settings = await authedApi.updateSettings({ dmPrivacy: privacy });
+      const current = get().friends;
+      if (current !== null) set({ friends: { ...current, dmPrivacy: settings.dmPrivacy } });
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
     }
   },
   notifyTyping() {

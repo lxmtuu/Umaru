@@ -1,5 +1,7 @@
 import type {
   Channel,
+  FriendRequestSummary,
+  FriendSummary,
   Guild,
   GuildMember,
   Message,
@@ -8,6 +10,7 @@ import type {
   Role,
   User,
   UserProfile,
+  UserSettings,
 } from "./api.js";
 import type { Snowflake } from "./snowflake.js";
 
@@ -231,4 +234,12 @@ export interface GatewayEventMap {
   /** Bị mời ra khỏi nhóm (hoặc nhóm bị xoá) → client bỏ khỏi sidebar. */
   DM_CHANNEL_DELETE: { channelId: Snowflake };
   VOICE_STATE_UPDATE: VoiceStateUpdate;
+  /** Có người gửi lời mời kết bạn cho mình (kèm người gửi để vẽ ngay). */
+  FRIEND_REQUEST_CREATE: FriendRequestSummary;
+  /** Hai người đã thành bạn — gửi cho **cả hai** để danh sách hai bên khớp. */
+  FRIEND_ADD: FriendSummary;
+  /** Hết bạn (tự huỷ kết bạn, từ chối lời mời, huỷ lời mời đã gửi, hoặc bị chặn). */
+  FRIEND_REMOVE: { userId: Snowflake };
+  /** Cài đặt riêng của chính mình vừa đổi — gửi cho mọi session của mình. */
+  USER_SETTINGS_UPDATE: UserSettings;
 }

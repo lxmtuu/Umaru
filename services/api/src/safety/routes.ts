@@ -14,6 +14,7 @@ import type { Pool } from "../db.js";
 import { badRequest, forbidden, notFound, readId, readOptionalString } from "../http.js";
 import { isBlockedBetween } from "../blocks.js";
 import type { ReportNotifier } from "../admin/notify.js";
+import type { EventPublisher } from "../events.js";
 
 export interface SafetyDeps {
   pool: Pool;
@@ -21,6 +22,8 @@ export interface SafetyDeps {
   config: Config;
   /** Gửi mail báo admin khi có báo cáo mới (fire-and-forget, không chặn request). */
   reportNotifier?: ReportNotifier;
+  /** Cắt quan hệ bạn bè khi chặn → phải báo cho bên kia để danh sách khớp. */
+  publisher?: EventPublisher;
 }
 
 /** Số báo cáo tối đa một người được gửi trong 1 giờ (chống spam report). */
@@ -116,6 +119,10 @@ export function registerSafetyRoutes(app: FastifyInstance, deps: SafetyDeps): vo
       } finally {
         client.release();
       }
+      // Chặn cắt luôn quan hệ bạn bè/lời mời → bên kia phải bỏ mình khỏi danh sách.
+      deps.publisher?.publishToUser(targetId, "FRIEND_REMOVE", {
+        userId: userId as Snowflake,
+      });
       return reply.code(204).send();
     },
   );

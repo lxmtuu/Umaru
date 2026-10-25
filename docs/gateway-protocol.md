@@ -193,6 +193,31 @@ Quy tắc:
 - **Chưa có `speaking`**: chỉ có nghĩa khi có audio thật, tần suất cao nên sẽ đi
   qua data channel của SFU khi cắm LiveKit, không qua gateway (§9).
 
+### 5.4 Friends & quyền riêng tư DM
+
+Quan hệ bạn bè dùng lại bảng `relationships` (migration 0001) theo quy ước có
+hướng: bạn bè = **hai dòng** `friend`, lời mời = `pending_out` (người gửi) +
+`pending_in` (người nhận), chặn = một dòng `blocked`. Không có bảng mới.
+
+- `FRIEND_REQUEST_CREATE` → người **nhận** lời mời; payload mang **người gửi**
+  (`FriendRequestSummary`). Response của `POST /users/@me/friends` thì mang
+  **người được mời** (khớp tab "đã gửi" của người gọi).
+- `FRIEND_ADD` → **cả hai** phía khi thành bạn (đồng ý, hoặc hai người gửi lời
+  mời chéo nhau — lần gửi thứ hai là đồng ý luôn).
+- `FRIEND_REMOVE` → **cả hai** phía khi huỷ kết bạn, từ chối/huỷ lời mời, hoặc
+  khi một bên **chặn** bên kia (chặn cắt luôn quan hệ bạn bè).
+- `USER_SETTINGS_UPDATE` → chỉ các session của chính mình (tab/thiết bị khác).
+
+Không cần replay: danh sách đầy đủ lấy bằng `GET /users/@me/friends`, event chỉ
+để cập nhật tại chỗ; client chưa mở panel thì bỏ qua event (`friends === null`)
+và tải lại khi mở.
+
+Cổng quyền riêng tư DM nằm ở server (`POST /users/@me/channels`): `dm_privacy =
+'friends'` chỉ chặn **mở cuộc mới**, DM đã tồn tại vẫn mở và nhắn được (không
+cắt ngang cuộc đang có). Người lạ nhận **403** kèm lý do, không phải 404 — che
+giấu tài khoản không phải mục tiêu; block vẫn thắng (403 vì chặn). Mặc định
+`'everyone'` để không đổi hành vi sau deploy.
+
 ---
 
 ## 6. Danh mục sự kiện v1
@@ -221,6 +246,10 @@ Quy tắc:
 | `USER_UPDATE` | guild + session của chính user | ✗ | `{ user: { id, username, displayName, avatarUrl } }` — hồ sơ công khai đổi (hiện tại: avatar). Gửi tới **mọi guild mà user là thành viên** và tới các session của chính họ (tab/thiết bị khác). Không kèm `status`: presence vẫn đi qua `PRESENCE_UPDATE` để hai nguồn không ghi đè nhau |
 | `ROLE_CREATE` / `ROLE_UPDATE` | guild | ✓ | `{ guildId, role: Role }` — role vừa tạo/sửa (kèm `isEveryone`); quyền **hiệu dụng** của từng user vẫn do `PERMISSIONS_UPDATE` đẩy riêng. Kéo-thả đổi cấp (`PATCH /guilds/:id/roles/:roleId { position }`, `position` = thứ hạng **trên xuống**) renumber cả dãy nên phát `ROLE_UPDATE` cho **đúng những role đổi `position`**, theo thứ tự mới — client chỉ cần sort lại; kéo vào đúng chỗ cũ không phát gì |
 | `ROLE_DELETE` | guild | ✓ | `{ guildId, roleId }` — `member_roles` cascade theo FK nên client tự coi như role đã gán cho ai cũng biến mất |
+| `FRIEND_REQUEST_CREATE` | user (người nhận) | ✗ | `FriendRequestSummary` = `{ user: { id, username, displayName, avatarUrl }, createdAt }` — mang **người gửi** lời mời |
+| `FRIEND_ADD` | user (cả hai phía) | ✗ | `FriendSummary` = `{ user, since }` — thành bạn (đồng ý, hoặc hai lời mời chéo nhau) |
+| `FRIEND_REMOVE` | user (cả hai phía) | ✗ | `{ userId }` — huỷ kết bạn, từ chối/huỷ lời mời, hoặc do một bên **chặn** (chặn cắt luôn quan hệ bạn bè) |
+| `USER_SETTINGS_UPDATE` | session của chính user | ✗ | `UserSettings` = `{ dmPrivacy: "everyone" \| "friends" }` — cài đặt của chính mình vừa đổi (tab/thiết bị khác cập nhật theo) |
 | `VOICE_STATE_UPDATE` | channel + chính người liên quan | ✓ (bền) | `{ guildId, channelId \| null, userId, selfMute, selfDeaf, joinedAt }` — `channelId: null` = rời phòng; cùng shape với `VoiceState` (xem §5.3). Chưa có `speaking` (đi qua SFU khi có audio) |
 
 Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake luôn là **string**; thời gian là ISO-8601 UTC (trừ `TYPING_START.timestamp` là epoch ms).

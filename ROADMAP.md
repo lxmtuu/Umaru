@@ -58,13 +58,13 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 
 | Chức năng | Mô tả | ƯU TIÊN |
 |-----------|-------|---------|
-| Thêm bạn bằng username (không phải mã) | Mô hình add-friend hiện đại | P1 |
-| Danh sách bạn, lời mời chờ, đã chặn | Core social | P1 |
+| Thêm bạn bằng username (không phải mã) | Mô hình add-friend hiện đại — ✅ đã có (gửi chéo = đồng ý luôn) | P1 |
+| Danh sách bạn, lời mời chờ, đã chặn | Core social — ✅ đã có (panel 3 tab + realtime hai phía) | P1 |
 | DM 1-1 | Bắt buộc | P0 — ✅ đã có (kèm chặn/bỏ chặn) |
 | Group DM (tới 10 người, không thuộc server nào) | Rất hay dùng — ✅ đã có (thêm/mời ra, đổi tên, rời nhóm, realtime) | P1 |
 | Cuộc gọi thoại/video trong DM | Dùng chung hạ tầng voice | P1 (sau khi có voice channels) |
 | "Bạn chung", "Server chung" | Mutuals | P2 |
-| Tin nhắn yêu cầu (Message Requests) từ người lạ | An toàn cho người dùng nữ/bị làm phiền | P1 |
+| Tin nhắn yêu cầu (Message Requests) từ người lạ | An toàn cho người dùng nữ/bị làm phiền — 🔸 đã có bản rút gọn: cài đặt `dm_privacy = friends` (chỉ bạn bè mở DM mới); hộp "yêu cầu chờ duyệt" vẫn còn thiếu | P1 |
 | DM folders, ghim tin nhắn DM | Organization | P3 |
 
 ### 1.3 Server (Guild)

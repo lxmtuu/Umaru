@@ -25,6 +25,7 @@ import { Avatar } from "./Avatar.js";
 import { GroupDmPanel } from "./GroupDmPanel.js";
 import { ProfileDialog } from "./ProfileDialog.js";
 import { RoleSettings } from "./RoleSettings.js";
+import { FriendsPanel } from "./FriendsPanel.js";
 import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
 
 export function ChatScreen() {
@@ -730,6 +731,19 @@ export function ChatScreen() {
               )}
               <button
                 onClick={() =>
+                  void (state.friendsOpen ? state.closeFriends() : state.openFriends())
+                }
+                title={t("friends")}
+                aria-label={t("friends")}
+                aria-pressed={state.friendsOpen}
+                className={`rounded px-1.5 py-0.5 text-[11px] hover:bg-white/5 hover:text-slate-200 ${
+                  state.friendsOpen ? "bg-white/10 text-slate-100" : "text-slate-400"
+                }`}
+              >
+                👥
+              </button>
+              <button
+                onClick={() =>
                   void (state.blocksOpen ? state.closeBlocks() : state.openBlocks())
                 }
                 title={t("blockedUsers")}
@@ -774,7 +788,9 @@ export function ChatScreen() {
             </button>
           )}
           <h1 className="truncate text-sm font-semibold">
-            {state.blocksOpen
+            {state.friendsOpen
+              ? `👥 ${t("friends")}`
+              : state.blocksOpen
               ? `🛡 ${t("blockedUsers")}`
               : state.pinsOpen
               ? `📌 ${t("pinnedMessages")}`
@@ -889,7 +905,18 @@ export function ChatScreen() {
           />
         )}
 
-        {state.blocksOpen ? (
+        {state.friendsOpen ? (
+          <FriendsPanel
+            friends={state.friends}
+            loading={state.friendsLoading}
+            query={state.friendQuery}
+            onQueryChange={(value) => state.setFriendQuery(value)}
+            onAdd={(username) => void state.addFriend(username)}
+            onAccept={(userId) => void state.acceptFriend(userId)}
+            onRemove={(userId) => void state.removeFriend(userId)}
+            onDmPrivacy={(privacy) => void state.setDmPrivacy(privacy)}
+          />
+        ) : state.blocksOpen ? (
           <BlocksPanel
             blocks={state.blocks}
             loading={state.blocksLoading}

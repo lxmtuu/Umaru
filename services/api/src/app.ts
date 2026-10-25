@@ -10,6 +10,7 @@ import { createTokenService, type TokenService } from "./auth/tokens.js";
 import type { Config } from "./config.js";
 import type { Pool } from "./db.js";
 import { registerDmRoutes } from "./dms/routes.js";
+import { registerFriendRoutes } from "./friends/routes.js";
 import { registerGatewayRoutes } from "./gateway/routes.js";
 import { GatewayHub } from "./gateway/hub.js";
 import { registerGuildRoutes } from "./guilds/routes.js";
@@ -102,11 +103,12 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerDmRoutes(api, { pool, config, tokens, publisher: hub });
       registerReadStateRoutes(api, { pool, tokens });
       registerSearchRoutes(api, { pool, tokens });
-      registerSafetyRoutes(api, { pool, tokens, config, reportNotifier });
+      registerSafetyRoutes(api, { pool, tokens, config, reportNotifier, publisher: hub });
       registerAdminRoutes(api, { pool, tokens, config });
       registerUploadRoutes(api, { pool, config, tokens });
       registerUserRoutes(api, { pool, config, tokens, publisher: hub });
       registerVoiceRoutes(api, { pool, config, tokens, publisher: hub });
+      registerFriendRoutes(api, { pool, tokens, publisher: hub });
       registerGatewayRoutes(api, hub, tokens, config);
     },
     { prefix: "/api/v1" },

@@ -12,6 +12,7 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
 import { isBlockedBetween } from "../blocks.js";
+import { checkCanStartDm } from "../friends/relations.js";
 import { HttpError, badRequest, forbidden, notFound, readId } from "../http.js";
 import { loadDms } from "../bootstrap.js";
 import {
@@ -70,6 +71,17 @@ export function registerDmRoutes(app: FastifyInstance, deps: DmDeps): void {
     }
 
     const recipientRow = await loadUserRow(pool, recipientId);
+
+    // Quyền riêng tư DM: chỉ chặn việc **mở cuộc mới**. Nếu kênh đã tồn tại thì
+    // bên dưới trả lại kênh cũ — cắt ngang một cuộc đang có sẽ làm mất lịch sử
+    // của cả hai bên, và tin đã gửi thì không ai thu hồi được (xem friends/relations.ts).
+    const existingChannel = await findDmChannel(pool, userId, recipientId);
+    if (existingChannel === null) {
+      const verdict = await checkCanStartDm(pool, userId, recipientId);
+      if (verdict === "friends_only") {
+        throw forbidden("Người này chỉ nhận tin nhắn từ bạn bè");
+      }
+    }
 
     const client = await pool.connect();
     let channelId: string;
@@ -342,6 +354,28 @@ export function registerDmRoutes(app: FastifyInstance, deps: DmDeps): void {
     return summary;
   }
 
+}
+
+/**
+ * DM 1-1 đã tồn tại giữa hai người chưa (không khoá — chỉ để quyết định có áp
+ * cổng privacy hay không; việc tạo kênh vẫn nằm trong transaction có advisory lock).
+ */
+async function findDmChannel(
+  pool: Pool,
+  userA: string,
+  userB: string,
+): Promise<{ id: string } | null> {
+  const pair = [userA, userB].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+  const result = await pool.query<{ id: string }>(
+    `SELECT c.id
+       FROM channels c
+       JOIN channel_members a2 ON a2.channel_id = c.id AND a2.user_id = $1
+       JOIN channel_members b2 ON b2.channel_id = c.id AND b2.user_id = $2
+      WHERE c.type = 'dm' AND c.guild_id IS NULL
+      LIMIT 1`,
+    [pair[0], pair[1]],
+  );
+  return result.rows[0] ?? null;
 }
 
 async function loadUserRow(pool: Pool, userId: string): Promise<UserSummaryRow> {
