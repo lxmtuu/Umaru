@@ -23,6 +23,8 @@ export function ChatScreen() {
   /** Tệp chờ gửi kèm tin kế tiếp (tối đa 4, kiểm ở lib/attachments). */
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
+  /** Tin đang được trả lời (thanh nhắc trên ô soạn). */
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showCreateGuild, setShowCreateGuild] = useState(false);
@@ -262,14 +264,20 @@ export function ChatScreen() {
     // Tin chỉ có tệp vẫn gửi được (server cho phép content rỗng khi có file).
     if (content.length === 0 && pendingFiles.length === 0) return;
     const files = pendingFiles;
+    const parent = replyTo;
     setDraft("");
     setPendingFiles([]);
     setAttachError(null);
-    const sent = await state.sendMessage(content, files);
+    setReplyTo(null);
+    const sent = await state.sendMessage(content, {
+      files,
+      replyToId: parent?.id,
+    });
     if (!sent) {
-      // Gửi lỗi thì trả lại cả nội dung lẫn tệp để không phải chọn lại.
+      // Gửi lỗi thì trả lại cả nội dung, tệp và ngữ cảnh trả lời.
       setDraft(content);
       setPendingFiles(files);
+      setReplyTo(parent);
     }
   }
 
@@ -664,10 +672,16 @@ export function ChatScreen() {
                   // Tin của mình thì luôn có nút; tin người khác chỉ khi có quyền quản lý tin.
                   const canModerate = mine || canManageMessages(channelId);
                   const editing = editingId === message.id;
+                  // Tin được trả lời (có thể không còn trong trang đã tải).
+                  const repliedTo =
+                    message.replyToId === null
+                      ? undefined
+                      : messages.find((item) => item.id === message.replyToId);
                   return (
                     <article
                       key={message.id}
-                      className="group flex gap-3 px-4 py-1.5 hover:bg-white/[0.03]"
+                      id={`message-${message.id}`}
+                      className="group flex scroll-mt-4 gap-3 px-4 py-1.5 hover:bg-white/[0.03]"
                     >
                       <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-slate-700 text-xs">
                         {authorName(message).slice(0, 1).toUpperCase()}
@@ -691,8 +705,19 @@ export function ChatScreen() {
                           {message.editedAt !== null && (
                             <span className="text-[10px] text-slate-600">{t("edited")}</span>
                           )}
+                          <span className="ml-auto flex shrink-0 items-center gap-1 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100">
+                            <button
+                              type="button"
+                              onClick={() => setReplyTo(message)}
+                              title={t("replyToMessage", { name: authorName(message) })}
+                              aria-label={t("replyMessage")}
+                              className="rounded px-1 text-[11px] text-slate-400 hover:bg-white/10 hover:text-slate-100"
+                            >
+                              ↩
+                            </button>
+                          </span>
                           {canModerate && !editing && (
-                            <span className="ml-auto flex shrink-0 items-center gap-1 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100">
+                            <span className="flex shrink-0 items-center gap-1">
                               <button
                                 type="button"
                                 onClick={() => startEdit(message)}
@@ -760,6 +785,12 @@ export function ChatScreen() {
                           </form>
                         ) : (
                           <>
+                            {message.replyToId !== null && (
+                              <ReplyQuote
+                                parent={repliedTo ?? null}
+                                name={repliedTo === undefined ? null : authorName(repliedTo)}
+                              />
+                            )}
                             {message.content.length > 0 && (
                               <div className="text-sm text-slate-200">
                                 <MessageContent content={message.content} />
@@ -808,7 +839,32 @@ export function ChatScreen() {
                 void submitMessage();
               }}
               className="border-t border-white/5 p-3"
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && replyTo !== null) {
+                  event.preventDefault();
+                  setReplyTo(null);
+                }
+              }}
             >
+              {replyTo !== null && (
+                <div className="mb-2 flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900/70 px-2 py-1 text-xs">
+                  <span className="shrink-0 text-slate-400">
+                    {t("replyingTo", { name: authorName(replyTo) })}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-slate-500">
+                    {replyTo.content.length > 0 ? replyTo.content : t("attachmentOnly")}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setReplyTo(null)}
+                    title={t("cancelReply")}
+                    aria-label={t("cancelReply")}
+                    className="rounded px-1 text-slate-400 hover:bg-white/10 hover:text-rose-300"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
               {pendingFiles.length > 0 && (
                 <div className="mb-2 flex flex-wrap gap-2">
                   {pendingFiles.map((file) => (
@@ -1373,3 +1429,32 @@ function Modal({
   );
 }
 
+
+/**
+ * Khối trích tin được trả lời.
+ * Cha không nằm trong trang đang tải (tin quá cũ, hoặc đã bị xoá) thì hiện
+ * nhắc thay vì im lặng — người dùng biết tin này đang trả lời cái gì đó.
+ */
+function ReplyQuote({ parent, name }: { parent: Message | null; name: string | null }) {
+  const t = useT();
+  if (parent === null) {
+    return (
+      <p className="mb-0.5 text-[11px] text-slate-500">↩ {t("originalMessageUnavailable")}</p>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        document.getElementById(`message-${parent.id}`)?.scrollIntoView({ block: "center" })
+      }
+      className="mb-0.5 flex max-w-full items-center gap-1.5 text-left text-[11px] text-slate-500 hover:text-slate-300"
+    >
+      <span aria-hidden>↩</span>
+      <span className="shrink-0 font-medium text-slate-400">{name ?? ""}</span>
+      <span className="min-w-0 truncate">
+        {parent.content.length > 0 ? parent.content : t("attachmentOnly")}
+      </span>
+    </button>
+  );
+}

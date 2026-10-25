@@ -100,8 +100,11 @@ interface ChatState {
   /** Xoá badge của kênh + báo server mốc đã đọc mới nhất. */
   markRead(channelId: string): void;
   loadMessages(channelId: string): Promise<void>;
-  /** Gửi tin; `files` (không bắt buộc) đi kèm bằng multipart. */
-  sendMessage(content: string, files?: File[]): Promise<boolean>;
+  /** Gửi tin; `files` đi kèm bằng multipart, `replyToId` để trả lời một tin. */
+  sendMessage(
+    content: string,
+    options?: { files?: File[]; replyToId?: string },
+  ): Promise<boolean>;
   /** Sửa nội dung tin của mình; server đã đẩy `MESSAGE_UPDATE` cho mọi client. */
   editMessage(messageId: string, content: string): Promise<boolean>;
   /** Xoá tin của mình (hoặc bất kỳ tin nào nếu có `MANAGE_MESSAGES`). */
@@ -700,13 +703,17 @@ export const useChat = create<ChatState>()((set, get) => ({
     }
   },
 
-  async sendMessage(content, files = []) {
+  async sendMessage(content, options = {}) {
     const channelId = get().activeChannelId;
+    const files = options.files ?? [];
     // Tin chỉ có tệp (không text) vẫn hợp lệ.
     if (channelId === null) return false;
     if (content.trim().length === 0 && files.length === 0) return false;
     try {
-      const message = await authedApi.sendMessage(channelId, content, { files });
+      const message = await authedApi.sendMessage(channelId, content, {
+        files,
+        replyToId: options.replyToId,
+      });
       const list = get().messages[channelId] ?? [];
       set({ messages: { ...get().messages, [channelId]: upsertMessage(list, message) } });
       // Mốc đã đọc tiến theo tin mình vừa gửi (các tab/thiết bị khác cũng vậy).
