@@ -173,11 +173,25 @@ Quy tắc:
 
 ### 5.3 Voice state
 
-- Nguồn: webhook LiveKit `room_participant_joined/left` + `ActiveSpeakersChanged`.
-- `VOICE_STATE_UPDATE` có **2 loại**:
-  - *Bền*: join/leave kênh, `muted`, `deafened` → replay được, ghi Redis `voice:{channel_id}` (không ghi Postgres).
-  - *Transient*: chỉ đổi `speaking` → coalesce 100 ms, không replay.
-- Người mới vào kênh nhận snapshot đầy đủ qua `GUILD_CREATE.voiceStates` (G2 sẽ thêm field này — xem §9).
+**Đã hiện thực (G2 — phần state, chưa có âm thanh).** Nguồn sự thật là bảng
+`voice_states` trong Postgres (mỗi người **một** phòng thoại mỗi server, PK
+`(user_id, guild_id)`); REST `PUT/DELETE /channels/{id}/voice` và
+`PATCH /guilds/{id}/voice-state` là nơi duy nhất đổi trạng thái.
+
+- `VOICE_STATE_UPDATE` là event **bền** (vào replay log, resume được) cho cả
+  join/leave/`selfMute`/`selfDeaf`.
+- Payload dùng **cùng shape** với `VoiceState` trong `READY` để client chỉ cần một
+  mapper: `{ guildId, channelId, userId, selfMute, selfDeaf, joinedAt }`.
+  `channelId: null` = người đó đã rời phòng.
+- Người nhận: session có `VIEW_CHANNEL` của kênh + **chính người liên quan** (họ
+  phải biết mình đã bị đưa ra khỏi phòng khi mất quyền xem).
+- Snapshot đầy đủ nằm trong `READY.voiceStates` (lọc theo `visibleChannels`).
+- Mất quyền xem kênh thoại → bị đưa ra khỏi phòng ngay (`dropVoiceStates`), không
+  cần client tự kiểm.
+- Hết mọi session gateway của user (đóng app, resume quá TTL) → rời phòng; dòng
+  "mồ côi" (join qua REST rồi biến mất) bị `sweep` dọn sau 30 phút.
+- **Chưa có `speaking`**: chỉ có nghĩa khi có audio thật, tần suất cao nên sẽ đi
+  qua data channel của SFU khi cắm LiveKit, không qua gateway (§9).
 
 ---
 
@@ -207,7 +221,7 @@ Quy tắc:
 | `USER_UPDATE` | guild + session của chính user | ✗ | `{ user: { id, username, displayName, avatarUrl } }` — hồ sơ công khai đổi (hiện tại: avatar). Gửi tới **mọi guild mà user là thành viên** và tới các session của chính họ (tab/thiết bị khác). Không kèm `status`: presence vẫn đi qua `PRESENCE_UPDATE` để hai nguồn không ghi đè nhau |
 | `ROLE_CREATE` / `ROLE_UPDATE` | guild | ✓ | `{ guildId, role: Role }` — role vừa tạo/sửa (kèm `isEveryone`); quyền **hiệu dụng** của từng user vẫn do `PERMISSIONS_UPDATE` đẩy riêng. Kéo-thả đổi cấp (`PATCH /guilds/:id/roles/:roleId { position }`, `position` = thứ hạng **trên xuống**) renumber cả dãy nên phát `ROLE_UPDATE` cho **đúng những role đổi `position`**, theo thứ tự mới — client chỉ cần sort lại; kéo vào đúng chỗ cũ không phát gì |
 | `ROLE_DELETE` | guild | ✓ | `{ guildId, roleId }` — `member_roles` cascade theo FK nên client tự coi như role đã gán cho ai cũng biến mất |
-| `VOICE_STATE_UPDATE` | guild/channel | ✓ (bền) | `{ guildId, channelId, userId, sessionId, muted, deafened, speaking }` |
+| `VOICE_STATE_UPDATE` | channel + chính người liên quan | ✓ (bền) | `{ guildId, channelId \| null, userId, selfMute, selfDeaf, joinedAt }` — `channelId: null` = rời phòng; cùng shape với `VoiceState` (xem §5.3). Chưa có `speaking` (đi qua SFU khi có audio) |
 
 Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake luôn là **string**; thời gian là ISO-8601 UTC (trừ `TYPING_START.timestamp` là epoch ms).
 
@@ -227,6 +241,7 @@ Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake l
 | Frame size | 4 KiB | đóng `1009` |
 | `POST /channels/{id}/typing` | 1/8 s/user/channel | `429` + `retry_after` |
 | `POST /channels/{id}/messages` | 5/5 s/user/channel, 30/phút/kênh | `429` (không phát dispatch) |
+| `PUT/DELETE /channels/{id}/voice`, `PATCH /guilds/{id}/voice-state` | 10 lần/10 s/user | `429` + `retry_after` |
 | Kết nối/user | 5 session | session cũ nhất bị đóng `4003` |
 
 Bảng trên **đã được hiện thực** (`services/api/src/rateLimit.ts` + `gateway/hub.ts` + `messages/routes.ts`), có test riêng ở `services/api/test/rate-limit.test.ts` và `services/api/test/rate-limit-gateway.test.ts`.
@@ -264,7 +279,8 @@ Tinh chỉnh bằng biến môi trường: `RATE_LIMITS=off` (mặc định bậ
 - **Replay log đang nằm trong bộ nhớ một process** (`MAX_REPLAY_EVENTS`, TTL session), chưa phải Redis Streams như §4.2. Resume qua nhiều node và qua restart server chưa hoạt động — phải thay `GatewayHub` phần replay khi lên đa node (ADR-0003).
 - **Rate limit đã có** cho `IDENTIFY`/`RESUME`/frame/session và cho `POST /messages` (spec §7), nhưng bộ đếm **nằm trong bộ nhớ từng process** — đa node thì giới hạn thực tế nhân lên theo số node, và restart server là mất trạng thái (chấp nhận được: cửa sổ ngắn). Chuyển sang Redis khi lên đa node.
 - Đóng `1009` (frame quá lớn) hiện **vẫn để client reconnect** theo backoff chung; spec §2.1 nói "không reconnect". Hành vi hiện tại an toàn hơn (client gửi frame lớn thường do bug, reconnect một lần rồi bỏ), nhưng chưa khớp câu chữ.
-- `READY` đã có `guilds[]` (`{ guild, channels, roles, members }` — member kèm `roleIds`), `dms[]` (`DmChannelSummary`: `channel`, `recipients`, `recipient` (chỉ DM 1-1, group DM = `null`), `ownerId`/`name` cho group DM), `readStates[]` (`{ channelId, lastReadMessageId, unread, mentions }`) và `channelPermissions` (channelId → bitfield của **chính user nhận**, server tính bằng `resolvePermissions`; gồm cả DM); `voiceStates[]` để G2.
+- `READY` đã có `guilds[]` (`{ guild, channels, roles, members }` — member kèm `roleIds`), `dms[]` (`DmChannelSummary`: `channel`, `recipients`, `recipient` (chỉ DM 1-1, group DM = `null`), `ownerId`/`name` cho group DM), `readStates[]` (`{ channelId, lastReadMessageId, unread, mentions }`), `channelPermissions` (channelId → bitfield của **chính user nhận**, server tính bằng `resolvePermissions`; gồm cả DM) và `voiceStates[]` (chỉ kênh user xem được).
+- **Voice mới có lớp state, chưa có âm thanh**: `PUT/DELETE /channels/{id}/voice` + `PATCH /guilds/{id}/voice-state`, `VOICE_STATE_UPDATE` / `READY.voiceStates`, quyền `CONNECT` (vào phòng) và `VIEW_CHANNEL` (thấy ai trong phòng). Chưa có SFU, chưa có `speaking`, chưa có token phòng — cắm LiveKit Cloud là bước tiếp theo của G2 và **không kiểm chứng được trong sandbox** này.
 - Thay đổi role của **thành viên** phát `GUILD_MEMBER_UPDATE` cho cả server; THAY ĐỔI role (tạo/sửa/xoá) phát `ROLE_CREATE/UPDATE/DELETE`. `ROLE_DELETE` không tự phát `GUILD_MEMBER_UPDATE` cho từng người — client dựa vào `member_roles` cascade và bỏ `roleId` khỏi chip của mọi member.
 - `channelPermissions` được đẩy lại qua `PERMISSIONS_UPDATE` mỗi khi `refreshUserVisibility`/`refreshGuildVisibility` chạy: tạo/sửa/xoá kênh, tạo guild, nhận invite, các thao tác role (`PATCH`/`DELETE` role, gán/thu role) và **mọi thay đổi overwrite theo kênh**. Cùng lúc đó gateway gửi `CHANNEL_DELETE` cho kênh vừa mất quyền xem và `CHANNEL_CREATE` cho kênh vừa được xem — client không cần reconnect. Client luôn coi đây là gợi ý UI: quyền thật vẫn do server kiểm tra ở REST/gateway.
 - Overwrite đặt trên **category** được kế thừa xuống channel con (category áp trước, kênh đè sau) — danh sách `CHANNEL_*` phản ánh đúng những gì server đã tính sẵn, client không tự suy luận. `PATCH /channels/:id` đổi `parentId` cũng phát `CHANNEL_UPDATE` + `PERMISSIONS_UPDATE` vì quyền hiệu dụng có thể đổi theo category mới; chỉ đổi `position` (kéo-thả) thì **không** gọi `refreshGuildVisibility` — chỉ phát `CHANNEL_UPDATE` cho các kênh đổi vị trí, vì tập kênh hiển thị không đổi.

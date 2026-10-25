@@ -21,6 +21,7 @@ import { registerSafetyRoutes } from "./safety/routes.js";
 import { registerSearchRoutes } from "./search/routes.js";
 import { registerUploadRoutes } from "./uploads/routes.js";
 import { registerUserRoutes } from "./users/routes.js";
+import { registerVoiceRoutes } from "./voice/routes.js";
 import { MAX_FILES_PER_MESSAGE } from "./uploads/storage.js";
 
 export interface AppDeps {
@@ -105,6 +106,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerAdminRoutes(api, { pool, tokens, config });
       registerUploadRoutes(api, { pool, config, tokens });
       registerUserRoutes(api, { pool, config, tokens, publisher: hub });
+      registerVoiceRoutes(api, { pool, config, tokens, publisher: hub });
       registerGatewayRoutes(api, hub, tokens, config);
     },
     { prefix: "/api/v1" },

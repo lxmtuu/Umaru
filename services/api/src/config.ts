@@ -71,6 +71,8 @@ export interface Config {
   rateLimitGatewayFramesPerMinute: number;
   /** Số session đồng thời của một user (spec §7: 5, vượt thì đóng session cũ nhất). */
   rateLimitSessionsPerUser: number;
+  /** Số lần join/leave/mute kênh thoại mỗi 10 giây của một user. */
+  rateLimitVoiceMutations: number;
   logger: boolean;
 }
 
@@ -165,6 +167,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       100_000,
     ),
     rateLimitSessionsPerUser: readPositiveInt(env.RATE_LIMIT_SESSIONS_PER_USER, 5, 1, 100),
+    rateLimitVoiceMutations: readPositiveInt(env.RATE_LIMIT_VOICE_MUTATIONS, 10, 1, 1_000),
     emailVerificationEcho: env.EMAIL_VERIFICATION_ECHO
       ? env.EMAIL_VERIFICATION_ECHO !== "0"
       : !isProduction,

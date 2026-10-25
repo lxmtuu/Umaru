@@ -48,6 +48,7 @@ export async function createTestContext(
       RATE_LIMIT_MESSAGES_PER_CHANNEL: "5000",
       RATE_LIMIT_GATEWAY_FRAMES_PER_MINUTE: "100000",
       RATE_LIMIT_SESSIONS_PER_USER: "100",
+      RATE_LIMIT_VOICE_MUTATIONS: "1000",
       ...envOverrides,
     }),
     logger: false,

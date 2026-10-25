@@ -1,4 +1,5 @@
 import type {
+  VoiceState,
   Channel,
   ChannelOverwrite,
   DmChannelSummary,
@@ -140,6 +141,11 @@ interface ChatState {
   adminLoading: boolean;
   typing: Record<string, TypingEntry[]>;
   presence: Record<string, PresenceStatus>;
+  /**
+   * Ai đang ở phòng thoại nào (danh sách phẳng, mỗi người một phòng mỗi server).
+   * Server là nguồn sự thật: mọi thay đổi đến qua `VOICE_STATE_UPDATE`.
+   */
+  voiceStates: VoiceState[];
   error: string | null;
   notice: string | null;
   /** Thông báo một dòng (xác thực email, gửi lại mail...) — tự tắt được. */
@@ -294,6 +300,15 @@ interface ChatState {
   /** Xác thực email bằng token trong link (`?verifyToken=...`). */
   verifyEmailToken(token: string): Promise<boolean>;
   clearBanner(): void;
+  /**
+   * Vào/ra phòng thoại của một kênh voice. Đang ở đúng kênh đó thì gọi là **ra**,
+   * nên một nút bấm dùng cho cả hai chiều (hành vi quen thuộc của Discord).
+   */
+  toggleVoice(channelId: string): Promise<void>;
+  /** Bật/tắt mic của mình trong phòng đang ở. */
+  toggleVoiceMute(): Promise<void>;
+  /** Bật/tắt tai nghe (deafen) của mình trong phòng đang ở. */
+  toggleVoiceDeafen(): Promise<void>;
   notifyTyping(): void;
   clearNotice(): void;
   clearError(): void;
@@ -382,6 +397,7 @@ const initialState = {
   adminLoading: false,
   typing: {},
   presence: {},
+  voiceStates: [],
   error: null,
   notice: null,
   banner: null,
@@ -637,6 +653,7 @@ export const useChat = create<ChatState>()((set, get) => ({
         me: data.user,
         guilds,
         dms: data.dms,
+        voiceStates: data.voiceStates ?? [],
         channels,
         members,
         roles,
@@ -773,6 +790,33 @@ export const useChat = create<ChatState>()((set, get) => ({
     // Ghim/bỏ ghim → chip 📌 và panel ghim đổi ngay ở mọi client.
     client.on("MESSAGE_PIN_UPDATE", (data) => {
       set(patchMessage(get(), data));
+    });
+
+    /**
+     * `VOICE_STATE_UPDATE`: `channelId: null` = người đó rời phòng. Một người chỉ
+     * ở một phòng mỗi server nên khi nhận trạng thái mới là **thay** bản ghi cũ
+     * của chính họ trong guild đó, không phải thêm dòng.
+     */
+    client.on("VOICE_STATE_UPDATE", (data) => {
+      set((current) => {
+        const others = current.voiceStates.filter(
+          (entry) => !(entry.userId === data.userId && entry.guildId === data.guildId),
+        );
+        if (data.channelId === null) return { voiceStates: others };
+        return {
+          voiceStates: [
+            ...others,
+            {
+              guildId: data.guildId,
+              channelId: data.channelId,
+              userId: data.userId,
+              selfMute: data.selfMute,
+              selfDeaf: data.selfDeaf,
+              joinedAt: data.joinedAt,
+            },
+          ],
+        };
+      });
     });
 
     client.on("PRESENCE_UPDATE", (data) => {
@@ -1851,6 +1895,39 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
   clearBanner() {
     set({ banner: null });
+  },
+  async toggleVoice(channelId) {
+    const inChannel = get().voiceStates.some(
+      (entry) => entry.channelId === channelId && entry.userId === get().me?.id,
+    );
+    try {
+      if (inChannel) await authedApi.leaveVoice(channelId);
+      else await authedApi.joinVoice(channelId);
+      // Không tự sửa `voiceStates` ở đây: server phát `VOICE_STATE_UPDATE` cho
+      // chính mình, một nguồn sự thật duy nhất (tránh lệch khi bị từ chối).
+    } catch (error) {
+      set({ error: describeError(error) });
+    }
+  },
+  async toggleVoiceMute() {
+    const me = get().me;
+    const self = get().voiceStates.find((entry) => entry.userId === me?.id);
+    if (self === undefined) return;
+    try {
+      await authedApi.updateVoiceState(self.guildId, { selfMute: !self.selfMute });
+    } catch (error) {
+      set({ error: describeError(error) });
+    }
+  },
+  async toggleVoiceDeafen() {
+    const me = get().me;
+    const self = get().voiceStates.find((entry) => entry.userId === me?.id);
+    if (self === undefined) return;
+    try {
+      await authedApi.updateVoiceState(self.guildId, { selfDeaf: !self.selfDeaf });
+    } catch (error) {
+      set({ error: describeError(error) });
+    }
   },
   notifyTyping() {
     const channelId = get().activeChannelId;

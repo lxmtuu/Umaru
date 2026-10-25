@@ -129,6 +129,29 @@ export interface DmChannelSummary {
 /** Số người tối đa trong group DM (tính cả mình) — giống Discord. */
 export const MAX_GROUP_DM_MEMBERS = 10;
 
+/**
+ * Trạng thái một người trong kênh thoại (G2, chưa có SFU).
+ *
+ * Cố tình **không** có `speaking`: trạng thái đó chỉ có nghĩa khi có audio thật
+ * và đổi liên tục; khi cắm LiveKit vào thì nó đi qua data channel của SFU, không
+ * qua gateway.
+ */
+export interface VoiceState {
+  guildId: Snowflake;
+  channelId: Snowflake;
+  userId: Snowflake;
+  selfMute: boolean;
+  selfDeaf: boolean;
+  joinedAt: string;
+}
+
+/**
+ * `VOICE_STATE_UPDATE` dùng **cùng shape** với `VoiceState` để client chỉ cần
+ * một mapper; `channelId: null` = người đó đã rời phòng (client xoá khỏi danh
+ * sách mọi phòng của guild đó).
+ */
+export type VoiceStateUpdate = Omit<VoiceState, "channelId"> & { channelId: Snowflake | null };
+
 export type GatewayEventName = keyof GatewayEventMap;
 
 export interface GatewayEventMap {
@@ -146,6 +169,11 @@ export interface GatewayEventMap {
      * Kênh tạo sau khi READY chưa có trong map (xem lại sau khi reconnect).
      */
     channelPermissions: Record<Snowflake, string>;
+    /**
+     * Ai đang ở phòng thoại nào trong các guild user **xem được** (đã lọc quyền
+     * qua `visibleChannels`) — đúng theo tiêu chí "permission leak" ở §8.
+     */
+    voiceStates: VoiceState[];
   };
   RESUMED: Record<string, never>;
   /**
@@ -202,13 +230,5 @@ export interface GatewayEventMap {
   DM_CHANNEL_UPDATE: DmChannelSummary;
   /** Bị mời ra khỏi nhóm (hoặc nhóm bị xoá) → client bỏ khỏi sidebar. */
   DM_CHANNEL_DELETE: { channelId: Snowflake };
-  VOICE_STATE_UPDATE: {
-    guildId: Snowflake | null;
-    channelId: Snowflake | null;
-    userId: Snowflake;
-    sessionId: string;
-    muted: boolean;
-    deafened: boolean;
-    speaking: boolean;
-  };
+  VOICE_STATE_UPDATE: VoiceStateUpdate;
 }

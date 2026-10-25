@@ -12,6 +12,13 @@ export interface EventPublisher {
     event: E,
     data: GatewayEventMap[E],
   ): void;
+  /**
+   * `VOICE_STATE_UPDATE`: gửi cho người **xem được** kênh thoại + chính người
+   * liên quan (kể cả khi họ vừa mất quyền xem kênh — họ vẫn phải biết mình đã bị
+   * đưa ra khỏi phòng). Không dùng `publishToChannel` trực tiếp vì hàm đó lọc
+   * theo `visibleChannels` và sẽ bỏ sót đúng người cần biết.
+   */
+  publishVoiceState(channelId: string, data: GatewayEventMap["VOICE_STATE_UPDATE"]): void;
   /** Phát tới mọi session đang mở của một user (DM, thông báo riêng). */
   publishToUser<E extends GatewayEventName>(
     userId: string,

@@ -4,6 +4,7 @@ import type {
   Message,
   MessageMention,
   MessageSearchHit,
+  VoiceState,
 } from "@umaru/protocol";
 import { Permission, hasPermission } from "@umaru/protocol";
 import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode } from "react";
@@ -184,6 +185,23 @@ export function ChatScreen() {
   }, [channelId]);
 
   const groups = groupChannels(channels);
+
+  /** channelId → người đang trong phòng thoại (đã sắp theo lúc vào). */
+  const voiceByChannel = useMemo(() => {
+    const map = new Map<string, VoiceState[]>();
+    for (const entry of state.voiceStates) {
+      if (entry.guildId !== guildId) continue;
+      const list = map.get(entry.channelId);
+      if (list === undefined) map.set(entry.channelId, [entry]);
+      else list.push(entry);
+    }
+    return map;
+  }, [state.voiceStates, guildId]);
+  /** Trạng thái thoại của chính mình trong server đang mở (null = không ở phòng nào). */
+  const myVoice = useMemo(
+    () => state.voiceStates.find((entry) => entry.userId === state.me?.id) ?? null,
+    [state.voiceStates, state.me],
+  );
 
   // ---- Kéo-thả sắp xếp sidebar (chỉ khi có MANAGE_CHANNELS) ----
   const [dragId, setDragId] = useState<string | null>(null);
@@ -532,12 +550,16 @@ export function ChatScreen() {
                     </div>
                   )}
                   {group.channels.map((channel) => (
+                    <div key={channel.id}>
                     <ChannelButton
-                      key={channel.id}
                       channel={channel}
                       active={channel.id === channelId}
                       onSelect={() => void state.selectChannel(channel.id)}
+                      onVoiceToggle={() => void state.toggleVoice(channel.id)}
+                      voiceActive={myVoice?.channelId === channel.id}
                       voiceLabel={t("voiceChannel")}
+                      voiceJoinLabel={t("voiceJoin")}
+                      voiceLeaveLabel={t("voiceLeave")}
                       unread={state.unread[channel.id] ?? 0}
                       mentions={state.mentions[channel.id] ?? 0}
                       unreadLabel={t("unread")}
@@ -554,12 +576,90 @@ export function ChatScreen() {
                           : undefined
                       }
                     />
+                    {(voiceByChannel.get(channel.id) ?? []).length > 0 && (
+                      <ul className="mb-1 ml-3 space-y-0.5 border-l border-white/10 pl-2">
+                        {(voiceByChannel.get(channel.id) ?? []).map((entry) => (
+                          <li
+                            key={entry.userId}
+                            className="flex items-center gap-1.5 text-[11px] text-slate-400"
+                          >
+                            <Avatar
+                              avatarUrl={memberById.get(entry.userId)?.avatarUrl ?? null}
+                              name={memberById.get(entry.userId)?.displayName ?? entry.userId}
+                              size="size-4"
+                              className="bg-slate-700 text-[8px]"
+                            />
+                            <span className="truncate">
+                              {memberById.get(entry.userId)?.displayName ?? entry.userId}
+                            </span>
+                            {entry.selfMute && (
+                              <span title={t("voiceMute")} aria-label={t("voiceMute")}>
+                                🔇
+                              </span>
+                            )}
+                            {entry.selfDeaf && (
+                              <span title={t("voiceDeafen")} aria-label={t("voiceDeafen")}>
+                                🎧
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    </div>
                   ))}
                 </div>
               ))}
             </>
           )}
         </div>
+
+        {/* Thanh thoại: chỉ hiện khi mình đang ở trong một phòng thoại. */}
+        {myVoice !== null && (
+          <div className="border-t border-white/5 bg-emerald-400/5 px-3 py-2">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-[11px] font-semibold text-emerald-200">
+                🔊 {channels.find((c) => c.id === myVoice.channelId)?.name ?? t("voiceInChannel")}
+              </span>
+              <button
+                type="button"
+                onClick={() => void state.toggleVoice(myVoice.channelId)}
+                className="shrink-0 rounded px-1 text-[11px] text-slate-400 hover:bg-white/5 hover:text-rose-300"
+                title={t("voiceLeave")}
+                aria-label={t("voiceLeave")}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => void state.toggleVoiceMute()}
+                aria-pressed={myVoice.selfMute}
+                title={myVoice.selfMute ? t("voiceUnmute") : t("voiceMute")}
+                aria-label={myVoice.selfMute ? t("voiceUnmute") : t("voiceMute")}
+                className={`rounded px-2 py-0.5 text-xs hover:bg-white/5 ${
+                  myVoice.selfMute ? "bg-rose-400/20 text-rose-200" : "text-slate-300"
+                }`}
+              >
+                {myVoice.selfMute ? "🔇" : "🎙"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void state.toggleVoiceDeafen()}
+                aria-pressed={myVoice.selfDeaf}
+                title={myVoice.selfDeaf ? t("voiceUndeafen") : t("voiceDeafen")}
+                aria-label={myVoice.selfDeaf ? t("voiceUndeafen") : t("voiceDeafen")}
+                className={`rounded px-2 py-0.5 text-xs hover:bg-white/5 ${
+                  myVoice.selfDeaf ? "bg-rose-400/20 text-rose-200" : "text-slate-300"
+                }`}
+              >
+                🎧
+              </button>
+              <span className="ml-auto text-[10px] text-slate-500">{t("voiceOnlyState")}</span>
+            </div>
+          </div>
+        )}
 
         <div className="border-t border-white/5 px-3 py-2">
           <button
@@ -1380,7 +1480,11 @@ function ChannelButton({
   channel,
   active,
   onSelect,
+  onVoiceToggle,
+  voiceActive,
   voiceLabel,
+  voiceJoinLabel,
+  voiceLeaveLabel,
   unread,
   mentions,
   unreadLabel,
@@ -1390,7 +1494,13 @@ function ChannelButton({
   channel: Channel;
   active: boolean;
   onSelect: () => void;
+  /** Kênh thoại: vào/ra phòng (một nút cho cả hai chiều). */
+  onVoiceToggle?: () => void;
+  /** Đang ở trong phòng của kênh này. */
+  voiceActive?: boolean;
   voiceLabel: string;
+  voiceJoinLabel: string;
+  voiceLeaveLabel: string;
   unread: number;
   mentions: number;
   unreadLabel: string;
@@ -1406,17 +1516,26 @@ function ChannelButton({
 }) {
   const isVoice = channel.type === "guild_voice";
   const highlight = drag?.highlight;
+  const canConnect = isVoice && onVoiceToggle !== undefined;
   return (
     <button
-      onClick={isVoice ? undefined : onSelect}
-      // Kênh voice chưa có chức năng (G2) — chặn click nhưng vẫn kéo-thả để sắp xếp.
-      aria-disabled={isVoice}
+      // Kênh thoại: bấm là vào/ra phòng (không mở khung chat). Vẫn kéo-thả được
+      // vì drag bắt đầu từ sự kiện riêng, không phải click.
+      onClick={canConnect ? onVoiceToggle : isVoice ? undefined : onSelect}
+      aria-disabled={isVoice && !canConnect}
+      aria-pressed={canConnect ? (voiceActive ?? false) : undefined}
       draggable={drag !== undefined}
       onDragStart={drag?.onDragStart}
       onDragOver={drag?.onDragOver}
       onDrop={drag?.onDrop}
       onDragEnd={drag?.onDragEnd}
-      title={isVoice ? `${voiceLabel} · G2` : channel.name ?? ""}
+      title={
+        canConnect
+          ? `${voiceActive === true ? voiceLeaveLabel : voiceJoinLabel}: ${channel.name ?? ""}`
+          : isVoice
+            ? `${voiceLabel} · G2`
+            : channel.name ?? ""
+      }
       className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm ${
         drag !== undefined ? "cursor-grab active:cursor-grabbing" : ""
       } ${
@@ -1426,11 +1545,13 @@ function ChannelButton({
             ? "shadow-[inset_0_-2px_0_0_rgba(52,211,153,0.9)]"
             : ""
       } ${
-        active
-          ? "bg-white/10 text-slate-100"
-          : isVoice
-            ? "text-slate-500"
-            : unread > 0 || mentions > 0
+        voiceActive === true
+          ? "bg-emerald-400/10 text-emerald-200"
+          : active
+            ? "bg-white/10 text-slate-100"
+            : isVoice
+              ? "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+              : unread > 0 || mentions > 0
               ? "text-slate-100 hover:bg-white/5"
               : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
       }`}

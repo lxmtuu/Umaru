@@ -473,4 +473,33 @@ describe("UmaruApi", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(403);
   });
+
+  it("joinVoice/leaveVoice/updateVoiceState gọi đúng endpoint và method", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 200,
+      body: {
+        guildId: "1",
+        channelId: "2",
+        userId: "3",
+        selfMute: true,
+        selfDeaf: false,
+        joinedAt: "2026-10-26T00:00:00.000Z",
+      },
+    });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    const state = await api.joinVoice("2");
+    expect(calls[0]?.url).toBe("/api/v1/channels/2/voice");
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(state.channelId).toBe("2");
+
+    await api.leaveVoice("2");
+    expect(calls[1]?.url).toBe("/api/v1/channels/2/voice");
+    expect(calls[1]?.init?.method).toBe("DELETE");
+
+    await api.updateVoiceState("1", { selfDeaf: true });
+    expect(calls[2]?.url).toBe("/api/v1/guilds/1/voice-state");
+    expect(calls[2]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({ selfDeaf: true });
+  });
 });

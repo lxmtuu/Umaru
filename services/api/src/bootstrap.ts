@@ -12,6 +12,7 @@ import {
   type ReadState,
   type Role,
   type Snowflake,
+  type VoiceState,
 } from "@umaru/protocol";
 import type { Pool } from "./db.js";
 import { mapChannel, mapGuild, mapRole, type ChannelRow, type GuildRow } from "./mappers.js";
@@ -35,6 +36,8 @@ export interface Bootstrap {
   guildIds: Set<string>;
   /** channelId → quyền hiệu dụng của user (chuỗi thập phân) — gửi kèm READY. */
   channelPermissions: Record<string, string>;
+  /** Ai đang ở phòng thoại nào, **chỉ** trong các kênh user xem được. */
+  voiceStates: VoiceState[];
 }
 
 /** DM không có role/overwrite: hai người trong cuộc đều có đúng ba quyền này. */
@@ -220,6 +223,7 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
       visibleChannels,
       guildIds: new Set(),
       channelPermissions,
+      voiceStates: [],
     };
   }
 
@@ -358,7 +362,43 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
     visibleChannels,
     guildIds: new Set(guildIds),
     channelPermissions,
+    // Lọc theo `visibleChannels` **trong SQL**: người không có VIEW_CHANNEL của
+    // phòng thoại không được biết ai đang ở trong đó (cùng tiêu chí §8 với tin
+    // nhắn). Lọc ở tầng này nên không có đường nào lọt qua READY.
+    voiceStates: await loadVoiceStates(pool, [...visibleChannels]),
   };
+}
+
+interface VoiceStateRow {
+  guild_id: string;
+  channel_id: string;
+  user_id: string;
+  self_mute: boolean;
+  self_deaf: boolean;
+  joined_at: Date;
+}
+
+/** Trạng thái phòng thoại của một tập kênh (đã kiểm quyền xem ở nơi gọi). */
+export async function loadVoiceStates(
+  pool: Pool,
+  channelIds: string[],
+): Promise<VoiceState[]> {
+  if (channelIds.length === 0) return [];
+  const result = await pool.query<VoiceStateRow>(
+    `SELECT guild_id, channel_id, user_id, self_mute, self_deaf, joined_at
+       FROM voice_states
+      WHERE channel_id = ANY($1::bigint[])
+      ORDER BY joined_at, user_id`,
+    [channelIds],
+  );
+  return result.rows.map((row) => ({
+    guildId: row.guild_id as Snowflake,
+    channelId: row.channel_id as Snowflake,
+    userId: row.user_id as Snowflake,
+    selfMute: row.self_mute,
+    selfDeaf: row.self_deaf,
+    joinedAt: row.joined_at.toISOString(),
+  }));
 }
 
 interface ReadStateRow {

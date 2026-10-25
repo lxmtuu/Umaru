@@ -9,6 +9,8 @@ import {
   type GatewayReceivePayload,
   type Snowflake,
   type User,
+  type VoiceState,
+  type VoiceStateUpdate,
 } from "@umaru/protocol";
 import type { RawData, WebSocket } from "ws";
 import { loadBootstrap } from "../bootstrap.js";
@@ -29,6 +31,15 @@ const MAX_BUFFERED_BYTES = 1_048_576;
 const AUTH_COOLDOWN_MS = 5_000;
 /** Số HEARTBEAT dư cho phép trong một interval — dư để chịu jitter, không phải để spam. */
 const HEARTBEAT_SLACK = 2;
+/**
+ * Hạn ân hạn cho trạng thái thoại "mồ côi" (không còn session gateway nào).
+ *
+ * Cố tình **không** dùng `sessionTtlMs`: người dùng có thể join qua REST trước
+ * khi socket identify xong, và trong test thì `sessionTtlMs` chỉ 5 giây — dọn
+ * theo mốc đó sẽ xoá trạng thái vừa tạo. Ba mươi phút là đủ để không ai bị đá
+ * oan, vẫn dọn được rác của người bỏ đi.
+ */
+const VOICE_STATE_ORPHAN_MS = 30 * 60 * 1000;
 
 /** Mã đóng theo spec §2.1 — đặt tên để chỗ dùng không phải nhớ số. */
 const CLOSE = {
@@ -278,6 +289,7 @@ export class GatewayHub implements EventPublisher {
       dms: bootstrap.dms,
       readStates: bootstrap.readStates,
       channelPermissions: bootstrap.channelPermissions,
+      voiceStates: bootstrap.voiceStates,
     });
     this.broadcastPresence(session, "online");
   }
@@ -344,6 +356,12 @@ export class GatewayHub implements EventPublisher {
       this.socketStates.forEach((otherState) => {
         if (otherState.session?.id === session.id) otherState.session = null;
       });
+      // Hết session (đóng app / resume quá TTL) → ra khỏi phòng thoại, nếu không
+      // sẽ có người "ngồi" trong kênh thoại mãi mãi dù không còn kết nối nào.
+      // Chỉ khi **không còn session nào** của user, để đóng một tab không đá tab kia.
+      if (!this.userHasConnectedSession(session.userId)) {
+        void this.dropVoiceStates(session.userId);
+      }
     }, this.deps.config.sessionTtlMs);
     session.removalTimer.unref();
 
@@ -379,6 +397,14 @@ export class GatewayHub implements EventPublisher {
     for (const session of this.sessions.values()) {
       if (!session.guildIds.has(guildId)) continue;
       this.dispatch(session, event, data);
+    }
+  }
+
+  publishVoiceState(channelId: string, data: VoiceStateUpdate): void {
+    for (const session of this.sessions.values()) {
+      const involved = session.userId === data.userId;
+      if (!involved && !session.visibleChannels.has(channelId)) continue;
+      this.dispatch(session, "VOICE_STATE_UPDATE", data);
     }
   }
 
@@ -450,6 +476,21 @@ export class GatewayHub implements EventPublisher {
         channelPermissions: bootstrap.channelPermissions,
       });
     }
+
+    // Mất quyền xem kênh thoại đang ngồi → phải bị đưa ra khỏi phòng. Kiểm ở
+    // đây thay vì trong từng route quyền (role, overwrite, xoá kênh...) vì mọi
+    // thay đổi quyền đều đi qua hàm này — một chỗ, không thể quên.
+    const hidden = await this.deps.pool.query<{ channel_id: string }>(
+      `SELECT channel_id FROM voice_states
+        WHERE user_id = $1 AND channel_id <> ALL($2::bigint[])`,
+      [userId, [...bootstrap.visibleChannels]],
+    );
+    if (hidden.rows.length > 0) {
+      await this.dropVoiceStates(
+        userId,
+        hidden.rows.map((row) => row.channel_id),
+      );
+    }
   }
 
   // ---------- nội bộ ----------
@@ -501,7 +542,62 @@ export class GatewayHub implements EventPublisher {
     return false;
   }
 
+  /**
+   * Xoá trạng thái thoại của user và phát `VOICE_STATE_UPDATE` (channelId null)
+   * cho từng phòng họ đang ở. Dùng khi hết session hoặc mất quyền xem kênh.
+   */
+  async dropVoiceStates(userId: string, onlyChannelIds?: string[]): Promise<void> {
+    const result = await this.deps.pool.query<{ guild_id: string; channel_id: string }>(
+      onlyChannelIds === undefined
+        ? "DELETE FROM voice_states WHERE user_id = $1 RETURNING guild_id, channel_id"
+        : "DELETE FROM voice_states WHERE user_id = $1 AND channel_id = ANY($2::bigint[])"
+          + " RETURNING guild_id, channel_id",
+      onlyChannelIds === undefined ? [userId] : [userId, onlyChannelIds],
+    );
+    for (const row of result.rows) {
+      this.publishVoiceState(row.channel_id, {
+        guildId: row.guild_id as Snowflake,
+        channelId: null,
+        userId: userId as Snowflake,
+        selfMute: false,
+        selfDeaf: false,
+        joinedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  /**
+   * Dọn trạng thái thoại "mồ côi": người dùng không còn session gateway nào
+   * (đóng app, hoặc join qua REST rồi biến mất) nhưng vẫn nằm trong phòng.
+   *
+   * Có thời gian ân hạn vì mất mạng tạm thời vẫn giữ session để resume — chỉ
+   * dọn những dòng cũ hơn hạn đó, và **không** dọn người đang có session.
+   */
+  private async sweepVoiceStates(): Promise<void> {
+    const connected = [...new Set([...this.sessions.values()].map((session) => session.userId))];
+    const result = await this.deps.pool.query<{ guild_id: string; channel_id: string; user_id: string }>(
+      `DELETE FROM voice_states
+        WHERE user_id <> ALL($1::bigint[])
+          AND joined_at < now() - ($2::text || ' milliseconds')::interval
+        RETURNING guild_id, channel_id, user_id`,
+      [connected, String(VOICE_STATE_ORPHAN_MS)],
+    );
+    for (const row of result.rows) {
+      this.publishVoiceState(row.channel_id, {
+        guildId: row.guild_id as Snowflake,
+        channelId: null,
+        userId: row.user_id as Snowflake,
+        selfMute: false,
+        selfDeaf: false,
+        joinedAt: new Date().toISOString(),
+      });
+    }
+  }
+
   private sweep(): void {
+    void this.sweepVoiceStates().catch((error: unknown) => {
+      this.deps.log?.(`[gateway] dọn voice_states lỗi: ${String(error)}`);
+    });
     const now = Date.now();
     for (const [socket, state] of this.socketStates) {
       if (state.session === null) continue;

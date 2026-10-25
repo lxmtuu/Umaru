@@ -41,8 +41,19 @@ export interface GuildDeps {
   publisher: EventPublisher;
 }
 
+/**
+ * Quyền mặc định của `@everyone` khi tạo server.
+ *
+ * Có `CONNECT`/`SPEAK` từ đầu (như Discord): kênh thoại mới tạo phải dùng được
+ * ngay, không bắt chủ server đi cấp quyền trước. Muốn hạn chế thì đặt overwrite
+ * theo kênh — đúng cách.
+ */
 const DEFAULT_EVERYONE_PERMISSIONS =
-  Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES | Permission.READ_HISTORY;
+  Permission.VIEW_CHANNEL |
+  Permission.SEND_MESSAGES |
+  Permission.READ_HISTORY |
+  Permission.CONNECT |
+  Permission.SPEAK;
 
 const CHANNEL_TYPES = new Set<ChannelType>(["guild_text", "guild_voice", "category"]);
 

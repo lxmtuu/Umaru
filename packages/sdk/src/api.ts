@@ -15,6 +15,7 @@ import type {
   Role,
   User,
   GuildMemberSummary,
+  VoiceState,
 } from "@umaru/protocol";
 
 function buildSearchParams(query: string, options: { before?: string; limit?: number }): string {
@@ -582,6 +583,32 @@ export class UmaruApi {
   listPinnedMessages(channelId: string, limit?: number): Promise<Message[]> {
     const query = limit === undefined ? "" : `?limit=${limit}`;
     return this.request<Message[]>(`${API_PREFIX}/channels/${channelId}/pins${query}`);
+  }
+
+  /**
+   * Vào phòng thoại của kênh voice (idempotent; đổi kênh thì tự rời kênh cũ).
+   * Chưa truyền âm thanh — đây là lớp trạng thái "ai đang ở phòng nào".
+   */
+  joinVoice(channelId: string): Promise<VoiceState> {
+    return this.request<VoiceState>(`${API_PREFIX}/channels/${channelId}/voice`, {
+      method: "PUT",
+    });
+  }
+
+  /** Rời phòng thoại (idempotent). */
+  leaveVoice(channelId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/channels/${channelId}/voice`, { method: "DELETE" });
+  }
+
+  /** Tự mute/deafen trong phòng thoại đang ở. */
+  updateVoiceState(
+    guildId: string,
+    patch: { selfMute?: boolean; selfDeaf?: boolean },
+  ): Promise<VoiceState> {
+    return this.request<VoiceState>(`${API_PREFIX}/guilds/${guildId}/voice-state`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
   }
 
   deleteMessage(messageId: string): Promise<void> {
