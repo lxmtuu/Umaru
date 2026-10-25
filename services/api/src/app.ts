@@ -64,7 +64,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   const tokens = createTokenService(config.jwtSecret, config.accessTokenTtlSec);
   // Chưa có SMTP_URL → ghi mail ra log để dev tự bấm link (xem mail.ts).
   const mailer = deps.mailer ?? createMailer(config, (line) => app.log.info(line));
-  const hub = new GatewayHub({ pool, config, tokens });
+  const hub = new GatewayHub({ pool, config, tokens, log: (line) => app.log.warn(line) });
   const reportNotifier = new ReportNotifier({
     pool,
     config,

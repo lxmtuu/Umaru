@@ -41,6 +41,13 @@ export async function createTestContext(
       SESSION_TTL_MS: "5000",
       ACCESS_TOKEN_TTL_SEC: "900",
       UPLOADS_DIR: uploadsDir,
+      // Rate limit (spec §7) **vẫn chạy** trong test nhưng nới rộng, để đường
+      // code luôn được thực thi mà test nghiệp vụ không phải chờ. Test riêng của
+      // rate limit tự đặt giới hạn thấp để kiểm hành vi chặn.
+      RATE_LIMIT_MESSAGES_PER_USER: "1000",
+      RATE_LIMIT_MESSAGES_PER_CHANNEL: "5000",
+      RATE_LIMIT_GATEWAY_FRAMES_PER_MINUTE: "100000",
+      RATE_LIMIT_SESSIONS_PER_USER: "100",
       ...envOverrides,
     }),
     logger: false,

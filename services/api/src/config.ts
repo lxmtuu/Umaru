@@ -56,6 +56,21 @@ export interface Config {
   reportNotifyEmail: boolean;
   /** Giãn cách tối thiểu giữa hai mail báo cáo (giây), chống dội hộp thư. */
   reportNotifyCooldownSec: number;
+  /**
+   * Bật rate limit theo spec §7 (`RATE_LIMITS`, mặc định **bật**).
+   *
+   * Tắt được cho test/bench, nhưng production phải để bật: đây là hàng rào duy
+   * nhất chống spam tin nhắn và flood frame qua gateway.
+   */
+  rateLimitsEnabled: boolean;
+  /** Số tin một người gửi được vào **một kênh** trong 5 giây (spec §7: 5). */
+  rateLimitMessagesPerUser: number;
+  /** Số tin **cả kênh** nhận được trong 1 phút (spec §7: 30). */
+  rateLimitMessagesPerChannel: number;
+  /** Số frame client → server mỗi phút trên một socket (spec §7: 120). */
+  rateLimitGatewayFramesPerMinute: number;
+  /** Số session đồng thời của một user (spec §7: 5, vượt thì đóng session cũ nhất). */
+  rateLimitSessionsPerUser: number;
   logger: boolean;
 }
 
@@ -135,6 +150,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminUsernames: splitList(env.ADMIN_USERNAMES).map((name) => name.toLowerCase()),
     reportNotifyEmail: !isOff(env.REPORT_NOTIFY_EMAIL),
     reportNotifyCooldownSec: readPositiveInt(env.REPORT_NOTIFY_COOLDOWN_SEC, 300, 0, 86_400),
+    rateLimitsEnabled: !isOff(env.RATE_LIMITS),
+    rateLimitMessagesPerUser: readPositiveInt(env.RATE_LIMIT_MESSAGES_PER_USER, 5, 1, 1_000),
+    rateLimitMessagesPerChannel: readPositiveInt(
+      env.RATE_LIMIT_MESSAGES_PER_CHANNEL,
+      30,
+      1,
+      100_000,
+    ),
+    rateLimitGatewayFramesPerMinute: readPositiveInt(
+      env.RATE_LIMIT_GATEWAY_FRAMES_PER_MINUTE,
+      120,
+      10,
+      100_000,
+    ),
+    rateLimitSessionsPerUser: readPositiveInt(env.RATE_LIMIT_SESSIONS_PER_USER, 5, 1, 100),
     emailVerificationEcho: env.EMAIL_VERIFICATION_ECHO
       ? env.EMAIL_VERIFICATION_ECHO !== "0"
       : !isProduction,

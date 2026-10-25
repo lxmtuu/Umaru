@@ -152,4 +152,54 @@ describe("GatewayClient", () => {
     expect(sockets[0]!.readyState).toBe(3);
     expect(client.state).toBe("reconnecting");
   });
+
+  it("đóng 4003 → xoá session, lần sau IDENTIFY thay vì RESUME", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "sess-1", user: {} } });
+
+    // Server đóng 4003: session không còn resumable.
+    sockets[0]!.emitClose(4003);
+    expect(client.state).toBe("reconnecting");
+    vi.advanceTimersByTime(1_000);
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.emitOpen();
+    const first = parseSent(sockets[1]!, 0);
+    expect(first.op).toBe(2); // IDENTIFY
+    expect(client.getSession()).toBeNull();
+  });
+
+  it("đóng 4004 (rate limited) → chờ tối thiểu 5 giây mới nối lại", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0, // backoff thường chỉ 1 s
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "sess-9", user: {} } });
+
+    sockets[0]!.emitClose(4004);
+    vi.advanceTimersByTime(4_999);
+    expect(sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(2);
+  });
 });

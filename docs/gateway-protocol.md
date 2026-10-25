@@ -229,6 +229,21 @@ Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake l
 | `POST /channels/{id}/messages` | 5/5 s/user/channel, 30/phút/kênh | `429` (không phát dispatch) |
 | Kết nối/user | 5 session | session cũ nhất bị đóng `4003` |
 
+Bảng trên **đã được hiện thực** (`services/api/src/rateLimit.ts` + `gateway/hub.ts` + `messages/routes.ts`), có test riêng ở `services/api/test/rate-limit.test.ts` và `services/api/test/rate-limit-gateway.test.ts`.
+
+Cách đếm:
+
+- **Token bucket** chứ không phải "đếm trong cửa sổ cố định": cửa sổ cố định cho phép bắn 2× giới hạn ở ranh giới hai cửa sổ, bucket thì làm mượt theo thời gian thật. Body `429` luôn là `{ error: { code: "RATE_LIMITED", message }, retry_after }` với `retry_after` tính bằng **giây** (làm tròn lên, tối thiểu 1) để client hiện được "thử lại sau N giây".
+- **Frame/phút tính cả frame rác** (sai JSON, opcode lạ): đếm trước khi parse, nếu không kẻ tấn công chỉ cần gửi rác để ép server parse liên tục.
+- **HEARTBEAT** có bucket riêng (1 + 2 dư mỗi interval) vì client gửi dày thường do jitter — đóng kết nối sẽ tạo vòng reconnect vô ích. Vượt thì **im lặng bỏ qua**, không đóng; chỉ log lần đầu của mỗi chuỗi dư (log từng frame thì log lại thành kênh tấn công).
+- **`IDENTIFY` và `RESUME` đếm riêng**, mỗi loại 1 lần/5 s/socket. Gộp chung một bộ đếm sẽ đóng `4004` oan cho luồng hợp lệ `RESUME` → `INVALID_SESSION` → `IDENTIFY` ngay trên cùng kết nối (§2.1) — đúng lỗi một test có sẵn đã bắt được.
+- **Tin nhắn** kiểm *trước* khi đọc multipart/ghi đĩa, nên bị chặn thì không có tệp mồ côi, không ghi DB và **không phát `MESSAGE_CREATE`**. Hai bucket độc lập: người bình thường không chạm trần kênh, còn kênh bị nhiều tài khoản spam thì trần kênh (30/phút) mới là thứ cứu server.
+- **Trần session/user** đóng session **cũ nhất còn sống** (không phải session vừa mở) trước khi tạo session mới — đúng ca "mất mạng rồi mở lại nhiều lần".
+
+Tinh chỉnh bằng biến môi trường: `RATE_LIMITS=off` (mặc định bật), `RATE_LIMIT_MESSAGES_PER_USER` (5), `RATE_LIMIT_MESSAGES_PER_CHANNEL` (30), `RATE_LIMIT_GATEWAY_FRAMES_PER_MINUTE` (120), `RATE_LIMIT_SESSIONS_PER_USER` (5). Test dùng chung đặt các trần này rất cao để không phải chờ, test riêng của rate limit hạ thấp để kiểm hành vi chặn.
+
+> **Đa node**: bộ đếm nằm trong bộ nhớ từng process (§9), nên với N node thì giới hạn thực tế là N × cấu hình. Muốn đúng tuyệt đối phải chuyển sang Redis (`INCR` + `EXPIRE`) cùng lúc với replay log.
+
 ---
 
 ## 8. Nghiệm thu G1 (test phải có)
@@ -247,7 +262,8 @@ Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake l
 ## 9. Việc còn thiếu so với spec này (ghi nhận trung thực)
 
 - **Replay log đang nằm trong bộ nhớ một process** (`MAX_REPLAY_EVENTS`, TTL session), chưa phải Redis Streams như §4.2. Resume qua nhiều node và qua restart server chưa hoạt động — phải thay `GatewayHub` phần replay khi lên đa node (ADR-0003).
-- **Chưa có rate limit** cho `IDENTIFY`/frame (spec §7): hiện chỉ giới hạn kích thước frame 4 KiB và typing 1/8s ở REST.
+- **Rate limit đã có** cho `IDENTIFY`/`RESUME`/frame/session và cho `POST /messages` (spec §7), nhưng bộ đếm **nằm trong bộ nhớ từng process** — đa node thì giới hạn thực tế nhân lên theo số node, và restart server là mất trạng thái (chấp nhận được: cửa sổ ngắn). Chuyển sang Redis khi lên đa node.
+- Đóng `1009` (frame quá lớn) hiện **vẫn để client reconnect** theo backoff chung; spec §2.1 nói "không reconnect". Hành vi hiện tại an toàn hơn (client gửi frame lớn thường do bug, reconnect một lần rồi bỏ), nhưng chưa khớp câu chữ.
 - `READY` đã có `guilds[]` (`{ guild, channels, roles, members }` — member kèm `roleIds`), `dms[]` (`DmChannelSummary`: `channel`, `recipients`, `recipient` (chỉ DM 1-1, group DM = `null`), `ownerId`/`name` cho group DM), `readStates[]` (`{ channelId, lastReadMessageId, unread, mentions }`) và `channelPermissions` (channelId → bitfield của **chính user nhận**, server tính bằng `resolvePermissions`; gồm cả DM); `voiceStates[]` để G2.
 - Thay đổi role của **thành viên** phát `GUILD_MEMBER_UPDATE` cho cả server; THAY ĐỔI role (tạo/sửa/xoá) phát `ROLE_CREATE/UPDATE/DELETE`. `ROLE_DELETE` không tự phát `GUILD_MEMBER_UPDATE` cho từng người — client dựa vào `member_roles` cascade và bỏ `roleId` khỏi chip của mọi member.
 - `channelPermissions` được đẩy lại qua `PERMISSIONS_UPDATE` mỗi khi `refreshUserVisibility`/`refreshGuildVisibility` chạy: tạo/sửa/xoá kênh, tạo guild, nhận invite, các thao tác role (`PATCH`/`DELETE` role, gán/thu role) và **mọi thay đổi overwrite theo kênh**. Cùng lúc đó gateway gửi `CHANNEL_DELETE` cho kênh vừa mất quyền xem và `CHANNEL_CREATE` cho kênh vừa được xem — client không cần reconnect. Client luôn coi đây là gợi ý UI: quyền thật vẫn do server kiểm tra ở REST/gateway.
@@ -257,7 +273,7 @@ Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake l
 - Khi user tạo guild hoặc join invite, server đồng bộ lại quyền hiển thị cho session đang mở (`refreshUserVisibility`) vì READY đã chạy trước đó.
 - **DM** là `Channel` có `type: "dm"`, `guildId: null`; quyền xem suy ra từ bảng `channel_members` (không qua role/overwrite) và được nạp vào `visibleChannels` khi READY, khi tạo DM (`grantChannelAccess`) và khi resume. `DM_CHANNEL_CREATE` không vào replay log (transient) — client lấy lại danh sách qua `GET /users/@me/channels` nếu lỡ.
 - Client chưa **dedupe theo `s`** (chỉ ghi nhận `s`); server replay đã lọc `s > seq` nên chưa gây lỗi, nhưng nên thêm.
-- Client chưa tự **refresh token** khi gặp `4000`.
+- Client chưa tự **refresh token** khi gặp `4000` (nhưng đã xử lý `4003` = xoá session để IDENTIFY lại, và `4004` = chờ ≥ 5 s mới nối lại).
 - Chưa có sharding (`shard` luôn 0).
 - Heartbeat chưa jitter.
 - Chưa có nén frame; `OP 3`/`OP 4` (client → server) để trống có chủ đích ở v1.

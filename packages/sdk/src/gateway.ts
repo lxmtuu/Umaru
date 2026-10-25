@@ -126,7 +126,7 @@ export class GatewayClient {
     this.setState(this.sessionId !== null ? "reconnecting" : "connecting");
     ws.addEventListener("open", () => this.handleOpen());
     ws.addEventListener("message", (event) => this.handleMessage(event));
-    ws.addEventListener("close", () => this.handleClose());
+    ws.addEventListener("close", (event) => this.handleClose(event.code ?? null));
     ws.addEventListener("error", () => {
       /* sự kiện close sẽ tới ngay sau đó */
     });
@@ -261,14 +261,25 @@ export class GatewayClient {
     }, delay);
   }
 
-  private handleClose(): void {
+  /**
+   * Xử lý close theo mã (spec §2.1):
+   * - `4003` (session không còn) → xoá session để lần sau IDENTIFY, không RESUME vô ích.
+   * - `4004` (rate limited) → chờ ≥ 5 s mới nối lại, tránh vòng lặp tự đốt rate limit.
+   * - Còn lại → backoff thường.
+   */
+  private handleClose(code: number | null = null): void {
     this.stopHeartbeat();
     this.ws = null;
     if (this.closedByUser) {
       this.setState("closed");
       return;
     }
-    this.scheduleReconnect();
+    if (code === 4003) {
+      this.sessionId = null;
+      this.seq = 0;
+    }
+    const delay = computeBackoffMs({ attempt: this.reconnectAttempt, random: this.random });
+    this.scheduleReconnect(code === 4004 ? Math.max(delay, 5_000) : delay);
   }
 
   private clearTimers(): void {

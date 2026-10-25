@@ -18,6 +18,7 @@ import {
 } from "../http.js";
 import { attachmentUrl, mapMessagesWithAttachments } from "../attachments.js";
 import { mapMessage, type MessageRow } from "../mappers.js";
+import { BucketStore, rateLimitedBody } from "../rateLimit.js";
 import { syncMessageMentions } from "../mentions.js";
 import {
   isAllowedMime,
@@ -47,6 +48,15 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
   const { pool, config, publisher } = deps;
   const guard = createAuthGuard(deps.tokens);
   const nextId = () => createSnowflake(config.workerId);
+
+  /**
+   * Rate limit gửi tin (spec §7): 5 tin/5s cho **một người trong một kênh** và
+   * 30 tin/phút cho **cả kênh**. Hai bucket độc lập: người bình thường không bao
+   * giờ chạm trần kênh, còn kênh bị spam bởi nhiều tài khoản thì trần kênh mới
+   * là thứ cứu server.
+   */
+  const messageUserBuckets = new BucketStore(config.rateLimitMessagesPerUser, 5_000);
+  const messageChannelBuckets = new BucketStore(config.rateLimitMessagesPerChannel, 60_000);
 
   app.get<{ Params: { channelId: string }; Querystring: { before?: string; limit?: string } }>(
     "/channels/:channelId/messages",
@@ -91,6 +101,23 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       await loadChannelContext(pool, userId as Snowflake, channelId, Permission.SEND_MESSAGES);
       if (await isDmBlocked(pool, channelId, userId)) {
         throw forbidden("Không thể nhắn tin với người này");
+      }
+
+      // Kiểm **trước** khi đọc multipart/ghi đĩa: bị chặn thì không phát dispatch
+      // và không để lại tệp mồ côi.
+      if (config.rateLimitsEnabled) {
+        const perUser = messageUserBuckets.take(`${userId}:${channelId}`);
+        if (perUser !== null) {
+          return reply
+            .code(429)
+            .send(rateLimitedBody(perUser, "Bạn gửi tin quá nhanh, thử lại sau vài giây"));
+        }
+        const perChannel = messageChannelBuckets.take(channelId);
+        if (perChannel !== null) {
+          return reply
+            .code(429)
+            .send(rateLimitedBody(perChannel, "Kênh này nhận quá nhiều tin, thử lại sau"));
+        }
       }
 
       const payload = request.isMultipart()
@@ -367,10 +394,7 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       const last = typingTimestamps.get(key) ?? 0;
       if (now - last < TYPING_COOLDOWN_MS) {
         const retryAfter = Math.ceil((TYPING_COOLDOWN_MS - (now - last)) / 1000);
-        return reply.code(429).send({
-          error: { code: "RATE_LIMITED", message: "Gửi typing quá nhanh" },
-          retry_after: retryAfter,
-        });
+        return reply.code(429).send(rateLimitedBody(retryAfter, "Gửi typing quá nhanh"));
       }
       typingTimestamps.set(key, now);
       publisher.publishToChannel(request.params.channelId, "TYPING_START", {
