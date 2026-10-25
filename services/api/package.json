@@ -1,0 +1,32 @@
+{
+  "name": "@umaru/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "dev": "tsc -p tsconfig.json && node --enable-source-maps dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "migrate": "node dist/scripts/migrate.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "@node-rs/argon2": "^2.2.2",
+    "@umaru/protocol": "workspace:*",
+    "fastify": "^5.7.4",
+    "jose": "^6.1.3",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/pg": "^8.15.6",
+    "@types/ws": "^8.18.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5",
+    "ws": "^8.18.3"
+  }
+}

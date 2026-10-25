@@ -1,0 +1,108 @@
+# Umaru
+
+Workspace chat/voice kiểu Discord cho **Dev & Nhóm học**, tích hợp AI. Song song VN + Quốc tế (EN mặc định, toggle VI).
+
+> **Lộ trình & phân tích sản phẩm:** xem [ROADMAP.md](./ROADMAP.md) — các quyết định chiến lược ở §0.1 và §7.
+> **Tài liệu kiến trúc:** [data-model.md](docs/data-model.md) · [gateway-protocol.md](docs/gateway-protocol.md) · [ADR](docs/adr/README.md) · DDL [db/migrations/0001_init.sql](db/migrations/0001_init.sql)
+
+## Cấu trúc
+
+```
+umaru/
+├── apps/
+│   └── web/              # React + TypeScript + Vite + Tailwind (client web)
+├── packages/
+│   ├── protocol/         # Types + codec dùng chung: snowflake, permissions (resolve), gateway events
+│   └── sdk/              # API client + Gateway WebSocket client (reconnect/resume)
+├── services/
+│   └── api/              # Fastify REST + gateway ws, PostgreSQL (G1)
+├── docs/                 # data-model, gateway spec, ADR
+├── db/migrations/        # PostgreSQL DDL (áp bằng services/api)
+├── ROADMAP.md            # Phân tích chức năng Discord + lộ trình G0→G5
+├── turbo.json            # Đồ thị task (build/dev/typecheck/test)
+└── pnpm-workspace.yaml
+```
+
+Sau này thêm: `apps/desktop` (Tauri/Electron), `apps/mobile` (React Native), `packages/ui`.
+
+## Chạy nhanh
+
+```bash
+pnpm install
+pnpm build              # build protocol → sdk → api → web
+pnpm typecheck && pnpm test
+```
+
+### Chỉ client web
+
+```bash
+pnpm dev:web            # http://127.0.0.1:5173
+```
+
+`pnpm dev` chạy **cả** web và API (API cần PostgreSQL đang chạy, xem dưới). Vite proxy `/api` (kể cả WebSocket) sang `127.0.0.1:4000` nên web gọi same-origin, không cần CORS.
+
+### Backend G1 (REST + realtime gateway)
+
+Cần PostgreSQL 16. Dev bằng Docker:
+
+```bash
+docker run -d --name umaru-pg-dev \
+  -e POSTGRES_USER=umaru -e POSTGRES_PASSWORD=umaru -e POSTGRES_DB=umaru \
+  -p 55432:5432 postgres:16-alpine
+
+cd services/api
+cp .env.example .env          # sửa JWT_SECRET khi deploy thật
+pnpm dev                      # migrate + listen http://127.0.0.1:4000
+```
+
+Test backend cũng cần Postgres (tạo sẵn database `umaru_test`):
+
+```bash
+docker exec umaru-pg-dev createdb -U umaru umaru_test   # một lần
+pnpm --filter @umaru/api test                            # 66 test: auth, quyền, role, overwrite + category, thứ tự kênh (kéo-thả), cursor, gateway ws, DM, read state + mention
+```
+
+API đã có (`/api/v1`): `auth/register|login|refresh|logout`, `users/@me`, `users/@me/guilds`, `users/@me/channels` (list/create **DM 1-1**), `users/@me/read-states`, `users/@me/mentions` (mentions inbox), `guilds` (+`channels`, `roles`), `channels/:id/messages` (cursor `before`), `channels/:id` (PATCH tên/topic/**category**/**position**), `channels/:id/overwrites` (ghi đè quyền theo kênh), `channels/:id/read`, `messages/:id`, `channels/:id/typing`, invites, `gateway` + `gateway/ws`.
+
+## Stack (đã chốt — ROADMAP §4)
+
+| Lớp | Chọn |
+|------|------|
+| Web | React + TS + Vite, Tailwind, Zustand (state + gateway), `@umaru/sdk` |
+| Chia sẻ logic | pnpm + turborepo, `@umaru/protocol`, `@umaru/sdk` |
+| API + gateway | TypeScript: Fastify + `ws` ([ADR-0004](docs/adr/0004-backend-typescript-first.md)) |
+| DB | PostgreSQL 16 (Neon khi deploy), snowflake `BIGINT` làm khoá |
+| Mật khẩu / token | argon2id (`@node-rs/argon2`), JWT HS256 access 15 phút + refresh opaque xoay vòng |
+| Thoại | **LiveKit Cloud** (region Singapore) — kết nối từ G2 |
+| Ngân sách | 0đ/tháng — free tier (ROADMAP §4.4) |
+
+## Giai đoạn hiện tại
+
+**G1 — MVP nhắn tin (đang làm).** Đã chạy được end-to-end:
+
+- Auth email/password (argon2id), access + refresh token xoay vòng, logout thu hồi.
+- Server (guild) + role `@everyone` + kênh `#general` mặc định, invite link.
+- Kênh text/voice/category, sửa/xoá kênh theo `MANAGE_CHANNELS`.
+- Tin nhắn: gửi/đọc (cursor theo snowflake)/sửa/xoá, reply, typing indicator.
+- **DM 1-1** (`dm` channel, `guildId = null`, 2 dòng `channel_members`): mở lại cuộc cũ thay vì tạo trùng (advisory lock theo cặp user), tin nhắn chạy đúng cùng đường `messages` + fan-out như kênh thường; `DM_CHANNEL_CREATE` đẩy sang người nhận khi có người mới mở DM.
+- **Badge chưa đọc + badge mention** (bảng `read_states` + `message_mentions`): `POST /channels/:id/read` (ack tới một tin hoặc tin mới nhất, `GREATEST` nên không lùi mốc), `GET /users/@me/read-states`; `READY` kèm `readStates[]` (`unread` + `mentions`) nên mở app là thấy đúng số tin. Tin do chính mình gửi không tính; đang mở kênh thì tự ack. Badge **đỏ** hiện số lượt bị `@`mention (tách khỏi badge xanh tin thường), parse `@username` khi gửi/sửa tin. **Mentions inbox**: `GET /users/@me/mentions` (cursor `before`, `limit`) trả tin có `@mình` mới nhất trước kèm kênh + tên server + người gửi (DM kèm người nhận); lọc `VIEW_CHANNEL` **trong SQL** trước `LIMIT` nên mất quyền là dòng biến mất, không lộ id kênh ẩn.
+- **Gateway thật**: HELLO → IDENTIFY → READY (kèm guild + kênh + **`roles`** + thành viên có **`roleIds`** + `dms` + `readStates` + **`channelPermissions`**: quyền hiệu dụng của chính user đó tại từng kênh, server tính sẵn nên client không phải chép lại thuật toán), heartbeat/ack, fan-out `MESSAGE_CREATE/UPDATE/DELETE`, `CHANNEL_*`, `GUILD_MEMBER_ADD`, **`GUILD_MEMBER_UPDATE`** (role của thành viên vừa gán/thu — cả server đổi chip ngay), `DM_CHANNEL_CREATE`, `TYPING_START`, `PRESENCE_UPDATE`, **`PERMISSIONS_UPDATE`** (quyền của chính user vừa đổi — kênh mới, được gán/thu role, vào server — nên nút sửa/xoá bật/tắt ngay, không cần reconnect), và **resume** phát lại tin nhắn bị lỡ sau khi mất mạng.
+- Quyền: `resolvePermissions` trong `@umaru/protocol` dùng chung cho REST + gateway; mất `VIEW_CHANNEL` → 404 ở API và `CHANNEL_DELETE` qua gateway.
+- **Quản lý role qua API**: `GET/POST /guilds/:id/roles`, `PATCH/DELETE /guilds/:id/roles/:roleId`, `PUT/DELETE /guilds/:id/members/:userId/roles/:roleId` — phân cấp theo `position` (không đụng role cao hơn cấp mình, owner/ADMIN bỏ qua) + mask quyền (**không tạo/sửa/giao role ngoài tập quyền mình có** — chặt hơn Discord nên mod không tự phong ADMIN được), `@everyone` không xoá/gán được; đổi quyền → `PERMISSIONS_UPDATE` đẩy lại cho session đang mở, tạo/sửa/xoá role phát `ROLE_CREATE/UPDATE/DELETE` cho cả server, gán/thu role phát `GUILD_MEMBER_UPDATE`.
+- **Permission overwrite theo kênh**: `GET/PUT/DELETE /channels/:id/overwrites[/:targetType/:targetId]` cho cả role và thành viên; `allow`/`deny` không được chồng bit (400), `allow` phải nằm trong quyền actor đang có (**mask** — mod không tự mở `MANAGE_MESSAGES`), target không cao hơn cấp actor (owner/ADMIN bỏ qua), `@everyone` được phép. `allow = deny = 0` = xoá override. Overwrite của **category được kế thừa** xuống kênh con (category áp trước, kênh cùng target đè sau) — `resolvePermissions` nhận `inheritedOverwrites`, backend nạp `parent_id` ở REST lẫn READY; `PATCH /channels/:id { parentId }` di chuyển kênh giữa category (`null` = ra gốc) và tính lại quyền. Mỗi thay đổi → `refreshGuildVisibility`: người mất quyền xem nhận `CHANNEL_DELETE`, người vừa được cấp nhận **`CHANNEL_CREATE`** + `PERMISSIONS_UPDATE` (trước đây chỉ có chiều mất quyền).
+- **UI chat thật** ([apps/web](apps/web)): đăng ký/đăng nhập, rail server (chấm xanh khi server có tin chưa đọc), nút **Home** với danh sách DM (`@tên`) + **badge số tin chưa đọc** và **badge đỏ số lượt bị nhắc** (DM có tin mới/mention nổi lên đầu, tự xoá khi mở), modal chọn người để mở DM, danh sách kênh, **tab Mentions** (nút 🔔 trên rail kèm badge đỏ tổng lượt nhắc, danh sách tin `@mình` 50 dòng/trang có tên người gửi/kênh/server/thời gian, nút **Xem thêm** nạp trang cũ hơn qua cursor `before`, bấm một dòng là nhảy đúng kênh và ack), gửi tin hiện ngay qua WebSocket, typing indicator, **sửa/xoá tin ngay trong khung chat** (nút hiện khi hover: ✎ mở ô soạn tại chỗ, Enter lưu — Esc huỷ; 🗑 hỏi xác nhận rồi xoá; nút có ở tin của mình, và ở tin của người khác khi mình có `MANAGE_MESSAGES` ở kênh đó — lấy từ `channelPermissions` của READY; nhãn `(đã sửa)` hiện sau khi lưu; tin bị xoá biến mất khỏi cả khung chat lẫn tab Mentions), đăng xuất; **panel Server Settings → Roles** (nút ⚙ cạnh tên server, chỉ hiện khi là owner hoặc có `MANAGE_ROLES`: danh sách role xếp theo cấp, tạo role mới, sửa tên/màu 10 quyền/xoá role có xác nhận, `@everyone` không xoá được; bảng **thành viên** bấm chip để gán/thu role — mọi client khác trong server thấy đổi ngay qua `GUILD_MEMBER_UPDATE`; lỗi 403/400 của server hiện ngay trong panel), **panel Channel Settings → ghi đè quyền** (nút ⚙ trên header khi xem kênh text và có `MANAGE_CHANNELS`/`MANAGE_ROLES`: danh sách override hiện có kèm số bit cho/ từ chối, chọn target trong dropdown (`@everyone`, role, thành viên), bấm từng quyền để xoay vòng **theo role → cho phép → từ chối** và lưu ngay, nút đặt lại; kênh nằm trong category hiện **phần kế thừa (chỉ đọc)** + nút sửa category, và đổi được category chứa kênh bằng dropdown; nút ➕ tạo kênh có chọn **text channel / category**, category có ⚙ riêng trên sidebar); token tự refresh khi 401; i18n EN/VI (lưu lựa chọn).
+
+- **Kéo-thả sắp xếp sidebar** (`PATCH /channels/:id { position }`): `position` là chỉ số **trong nhóm kênh cùng category** (`parentId` kèm theo nếu thả sang danh mục khác, `null` = gốc) — server renumber lại 0..n cho cả nhóm rồi phát `CHANNEL_UPDATE` cho đúng những kênh đổi vị trí, nên client khác xếp lại ngay không cần tải lại. Chặn `position` không phải số nguyên 0–100000 (400) và category lồng vào category (400); cần `MANAGE_CHANNELS`/owner (403 với thành viên thường). UI: kéo hàng kênh hoặc tiêu đề danh mục, vạch xanh hiện đúng vị trí thả (trước/sau), thả lên tiêu đề danh mục = vào đầu hoặc cuối danh mục; kéo danh mục đổi thứ tự giữa các danh mục; hàng kênh voice vẫn kéo được dù chưa bấm được.
+
+**G0 còn mở:** CI/CD và Terms/Privacy EN/VI (phải xong trước bản public đầu tiên).
+
+### Giới hạn đã biết của backend hiện tại
+
+- Replay log nằm **trong bộ nhớ của một process** (đúng cho 1 node). Đa node cần Redis Streams theo [ADR-0003](docs/adr/0003-gateway-resume-redis-streams.md) — giao thức không đổi.
+- Presence/ephemeral chưa dùng Redis; khởi động lại server làm mất session đang resume.
+- Chưa rate limit theo user cho REST (chỉ typing 1/8s), chưa sharding, chưa nén frame.
+- `READY` chưa gửi `voiceStates` (G2); chưa có event đổi thứ tự role/lên cấp role — kéo-thả đổi **cấp** role chưa làm (thứ tự **kênh** thì đã có `CHANNEL_UPDATE` kèm `position`).
+- UI chưa hiển thị danh sách thành viên/avatar (role chỉ hiện trong panel Server Settings), chưa phân quyền ẩn kênh trên sidebar bằng tay (server đã lọc kênh không xem được).
+- Chưa có **kéo-thả đổi cấp role** (vẫn chỉ đổi thứ tự role bằng thao tác trong panel); kéo-thả đổi thứ tự kênh/category đã có.
+- `PERMISSIONS_UPDATE` được phát từ: tạo/sửa/xoá kênh, tạo guild, nhận invite, mọi thao tác role (sửa/xoá quyền, gán/thu role) và mọi thay đổi overwrite. REST vẫn là nơi kiểm quyền thật — `channelPermissions` chỉ gợi ý ẩn/hiện UI.
+- DM chưa gộp nhóm, chưa chặn người lạ nhắn (privacy setting ở P1).
