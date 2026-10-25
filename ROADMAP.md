@@ -235,9 +235,9 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 - [x] Chọn wire format (JSON cho phase 1 → xem xét MessagePack/CBOR sau), thứ tự tin nhắn bằng snowflake ID (timestamp+worker+sequence — như Discord) → [ADR-0002](docs/adr/0002-json-wire-format.md) + `packages/protocol/src/snowflake.ts` (42-bit ms | 10-bit worker | 12-bit seq).
 - [x] Skeleton monorepo (xem §4) → pnpm + Turborepo, `packages/protocol`, `packages/sdk`, `apps/web` (React 19 + Vite + Tailwind 4); typecheck/build/test đều xanh.
 - [x] CI/CD: [.github/workflows/ci.yml](.github/workflows/ci.yml) — GitHub Actions `install --frozen-lockfile` → `typecheck` → `build` → `test` trên Node 22 + **PostgreSQL 16 service**, chạy khi push `main` và mọi PR. *(Môi trường staging vẫn chưa có — deploy thử lên Vercel/Neon là việc của G1.)*
-- [ ] Soạn **Terms/Privacy song ngữ EN/VI** cho hai thị trường: Luật An ninh mạng 2018 + Nghị định 72/2013 (VN: lưu trữ, gỡ bỏ, báo cáo cơ quan chức năng) và **GDPR** (EU/quốc tế), độ tuổi tối thiểu — hoàn thành trước bản public đầu tiên.
+- [x] Soạn **Terms/Privacy song ngữ EN/VI** cho hai thị trường: Luật An ninh mạng 2018 + Nghị định 72/2013 + Nghị định 13/2023/NĐ-CP (VN) và **GDPR** (EU/quốc tế), độ tuổi tối thiểu 13 — nội dung ở [apps/web/src/lib/legal.ts](apps/web/src/lib/legal.ts), trang `/terms` + `/privacy`, phiên bản ở `LEGAL_VERSION`, đăng ký bắt buộc tick đồng ý và lưu `users.terms_accepted_at/terms_version`. **Bản nháp đã xong phần kỹ thuật; còn luật sư rà soát + danh sách việc phải làm trước public ở [docs/legal/README.md](docs/legal/README.md).**
 
-**Nghiệm thu:** ✅ 4 ADR ([docs/adr/](docs/adr/README.md)) + data model + protocol nháp + repo build được. Còn mở: Terms/Privacy EN/VI (không chặn G1 về mặt kỹ thuật, nhưng **phải xong trước bản public đầu tiên**).
+**Nghiệm thu:** ✅ 4 ADR ([docs/adr/](docs/adr/README.md)) + data model + protocol nháp + repo build được + Terms/Privacy EN/VI (bản nháp kỹ thuật, cần luật sư rà soát trước public — xem [docs/legal/README.md](docs/legal/README.md)). **G0 hoàn tất phần kỹ thuật.**
 
 ### Giai đoạn 1 — MVP nhắn tin *(Tháng 1–3)*
 

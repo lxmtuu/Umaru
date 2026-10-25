@@ -17,6 +17,8 @@ export interface UserRow {
   password_hash: string;
   avatar_url: string | null;
   email_verified_at: Date | null;
+  terms_accepted_at: Date | null;
+  terms_version: string | null;
   created_at: Date;
 }
 

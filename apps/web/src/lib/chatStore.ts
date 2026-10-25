@@ -106,6 +106,7 @@ interface ChatState {
     displayName: string;
     email: string;
     password: string;
+    acceptedTerms: true;
   }): Promise<boolean>;
   logout(): Promise<void>;
   startSession(): Promise<void>;

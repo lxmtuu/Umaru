@@ -62,6 +62,11 @@ export interface RegisterInput {
   displayName: string;
   email: string;
   password: string;
+  /**
+   * Đồng ý Điều khoản & Chính sách quyền riêng tư — server **bắt buộc** `true`,
+   * nên để required ở đây để không quên khi gọi.
+   */
+  acceptedTerms: true;
 }
 
 const API_PREFIX = "/api/v1";

@@ -300,6 +300,7 @@ describe("UmaruApi", () => {
       displayName: "An",
       email: "an@example.com",
       password: "mat-khau-123",
+      acceptedTerms: true,
     });
 
     expect(result.emailVerificationSent).toBe(true);

@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useChat } from "../lib/chatStore.js";
 import { useLocale, useT } from "../lib/i18n.js";
+import { legalPath } from "../lib/legalRoute.js";
 
 type Mode = "login" | "register";
 
@@ -18,13 +19,22 @@ export function AuthScreen() {
   const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
+  /** Bắt buộc tick khi đăng ký — bằng chứng đồng ý điều khoản (server kiểm lại). */
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (mode === "login") {
       await login(email, password);
     } else {
-      await register({ username, displayName: displayName || username, email, password });
+      if (!acceptedTerms) return;
+      await register({
+        username,
+        displayName: displayName || username,
+        email,
+        password,
+        acceptedTerms: true,
+      });
     }
   }
 
@@ -106,6 +116,40 @@ export function AuthScreen() {
             />
           </Field>
 
+          {mode === "register" && (
+            <label className="flex items-start gap-2 text-xs text-slate-400">
+              <input
+                type="checkbox"
+                name="acceptedTerms"
+                checked={acceptedTerms}
+                onChange={(event) => setAcceptedTerms(event.target.checked)}
+                required
+                className="mt-0.5 size-3.5 accent-emerald-400"
+              />
+              <span>
+                {t("legalConsent")}{" "}
+                <a
+                  href={legalPath("terms", locale)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-emerald-300 underline decoration-dotted hover:text-emerald-200"
+                >
+                  {t("termsShort")}
+                </a>{" "}
+                {t("legalConsentAnd")}{" "}
+                <a
+                  href={legalPath("privacy", locale)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-emerald-300 underline decoration-dotted hover:text-emerald-200"
+                >
+                  {t("privacyShort")}
+                </a>
+                .
+              </span>
+            </label>
+          )}
+
           {error !== null && (
             <p role="alert" className="rounded-lg border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-xs text-rose-200">
               {error}
@@ -114,7 +158,7 @@ export function AuthScreen() {
 
           <button
             type="submit"
-            disabled={busy}
+            disabled={busy || (mode === "register" && !acceptedTerms)}
             className="mt-1 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-300 disabled:opacity-60"
           >
             {busy ? t("loading") : mode === "login" ? t("loginAction") : t("registerAction")}

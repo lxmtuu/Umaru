@@ -1,4 +1,4 @@
-import { createSnowflake, type Snowflake } from "@umaru/protocol";
+import { LEGAL_VERSION, createSnowflake, type Snowflake } from "@umaru/protocol";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { mapUser, type UserRow } from "../mappers.js";
 import type { Config } from "../config.js";
@@ -62,14 +62,19 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
     const email = readString(body, "email", { max: 254 }).toLowerCase();
     if (!EMAIL_RE.test(email)) throw badRequest("Email không hợp lệ");
     const password = readString(body, "password", { min: 8, max: 200, trim: false });
+    // Bắt buộc đồng ý điều khoản: client đã tick, server ghi mốc + phiên bản.
+    if (body?.["acceptedTerms"] !== true) {
+      throw badRequest("Cần đồng ý Điều khoản sử dụng và Chính sách quyền riêng tư để tạo tài khoản");
+    }
 
     const id = createSnowflake(config.workerId);
     const passwordHash = await hashPassword(password);
     try {
       await pool.query(
-        `INSERT INTO users (id, username, display_name, email, password_hash)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [id, username, displayName, email, passwordHash],
+        `INSERT INTO users (id, username, display_name, email, password_hash,
+                            terms_accepted_at, terms_version)
+         VALUES ($1, $2, $3, $4, $5, now(), $6)`,
+        [id, username, displayName, email, passwordHash, LEGAL_VERSION],
       );
     } catch (error) {
       const constraint = (error as { constraint?: string }).constraint;

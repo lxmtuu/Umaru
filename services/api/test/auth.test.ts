@@ -1,3 +1,4 @@
+import { LEGAL_VERSION } from "@umaru/protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestContext, registerUser, type TestContext } from "./helpers.js";
 
@@ -21,6 +22,7 @@ describe("auth", () => {
         displayName: "Alice",
         email: "Alice@Example.com",
         password: "mat-khau-123",
+        acceptedTerms: true,
       },
     });
     expect(response.statusCode).toBe(201);
@@ -71,6 +73,7 @@ describe("auth", () => {
         displayName: "Alice 2",
         email: "other@example.com",
         password: "mat-khau-123",
+        acceptedTerms: true,
       },
     });
     expect(dupUsername.statusCode).toBe(409);
@@ -83,6 +86,7 @@ describe("auth", () => {
         displayName: "Alice 2",
         email: "alice@example.com",
         password: "mat-khau-123",
+        acceptedTerms: true,
       },
     });
     expect(dupEmail.statusCode).toBe(409);
@@ -108,7 +112,13 @@ describe("auth", () => {
     const shortPassword = await ctx.app.inject({
       method: "POST",
       url: "/api/v1/auth/register",
-      payload: { username: "carol", displayName: "Carol", email: "carol@example.com", password: "123" },
+      payload: {
+        username: "carol",
+        displayName: "Carol",
+        email: "carol@example.com",
+        password: "123",
+        acceptedTerms: true,
+      },
     });
     expect(shortPassword.statusCode).toBe(400);
 
@@ -120,6 +130,7 @@ describe("auth", () => {
         displayName: "X",
         email: "x@example.com",
         password: "mat-khau-123",
+        acceptedTerms: true,
       },
     });
     expect(badUsername.statusCode).toBe(400);
@@ -202,5 +213,63 @@ describe("xác thực qua header dự phòng", () => {
     } finally {
       await ctx.close();
     }
+  });
+
+  it("thiếu đồng ý điều khoản → 400 và không tạo tài khoản", async () => {
+    const missing = await ctx.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        username: "noterms",
+        displayName: "No terms",
+        email: "noterms@example.com",
+        password: "mat-khau-123",
+      },
+    });
+    expect(missing.statusCode).toBe(400);
+    expect(missing.json<{ error: { message: string } }>().error.message).toContain("Điều khoản");
+
+    const falsy = await ctx.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        username: "noterms",
+        displayName: "No terms",
+        email: "noterms@example.com",
+        password: "mat-khau-123",
+        acceptedTerms: "true",
+      },
+    });
+    // Chỉ nhận boolean true — chuỗi "true" không đủ để coi là đồng ý.
+    expect(falsy.statusCode).toBe(400);
+
+    const stillMissing = await ctx.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "noterms@example.com", password: "mat-khau-123" },
+    });
+    expect(stillMissing.statusCode).toBe(401);
+  });
+
+  it("đăng ký hợp lệ ghi mốc + phiên bản điều khoản đã đồng ý", async () => {
+    const response = await ctx.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        username: "withterms",
+        displayName: "With terms",
+        email: "withterms@example.com",
+        password: "mat-khau-123",
+        acceptedTerms: true,
+      },
+    });
+    expect(response.statusCode).toBe(201);
+
+    const row = await ctx.pool.query<{ terms_version: string | null; terms_accepted_at: Date | null }>(
+      "SELECT terms_version, terms_accepted_at FROM users WHERE email = $1",
+      ["withterms@example.com"],
+    );
+    expect(row.rows[0]?.terms_version).toBe(LEGAL_VERSION);
+    expect(row.rows[0]?.terms_accepted_at).not.toBeNull();
   });
 });

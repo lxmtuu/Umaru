@@ -82,6 +82,8 @@ export async function registerUser(
       displayName: username,
       email: `${username}@example.com`,
       password,
+      // Đăng ký luôn phải đồng ý điều khoản; test nào cố tình bỏ sẽ tự gửi tay.
+      acceptedTerms: true,
     },
   });
   if (response.statusCode !== 201) {

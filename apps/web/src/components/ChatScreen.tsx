@@ -17,6 +17,7 @@ import { translate, useLocale, useT } from "../lib/i18n.js";
 import { ChannelSettings } from "./ChannelSettings.js";
 import { MessageAttachments } from "./MessageAttachments.js";
 import { MessageContent } from "./MessageContent.js";
+import { legalPath } from "../lib/legalRoute.js";
 import { resultText, snippetAround, splitHighlight } from "../lib/search.js";
 import { RoleSettings } from "./RoleSettings.js";
 
@@ -546,6 +547,26 @@ export function ChatScreen() {
           >
             {t("invite")}
           </button>
+          {/* Link pháp lý: luôn truy cập được, mở tab mới để không mất trạng thái chat. */}
+          <p className="mb-2 flex flex-wrap gap-x-2 text-[10px] text-slate-500">
+            <a
+              href={legalPath("terms", locale)}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-slate-300"
+            >
+              {t("termsShort")}
+            </a>
+            <span aria-hidden>·</span>
+            <a
+              href={legalPath("privacy", locale)}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-slate-300"
+            >
+              {t("privacyShort")}
+            </a>
+          </p>
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <span className="grid size-7 shrink-0 place-items-center rounded-full bg-slate-700 text-[11px]">

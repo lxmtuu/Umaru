@@ -27,7 +27,13 @@ async function register(email: string): Promise<RegisterBody> {
   const response = await ctx.app.inject({
     method: "POST",
     url: "/api/v1/auth/register",
-    payload: { username: email.split("@")[0], displayName: "Người thử", email, password: "mat-khau-123" },
+    payload: {
+      username: email.split("@")[0],
+      displayName: "Người thử",
+      email,
+      password: "mat-khau-123",
+      acceptedTerms: true,
+    },
   });
   expect(response.statusCode).toBe(201);
   return response.json<RegisterBody>();
@@ -157,6 +163,7 @@ describe("xác thực email", () => {
           displayName: "Không echo",
           email: "khong-echo@example.com",
           password: "mat-khau-123",
+          acceptedTerms: true,
         },
       });
       expect(response.statusCode).toBe(201);
