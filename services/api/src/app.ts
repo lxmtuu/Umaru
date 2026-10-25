@@ -2,6 +2,7 @@ import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { hasAnyAdminConfigured } from "./admin/access.js";
+import { ReportNotifier } from "./admin/notify.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import { createMailer, type Mailer } from "./mail.js";
@@ -34,6 +35,8 @@ export interface BuiltApp {
   hub: GatewayHub;
   tokens: TokenService;
   mailer: Mailer;
+  /** Mail báo admin khi có báo cáo mới (test chờ `whenIdle()`). */
+  reportNotifier: ReportNotifier;
 }
 
 export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
@@ -62,6 +65,12 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   // Chưa có SMTP_URL → ghi mail ra log để dev tự bấm link (xem mail.ts).
   const mailer = deps.mailer ?? createMailer(config, (line) => app.log.info(line));
   const hub = new GatewayHub({ pool, config, tokens });
+  const reportNotifier = new ReportNotifier({
+    pool,
+    config,
+    mailer,
+    write: (line) => app.log.warn(line),
+  });
 
   /**
    * Tham số đường dẫn dạng id (`:channelId`, `:messageId`, `:memberId`...) đi
@@ -92,7 +101,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerDmRoutes(api, { pool, config, tokens, publisher: hub });
       registerReadStateRoutes(api, { pool, tokens });
       registerSearchRoutes(api, { pool, tokens });
-      registerSafetyRoutes(api, { pool, tokens, config });
+      registerSafetyRoutes(api, { pool, tokens, config, reportNotifier });
       registerAdminRoutes(api, { pool, tokens, config });
       registerUploadRoutes(api, { pool, config, tokens });
       registerUserRoutes(api, { pool, config, tokens, publisher: hub });
@@ -112,5 +121,5 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     );
   }
 
-  return { app, hub, tokens, mailer };
+  return { app, hub, tokens, mailer, reportNotifier };
 }

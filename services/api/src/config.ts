@@ -48,7 +48,33 @@ export interface Config {
    */
   adminUserIds: string[];
   adminUsernames: string[];
+  /**
+   * Gửi mail báo cho admin khi có báo cáo vi phạm mới (`REPORT_NOTIFY_EMAIL`,
+   * mặc định bật; đặt `off`/`false`/`0` để tắt). Không cấu hình admin thì
+   * không gửi cho ai.
+   */
+  reportNotifyEmail: boolean;
+  /** Giãn cách tối thiểu giữa hai mail báo cáo (giây), chống dội hộp thư. */
+  reportNotifyCooldownSec: number;
   logger: boolean;
+}
+
+/** `off`/`false`/`0`/`no` = tắt; bỏ trống = bật (mặc định an toàn cho tính năng báo cáo). */
+function isOff(raw: string | undefined): boolean {
+  if (raw === undefined) return false;
+  return ["off", "false", "0", "no"].includes(raw.trim().toLowerCase());
+}
+
+function readPositiveInt(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  if (raw === undefined || raw.trim().length === 0) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) return fallback;
+  return value;
 }
 
 /** Tách danh sách phân tách bằng dấu phẩy, bỏ khoảng trắng và phần tử rỗng. */
@@ -107,6 +133,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     adminUserIds: splitList(env.ADMIN_USER_IDS),
     adminUsernames: splitList(env.ADMIN_USERNAMES).map((name) => name.toLowerCase()),
+    reportNotifyEmail: !isOff(env.REPORT_NOTIFY_EMAIL),
+    reportNotifyCooldownSec: readPositiveInt(env.REPORT_NOTIFY_COOLDOWN_SEC, 300, 0, 86_400),
     emailVerificationEcho: env.EMAIL_VERIFICATION_ECHO
       ? env.EMAIL_VERIFICATION_ECHO !== "0"
       : !isProduction,

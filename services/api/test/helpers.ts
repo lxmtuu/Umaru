@@ -8,6 +8,7 @@ import type { GatewayHub } from "../src/gateway/hub.js";
 import { loadConfig, type Config } from "../src/config.js";
 import { createPool, migrate, truncateAll, type Pool } from "../src/db.js";
 import { MemoryMailer } from "../src/mail.js";
+import type { ReportNotifier } from "../src/admin/notify.js";
 
 export const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? "postgres://umaru:umaru@127.0.0.1:55432/umaru_test";
@@ -21,6 +22,8 @@ export interface TestContext {
   uploadsDir: string;
   /** Hộp thư trong bộ nhớ — test khẳng định mail xác thực đã gửi. */
   mailer: MemoryMailer;
+  /** Mail báo admin khi có báo cáo mới — `await whenIdle()` để chờ gửi xong. */
+  reportNotifier: ReportNotifier;
   close(): Promise<void>;
 }
 
@@ -46,7 +49,7 @@ export async function createTestContext(
   await migrate(pool, config.migrationsDir);
   await truncateAll(pool);
   const mailer = new MemoryMailer();
-  const { app, hub } = await buildApp({ config, pool, mailer });
+  const { app, hub, reportNotifier } = await buildApp({ config, pool, mailer });
   return {
     app,
     hub,
@@ -54,6 +57,7 @@ export async function createTestContext(
     config,
     uploadsDir,
     mailer,
+    reportNotifier,
     async close() {
       await app.close();
       await pool.end();

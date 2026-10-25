@@ -13,11 +13,14 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import { badRequest, forbidden, notFound, readId, readOptionalString } from "../http.js";
 import { isBlockedBetween } from "../blocks.js";
+import type { ReportNotifier } from "../admin/notify.js";
 
 export interface SafetyDeps {
   pool: Pool;
   tokens: TokenService;
   config: Config;
+  /** Gửi mail báo admin khi có báo cáo mới (fire-and-forget, không chặn request). */
+  reportNotifier?: ReportNotifier;
 }
 
 /** Số báo cáo tối đa một người được gửi trong 1 giờ (chống spam report). */
@@ -222,6 +225,24 @@ export function registerSafetyRoutes(app: FastifyInstance, deps: SafetyDeps): vo
       status: "open",
       createdAt: (inserted.rows[0]?.created_at ?? new Date()).toISOString(),
     };
+
+    // Báo admin qua mail — fire-and-forget: SMTP chậm/hỏng không được làm hỏng
+    // đường gửi báo cáo (xem src/admin/notify.ts để biết cách gộp + giãn cách).
+    if (deps.reportNotifier !== undefined) {
+      const target = await pool.query<{ display_name: string }>(
+        "SELECT display_name FROM users WHERE id = $1",
+        [resolvedTarget],
+      );
+      deps.reportNotifier.notifyNewReport({
+        reportId: id,
+        reason,
+        targetUserId: resolvedTarget,
+        targetDisplayName: target.rows[0]?.display_name ?? resolvedTarget,
+        guildId,
+        channelId,
+        details,
+      });
+    }
     return reply.code(201).send(report);
   });
 
