@@ -19,6 +19,8 @@ import { MessageAttachments } from "./MessageAttachments.js";
 import { MessageContent } from "./MessageContent.js";
 import { legalPath } from "../lib/legalRoute.js";
 import { resultText, snippetAround, splitHighlight } from "../lib/search.js";
+import { Avatar } from "./Avatar.js";
+import { ProfileDialog } from "./ProfileDialog.js";
 import { RoleSettings } from "./RoleSettings.js";
 import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
 
@@ -39,6 +41,8 @@ export function ChatScreen() {
   const [showCreateGuild, setShowCreateGuild] = useState(false);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [showNewDm, setShowNewDm] = useState(false);
+  /** Hộp thoại hồ sơ (đổi ảnh đại diện). */
+  const [showProfile, setShowProfile] = useState(false);
   const [guildName, setGuildName] = useState("");
   const [channelName, setChannelName] = useState("");
   const [channelType, setChannelType] = useState<"guild_text" | "category">("guild_text");
@@ -454,9 +458,10 @@ export function ChatScreen() {
                           : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
                     }`}
                   >
-                    <span className="grid size-6 shrink-0 place-items-center rounded-full bg-slate-700 text-[11px]">
-                      {dm.recipient.displayName.slice(0, 1).toUpperCase()}
-                    </span>
+                    <Avatar
+                      avatarUrl={dm.recipient.avatarUrl}
+                      name={dm.recipient.displayName}
+                    />
                     <span className={`truncate ${unread > 0 || mentions > 0 ? "font-semibold" : ""}`}>
                       {dm.recipient.displayName}
                     </span>
@@ -570,9 +575,23 @@ export function ChatScreen() {
           </p>
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="grid size-7 shrink-0 place-items-center rounded-full bg-slate-700 text-[11px]">
-                {(state.me?.displayName ?? "?").slice(0, 1).toUpperCase()}
-              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  state.clearAvatarError();
+                  setShowProfile(true);
+                }}
+                title={t("avatarChange")}
+                aria-label={t("avatarChange")}
+                className="shrink-0 rounded-full ring-emerald-400/0 transition hover:ring-2 hover:ring-emerald-400/60"
+              >
+                <Avatar
+                  avatarUrl={state.me?.avatarUrl ?? null}
+                  name={state.me?.displayName ?? "?"}
+                  size="size-7"
+                  className="bg-slate-700"
+                />
+              </button>
               <span className="truncate text-xs text-slate-200">{state.me?.displayName}</span>
             </div>
             <div className="flex items-center gap-1">
@@ -816,9 +835,16 @@ export function ChatScreen() {
                           : ""
                       }`}
                     >
-                      <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-slate-700 text-xs">
-                        {authorName(message).slice(0, 1).toUpperCase()}
-                      </span>
+                      <Avatar
+                        avatarUrl={
+                          message.authorId === state.me?.id
+                            ? (state.me?.avatarUrl ?? null)
+                            : (memberById.get(message.authorId)?.avatarUrl ?? null)
+                        }
+                        name={authorName(message)}
+                        size="mt-0.5 size-8"
+                        textClass="text-xs"
+                      />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-baseline gap-2">
                           <span className="text-sm font-semibold text-slate-100">
@@ -1194,6 +1220,8 @@ export function ChatScreen() {
         </Modal>
       )}
 
+      {showProfile && <ProfileDialog onClose={() => setShowProfile(false)} />}
+
       {showNewDm && (
         <Modal
           title={t("newMessage")}
@@ -1216,9 +1244,7 @@ export function ChatScreen() {
                     }}
                     className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/5"
                   >
-                    <span className="grid size-6 shrink-0 place-items-center rounded-full bg-slate-700 text-[11px]">
-                      {member.displayName.slice(0, 1).toUpperCase()}
-                    </span>
+                    <Avatar avatarUrl={member.avatarUrl} name={member.displayName} />
                     <span className="truncate">{member.displayName}</span>
                     <span className="ml-auto text-xs text-slate-500">@{member.username}</span>
                   </button>
@@ -1381,9 +1407,12 @@ function MentionsPanel({
             onClick={() => onSelect(mention)}
             className="flex w-full gap-3 px-4 py-2 text-left hover:bg-white/[0.03]"
           >
-            <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-slate-700 text-xs">
-              {mention.author.displayName.slice(0, 1).toUpperCase()}
-            </span>
+            <Avatar
+              avatarUrl={mention.author.avatarUrl}
+              name={mention.author.displayName}
+              size="mt-0.5 size-8"
+              textClass="text-xs"
+            />
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2">
                 <span className="truncate text-sm font-semibold text-slate-100">
@@ -1548,9 +1577,12 @@ function SearchPanel({
                   onClick={() => onSelect(hit)}
                   className="flex w-full gap-3 px-4 py-2 text-left hover:bg-white/[0.03]"
                 >
-                  <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-slate-700 text-xs">
-                    {hit.author.displayName.slice(0, 1).toUpperCase()}
-                  </span>
+                  <Avatar
+                    avatarUrl={hit.author.avatarUrl}
+                    name={hit.author.displayName}
+                    size="mt-0.5 size-8"
+                    textClass="text-xs"
+                  />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
                       <span className="truncate text-sm font-semibold text-slate-100">

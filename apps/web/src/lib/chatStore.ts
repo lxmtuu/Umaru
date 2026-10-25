@@ -19,6 +19,7 @@ import { parsePermissions, serializePermissions } from "@umaru/protocol";
 import { ApiError, GatewayClient, type GatewayState } from "@umaru/sdk";
 import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
+import { clearAvatarCache, validateAvatar } from "./avatars.js";
 import { translate } from "./i18n.js";
 import { readVerificationToken, withoutVerificationToken } from "./verification.js";
 import {
@@ -113,6 +114,10 @@ interface ChatState {
   reportTarget: ReportTarget | null;
   /** Đang gửi báo cáo — khoá nút để không gửi hai lần. */
   reportSending: boolean;
+  /** Đang tải ảnh đại diện mới (khoá nút để không tải hai lần). */
+  avatarUploading: boolean;
+  /** Lỗi riêng của avatar (hiện trong panel hồ sơ). */
+  avatarError: string | null;
   /** `null` = chưa kiểm tra; dùng để ẩn lối vào khu quản trị. */
   admin: boolean | null;
   /** Hàng đợi báo cáo cho admin; `null` = chưa tải. */
@@ -239,6 +244,14 @@ interface ChatState {
   loadMoreAdminReports(): Promise<void>;
   /** Đổi trạng thái xử lý; dòng được thay tại chỗ, không tải lại cả trang. */
   updateReportStatus(reportId: string, status: ReportStatus): Promise<boolean>;
+  /**
+   * Đặt ảnh đại diện từ tệp người dùng chọn. Kiểm MIME/kích thước ở client để
+   * báo lỗi ngay, server vẫn kiểm lại bằng magic bytes.
+   */
+  uploadAvatar(file: File): Promise<boolean>;
+  /** Gỡ ảnh đại diện (quay lại chữ cái đầu). */
+  removeAvatar(): Promise<boolean>;
+  clearAvatarError(): void;
   /** Gửi lại mail xác thực; ở dev có token echo thì xác thực luôn. */
   resendVerification(): Promise<void>;
   /** Xác thực email bằng token trong link (`?verifyToken=...`). */
@@ -309,6 +322,8 @@ const initialState = {
   blocksLoading: false,
   reportTarget: null,
   reportSending: false,
+  avatarUploading: false,
+  avatarError: null,
   admin: null,
   adminReports: null,
   adminCounts: null,
@@ -322,6 +337,38 @@ const initialState = {
   banner: null,
   busy: false,
 };
+
+/** Trường hồ sơ có thể đổi; presence là ephemeral nên không nằm ở đây. */
+type ProfileFields = Pick<User, "id" | "username" | "displayName" | "avatarUrl">;
+
+/**
+ * Áp hồ sơ mới (avatar/tên) vào mọi nơi đang hiển thị người đó: chính mình,
+ * thành viên các server đang có trong bộ nhớ, và người trong danh sách DM.
+ * Dùng chung cho phản hồi REST (`PUT /users/@me/avatar`) và sự kiện `USER_UPDATE`
+ * nên hai tab / hai người thấy avatar đổi cùng lúc.
+ */
+export function applyProfile(state: ChatState, profile: ProfileFields): Partial<ChatState> {
+  const fields = {
+    username: profile.username,
+    displayName: profile.displayName,
+    avatarUrl: profile.avatarUrl,
+  };
+  const members: ChatState["members"] = {};
+  for (const [guildId, list] of Object.entries(state.members)) {
+    members[guildId] = list.map((member) =>
+      member.userId === profile.id ? { ...member, ...fields } : member,
+    );
+  }
+  return {
+    me: state.me !== null && state.me.id === profile.id ? { ...state.me, ...fields } : state.me,
+    members,
+    dms: state.dms.map((dm) =>
+      dm.recipient.userId === profile.id
+        ? { ...dm, recipient: { ...dm.recipient, ...fields } }
+        : dm,
+    ),
+  };
+}
 
 export const useChat = create<ChatState>()((set, get) => ({
   ...initialState,
@@ -397,6 +444,7 @@ export const useChat = create<ChatState>()((set, get) => ({
     clearTokens();
     // Giải phóng object URL của tệp đã tải (đổi tài khoản là không dùng lại được).
     clearAttachmentCache();
+    clearAvatarCache();
     set({ ...initialState, screen: "auth" });
   },
 
@@ -550,6 +598,11 @@ export const useChat = create<ChatState>()((set, get) => ({
       );
       entries.push({ userId: data.userId, expiresAt: Date.now() + 6_000 });
       set({ typing: { ...current.typing, [data.channelId]: entries } });
+    });
+
+    // Avatar/tên đổi → mọi nơi đang hiển thị người đó cập nhật ngay, không F5.
+    client.on("USER_UPDATE", (data) => {
+      set(applyProfile(get(), data.user));
     });
 
     client.on("PRESENCE_UPDATE", (data) => {
@@ -1406,6 +1459,39 @@ export const useChat = create<ChatState>()((set, get) => ({
       set({ error: describeError(error) });
       return false;
     }
+  },
+  async uploadAvatar(file) {
+    const invalid = validateAvatar(file);
+    if (invalid !== null) {
+      set({ avatarError: translate(invalid) });
+      return false;
+    }
+    set({ avatarUploading: true, avatarError: null });
+    try {
+      const user = await authedApi.updateAvatar(file);
+      // Cập nhật ngay ở client; `USER_UPDATE` về sau chỉ ghi đè cùng giá trị.
+      set(applyProfile(get(), user));
+      set({ avatarUploading: false });
+      return true;
+    } catch (error) {
+      set({ avatarUploading: false, avatarError: describeError(error) });
+      return false;
+    }
+  },
+  async removeAvatar() {
+    set({ avatarUploading: true, avatarError: null });
+    try {
+      const user = await authedApi.removeAvatar();
+      set(applyProfile(get(), user));
+      set({ avatarUploading: false });
+      return true;
+    } catch (error) {
+      set({ avatarUploading: false, avatarError: describeError(error) });
+      return false;
+    }
+  },
+  clearAvatarError() {
+    set({ avatarError: null });
   },
   async resendVerification() {
     try {

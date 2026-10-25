@@ -13,6 +13,17 @@ export interface User {
   createdAt: string; // ISO-8601
 }
 
+/**
+ * Phần hồ sơ công khai của một người, dùng cho sự kiện `USER_UPDATE`.
+ * Không kèm `status` vì presence là trạng thái ephemeral, đi qua `PRESENCE_UPDATE`.
+ */
+export interface UserProfile {
+  id: Snowflake;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+}
+
 export type ChannelType = "guild_text" | "guild_voice" | "category" | "dm" | "group_dm";
 
 export interface Guild {

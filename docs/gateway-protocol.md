@@ -201,6 +201,7 @@ Quy tắc:
 | `GUILD_CREATE` | session | ✗ | `{ guild, channels, roles, members }` — snapshot đầu tiên của guild mới/chưa cache |
 | `GUILD_MEMBER_ADD` | guild | ✓ | `{ guildId, member: { userId, username, displayName, avatarUrl, roleIds } }` — có người vào server qua invite |
 | `GUILD_MEMBER_UPDATE` | guild | ✓ | `{ guildId, member: { userId, username, displayName, avatarUrl, roleIds } }` — role của thành viên vừa được gán/thu; gửi **summary đầy đủ** để client chỉ việc thay thế, không tự ghép diff |
+| `USER_UPDATE` | guild + session của chính user | ✗ | `{ user: { id, username, displayName, avatarUrl } }` — hồ sơ công khai đổi (hiện tại: avatar). Gửi tới **mọi guild mà user là thành viên** và tới các session của chính họ (tab/thiết bị khác). Không kèm `status`: presence vẫn đi qua `PRESENCE_UPDATE` để hai nguồn không ghi đè nhau |
 | `ROLE_CREATE` / `ROLE_UPDATE` | guild | ✓ | `{ guildId, role: Role }` — role vừa tạo/sửa (kèm `isEveryone`); quyền **hiệu dụng** của từng user vẫn do `PERMISSIONS_UPDATE` đẩy riêng |
 | `ROLE_DELETE` | guild | ✓ | `{ guildId, roleId }` — `member_roles` cascade theo FK nên client tự coi như role đã gán cho ai cũng biến mất |
 | `VOICE_STATE_UPDATE` | guild/channel | ✓ (bền) | `{ guildId, channelId, userId, sessionId, muted, deafened, speaking }` |

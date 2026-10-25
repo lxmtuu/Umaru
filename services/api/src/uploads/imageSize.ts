@@ -84,6 +84,29 @@ export function readImageSize(buffer: Buffer): ImageSize | null {
   return size;
 }
 
+/**
+ * Suy ra MIME từ magic bytes của ảnh.
+ *
+ * Dùng để **không tin MIME client khai**: file `.png` đổi tên từ `.exe` khai
+ * `image/png` vẫn bị từ chối, còn JPEG khai nhầm `image/png` thì lưu đúng
+ * `image/jpeg` (nếu không trình duyệt sẽ không hiển thị).
+ */
+export function detectImageMime(buffer: Buffer): string | null {
+  if (fromPng(buffer) !== null) return "image/png";
+  if (fromGif(buffer) !== null) return "image/gif";
+  if (fromJpeg(buffer) !== null) return "image/jpeg";
+  if (fromWebp(buffer) !== null) return "image/webp";
+  // AVIF: hộp `ftyp` ở offset 4, brand `avif`/`avis` ở offset 8.
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(4, 8).toString("latin1") === "ftyp" &&
+    ["avif", "avis"].includes(buffer.subarray(8, 12).toString("latin1"))
+  ) {
+    return "image/avif";
+  }
+  return null;
+}
+
 export function isImageMime(mime: string): boolean {
   return mime.toLowerCase().startsWith("image/");
 }

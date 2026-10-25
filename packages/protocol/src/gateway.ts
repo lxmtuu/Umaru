@@ -7,6 +7,7 @@ import type {
   ReadState,
   Role,
   User,
+  UserProfile,
 } from "./api.js";
 import type { Snowflake } from "./snowflake.js";
 
@@ -162,6 +163,12 @@ export interface GatewayEventMap {
     roles: Role[];
     members: GuildMember[];
   };
+  /**
+   * Hồ sơ người dùng đổi (hiện tại: avatar). Gửi tới mọi server mà người đó là
+   * thành viên và tới các session của chính họ. Client chỉ cập nhật
+   * username/displayName/avatarUrl — trạng thái online vẫn do `PRESENCE_UPDATE` quản.
+   */
+  USER_UPDATE: { user: UserProfile };
   GUILD_MEMBER_ADD: { guildId: Snowflake; member: GuildMemberSummary };
   /**
    * Thứ thuộc về thành viên vừa đổi (hiện tại: role được gán/thu). Gửi kèm

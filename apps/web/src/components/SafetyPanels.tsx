@@ -1,6 +1,7 @@
 import { REPORT_REASONS, type GuildMemberSummary, type ReportReason } from "@umaru/protocol";
 import { useState } from "react";
 import { translate, useT, type MessageKey } from "../lib/i18n.js";
+import { Avatar } from "./Avatar.js";
 
 /** Nhãn hiển thị cho từng lý do báo cáo (khoá i18n dựng từ mã lý do). */
 const REASON_LABEL: Record<ReportReason, MessageKey> = {
@@ -132,9 +133,12 @@ export function BlocksPanel({
     <div className="flex-1 overflow-y-auto py-2">
       {blocks.map((entry) => (
         <div key={entry.userId} className="flex items-center gap-3 px-4 py-2">
-          <span className="grid size-8 shrink-0 place-items-center rounded-full bg-slate-700 text-xs">
-            {entry.displayName.slice(0, 1).toUpperCase()}
-          </span>
+          <Avatar
+            avatarUrl={entry.avatarUrl}
+            name={entry.displayName}
+            size="size-8"
+            textClass="text-xs"
+          />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-slate-100">{entry.displayName}</p>
             <p className="truncate text-[11px] text-slate-500">@{entry.username}</p>

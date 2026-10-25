@@ -46,7 +46,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 | Đăng ký/đăng nhập email + xác thực email | Credential cơ bản, gửi mail xác minh — ✅ đã có (SMTP qua `SMTP_URL`, dev ghi mail ra log) | P0 |
 | Đăng nhập OAuth2 (Google, Apple, GitHub...) | Giảm ma sát đăng ký | P1 |
 | Username + Display name (hệ thống mới, không còn `#0001`) | Discord đã bỏ discriminator | P0 |
-| Avatar, banner, bio, pronouns | Hồ sơ hiển thị | P1 |
+| Avatar, banner, bio, pronouns | Hồ sơ hiển thị — ✅ đã có **avatar** (tải/gỡ ảnh ≤5MB, magic bytes, `USER_UPDATE` realtime); banner/bio/pronouns chưa | P1 |
 | Trạng thái: Online / Idle / DND / Invisible + custom status | Presence là "linh hồn" Discord | P0 (online/offline), P1 (các loại còn lại) |
 | Rich Presence (đang chơi game/đang nghe nhạc) | Cần SDK tích hợp game bên thứ ba | P3 |
 | Xác thực 2 yếu tố (TOTP) | Bảo mật | P1 |

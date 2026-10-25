@@ -1,3 +1,4 @@
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface Config {
@@ -19,6 +20,10 @@ export interface Config {
   uploadsDir: string;
   /** Trần kích thước một file — 10MB theo ROADMAP §1.4 (free tier). */
   maxUploadBytes: number;
+  /** Thư mục riêng cho avatar (mặc định `<uploadsDir>/avatars`). */
+  avatarsDir: string;
+  /** Trần kích thước ảnh đại diện — nhỏ hơn tệp đính kèm vì đây là ảnh hiển thị. */
+  maxAvatarBytes: number;
   /** `SMTP_URL` (vd `smtps://user:pass@smtp.example.com:465`). Bỏ trống = ghi mail ra log (dev). */
   smtpUrl: string | null;
   /** Địa chỉ gửi, hiện trong From của mail xác thực. */
@@ -65,6 +70,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error("JWT_SECRET bắt buộc phải đặt trong production");
   }
 
+  const defaultUploadsDir =
+    env.UPLOADS_DIR ?? fileURLToPath(new URL("../.data/uploads/", import.meta.url));
+
   const workerId = Number(env.SNOWFLAKE_WORKER_ID ?? "0");
   if (!Number.isInteger(workerId) || workerId < 0 || workerId > 1023) {
     throw new Error("SNOWFLAKE_WORKER_ID phải là số nguyên trong [0, 1023]");
@@ -84,9 +92,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     migrationsDir:
       env.MIGRATIONS_DIR ?? fileURLToPath(new URL("../../../db/migrations/", import.meta.url)),
     gatewayPublicUrl: env.GATEWAY_PUBLIC_URL ?? null,
-    uploadsDir:
-      env.UPLOADS_DIR ?? fileURLToPath(new URL("../.data/uploads/", import.meta.url)),
+    uploadsDir: defaultUploadsDir,
     maxUploadBytes: Number(env.MAX_UPLOAD_BYTES ?? String(10 * 1024 * 1024)),
+    // Mặc định nằm trong thư mục uploads (đổi UPLOADS_DIR là avatar đi theo,
+    // test cũng tự dùng thư mục tạm thay vì ghi vào repo).
+    avatarsDir: env.AVATARS_DIR ?? path.join(defaultUploadsDir, "avatars"),
+    maxAvatarBytes: Number(env.MAX_AVATAR_BYTES ?? String(5 * 1024 * 1024)),
     smtpUrl: env.SMTP_URL ?? null,
     mailFrom: env.MAIL_FROM ?? "Umaru <no-reply@umaru.local>",
     publicWebUrl: env.PUBLIC_WEB_URL ?? "http://localhost:5173",

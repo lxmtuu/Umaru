@@ -491,6 +491,41 @@ export class UmaruApi {
     return response.blob();
   }
 
+  /**
+   * Đặt ảnh đại diện. Dùng `FormData` để trình duyệt tự đặt `boundary` —
+   * **không** tự gắn `content-type`.
+   */
+  updateAvatar(file: File): Promise<User> {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return this.request<User>(`${API_PREFIX}/users/@me/avatar`, { method: "PUT", body: form });
+  }
+
+  /** Gỡ ảnh đại diện (quay lại chữ cái đầu). */
+  removeAvatar(): Promise<User> {
+    return this.request<User>(`${API_PREFIX}/users/@me/avatar`, { method: "DELETE" });
+  }
+
+  /**
+   * Tải nội dung avatar. Nhận đúng giá trị `User.avatarUrl`
+   * (`/api/v1/users/:id/avatar/:uploadId`). Trả `Blob` để client dựng object
+   * URL — không đặt token vào URL.
+   */
+  async fetchAvatar(avatarUrl: string): Promise<Blob> {
+    const url = avatarUrl.startsWith("http")
+      ? avatarUrl
+      : `${this.baseUrl}${avatarUrl}`;
+    const token = this.getToken();
+    const response = await this.fetchImpl(url, {
+      headers:
+        token !== null ? { authorization: `Bearer ${token}`, "x-umaru-token": token } : {},
+    });
+    if (!response.ok) {
+      throw new ApiError(response.status, `API ${url} thất bại: ${response.status}`);
+    }
+    return response.blob();
+  }
+
   deleteMessage(messageId: string): Promise<void> {
     return this.request<void>(`${API_PREFIX}/messages/${messageId}`, { method: "DELETE" });
   }

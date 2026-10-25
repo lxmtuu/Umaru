@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useChat } from "../lib/chatStore.js";
 import { useT } from "../lib/i18n.js";
 import { PERMISSION_ROWS, colorToHex, hexToColor } from "../lib/roleUi.js";
+import { Avatar } from "./Avatar.js";
 
 const DEFAULT_ROLE_PERMISSIONS =
   Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES | Permission.READ_HISTORY;
@@ -301,9 +302,7 @@ function MemberRow({
   const held = new Set(member.roleIds);
   return (
     <li className="flex flex-wrap items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/[0.03]">
-      <span className="grid size-6 shrink-0 place-items-center rounded-full bg-slate-700 text-[11px]">
-        {member.displayName.slice(0, 1).toUpperCase()}
-      </span>
+      <Avatar avatarUrl={member.avatarUrl} name={member.displayName} />
       <span className="min-w-0 truncate text-sm text-slate-200">{member.displayName}</span>
       <span className="flex flex-wrap items-center gap-1">
         {roles.map((role) => {

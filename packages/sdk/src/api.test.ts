@@ -238,6 +238,47 @@ describe("UmaruApi", () => {
     expect((error as ApiError).status).toBe(404);
   });
 
+  it("updateAvatar gửi PUT multipart, KHÔNG tự đặt content-type", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 200,
+      body: { id: "1", avatarUrl: "/api/v1/users/1/avatar/9" },
+    });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const file = new File([new Uint8Array([1, 2, 3])], "toi.png", { type: "image/png" });
+    const user = await api.updateAvatar(file);
+
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/avatar");
+    expect(calls[0]?.init?.method).toBe("PUT");
+    const form = calls[0]?.init?.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect((form.get("file") as File).name).toBe("toi.png");
+    expect((calls[0]?.init?.headers as Record<string, string>)["content-type"]).toBeUndefined();
+    expect(user.avatarUrl).toBe("/api/v1/users/1/avatar/9");
+  });
+
+  it("removeAvatar gọi DELETE tới cùng endpoint", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { id: "1", avatarUrl: null } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const user = await api.removeAvatar();
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/avatar");
+    expect(calls[0]?.init?.method).toBe("DELETE");
+    expect(user.avatarUrl).toBeNull();
+  });
+
+  it("fetchAvatar ghép baseUrl với avatarUrl và gửi Bearer", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return new Response(new Uint8Array([4, 5]), { status: 200 });
+    }) as typeof fetch;
+    const api = new UmaruApi({ baseUrl: "http://api.test", getToken: () => "tok", fetchImpl });
+    const blob = await api.fetchAvatar("/api/v1/users/7/avatar/77");
+
+    expect(calls[0]?.url).toBe("http://api.test/api/v1/users/7/avatar/77");
+    expect((calls[0]?.init?.headers as Record<string, string>).authorization).toBe("Bearer tok");
+    expect(blob.size).toBe(2);
+  });
+
   it("searchChannelMessages mã hoá q và cursor trong query string", async () => {
     const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
     const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
