@@ -21,4 +21,17 @@ export default defineConfig({
       },
     },
   },
+  // `vite preview` (bản build thật) dùng cùng proxy để kiểm thử không cần HMR —
+  // đây là chế độ gần production nhất khi chưa deploy.
+  preview: {
+    host: true,
+    port: 4173,
+    proxy: {
+      "/api": {
+        target: process.env.UMARU_API_URL ?? "http://127.0.0.1:4000",
+        changeOrigin: false,
+        ws: true,
+      },
+    },
+  },
 });
