@@ -1,4 +1,10 @@
-import type { Channel, GuildMemberSummary, Message, MessageMention } from "@umaru/protocol";
+import type {
+  Channel,
+  GuildMemberSummary,
+  Message,
+  MessageMention,
+  MessageSearchHit,
+} from "@umaru/protocol";
 import { Permission, hasPermission } from "@umaru/protocol";
 import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode } from "react";
 import {
@@ -6,11 +12,12 @@ import {
   MAX_FILES_PER_MESSAGE,
   validateFiles,
 } from "../lib/attachments.js";
-import { useChat } from "../lib/chatStore.js";
+import { SEARCH_MIN_LENGTH, useChat, type SearchScope } from "../lib/chatStore.js";
 import { translate, useLocale, useT } from "../lib/i18n.js";
 import { ChannelSettings } from "./ChannelSettings.js";
 import { MessageAttachments } from "./MessageAttachments.js";
 import { MessageContent } from "./MessageContent.js";
+import { resultText, snippetAround, splitHighlight } from "../lib/search.js";
 import { RoleSettings } from "./RoleSettings.js";
 
 export function ChatScreen() {
@@ -570,7 +577,9 @@ export function ChatScreen() {
       <main className="flex min-w-0 flex-1 flex-col bg-slate-900/30">
         <header className="flex items-center justify-between border-b border-white/5 px-4 py-3">
           <h1 className="truncate text-sm font-semibold">
-            {state.channelSettingsChannelId !== null
+            {state.searchOpen
+              ? `🔍 ${t("search")}`
+              : state.channelSettingsChannelId !== null
               ? `⚙ ${t("channelSettings")}`
               : state.settingsOpen
                 ? `⚙ ${t("serverSettings")}`
@@ -602,6 +611,17 @@ export function ChatScreen() {
                 ⚙
               </button>
             )}
+            <button
+              onClick={() => void (state.searchOpen ? state.closeSearch() : state.openSearch())}
+              title={t("search")}
+              aria-label={t("search")}
+              aria-pressed={state.searchOpen}
+              className={`rounded px-1 hover:bg-white/5 hover:text-slate-100 ${
+                state.searchOpen ? "bg-white/10 text-slate-100" : ""
+              }`}
+            >
+              🔍
+            </button>
             <span className={`size-2 rounded-full ${statusColor}`} aria-hidden />
             {status}
           </div>
@@ -616,7 +636,24 @@ export function ChatScreen() {
           </button>
         )}
 
-        {state.channelSettingsChannelId !== null ? (
+        {state.searchOpen ? (
+          <SearchPanel
+            query={state.searchQuery}
+            scope={state.searchScope}
+            canSearchGuild={state.activeGuildId !== null}
+            channelLabel={activeTitle}
+            hits={state.searchResults}
+            submittedFor={state.searchSubmittedFor}
+            loading={state.searchLoading}
+            hasMore={state.searchHasMore}
+            locale={locale}
+            onQueryChange={(value) => state.setSearchQuery(value)}
+            onScopeChange={(scope: SearchScope) => state.setSearchScope(scope)}
+            onSubmit={() => void state.runSearch()}
+            onSelect={(hit) => void state.openSearchHit(hit)}
+            onLoadMore={() => void state.loadMoreSearch()}
+          />
+        ) : state.channelSettingsChannelId !== null ? (
           <ChannelSettings />
         ) : state.settingsOpen ? (
           <RoleSettings />
@@ -681,7 +718,11 @@ export function ChatScreen() {
                     <article
                       key={message.id}
                       id={`message-${message.id}`}
-                      className="group flex scroll-mt-4 gap-3 px-4 py-1.5 hover:bg-white/[0.03]"
+                      className={`group flex scroll-mt-4 gap-3 px-4 py-1.5 hover:bg-white/[0.03] ${
+                        state.highlightMessageId === message.id
+                          ? "rounded-lg bg-amber-400/10 ring-1 ring-amber-300/40"
+                          : ""
+                      }`}
                     >
                       <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-slate-700 text-xs">
                         {authorName(message).slice(0, 1).toUpperCase()}
@@ -1260,6 +1301,181 @@ function MentionsPanel({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Panel tìm kiếm tin nhắn.
+ *
+ * Không tự tìm khi gõ (tránh bắn request mỗi phím); nhấn Enter hoặc bấm nút mới
+ * gọi API. Từ khoá được tô sáng trong phần trích đoạn bằng `splitHighlight`.
+ */
+function SearchPanel({
+  query,
+  scope,
+  canSearchGuild,
+  channelLabel,
+  hits,
+  submittedFor,
+  loading,
+  hasMore,
+  locale,
+  onQueryChange,
+  onScopeChange,
+  onSubmit,
+  onSelect,
+  onLoadMore,
+}: {
+  query: string;
+  scope: SearchScope;
+  canSearchGuild: boolean;
+  channelLabel: string;
+  hits: MessageSearchHit[] | null;
+  submittedFor: string;
+  loading: boolean;
+  hasMore: boolean;
+  locale: string;
+  onQueryChange: (value: string) => void;
+  onScopeChange: (scope: SearchScope) => void;
+  onSubmit: () => void;
+  onSelect: (hit: MessageSearchHit) => void;
+  onLoadMore: () => void;
+}) {
+  const t = useT();
+  const trimmed = query.trim();
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (trimmed.length >= SEARCH_MIN_LENGTH) onSubmit();
+        }}
+        className="flex flex-wrap items-center gap-2 border-b border-white/5 px-4 py-2"
+      >
+        <input
+          autoFocus
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder={t("searchPlaceholder")}
+          aria-label={t("search")}
+          className="min-w-40 flex-1 rounded-lg bg-slate-800/80 px-3 py-1.5 text-sm outline-none placeholder:text-slate-500 focus:ring-1 focus:ring-emerald-400/50"
+        />
+        <div className="flex overflow-hidden rounded-lg border border-white/10 text-[11px]">
+          <button
+            type="button"
+            onClick={() => onScopeChange("channel")}
+            aria-pressed={scope === "channel"}
+            className={`px-2 py-1 ${
+              scope === "channel" ? "bg-emerald-400/20 text-emerald-200" : "text-slate-400 hover:bg-white/5"
+            }`}
+          >
+            {t("searchInChannel")}
+          </button>
+          <button
+            type="button"
+            disabled={!canSearchGuild}
+            onClick={() => onScopeChange("guild")}
+            aria-pressed={scope === "guild"}
+            className={`px-2 py-1 disabled:opacity-40 ${
+              scope === "guild" ? "bg-emerald-400/20 text-emerald-200" : "text-slate-400 hover:bg-white/5"
+            }`}
+          >
+            {t("searchInGuild")}
+          </button>
+        </div>
+        <button
+          type="submit"
+          disabled={loading || trimmed.length < SEARCH_MIN_LENGTH}
+          className="rounded-lg bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-emerald-950 hover:bg-emerald-300 disabled:opacity-40"
+        >
+          {loading ? t("loading") : t("search")}
+        </button>
+      </form>
+
+      <div className="min-h-0 flex-1 overflow-y-auto py-2">
+        {hits === null ? (
+          <p className="px-4 py-6 text-sm text-slate-500">{t("searchEmpty")}</p>
+        ) : hits.length === 0 ? (
+          <p className="px-4 py-6 text-sm text-slate-500">
+            {submittedFor.length < SEARCH_MIN_LENGTH ? t("searchEmpty") : t("searchNoResults")}
+          </p>
+        ) : (
+          <>
+            <p className="px-4 pb-1 text-[11px] uppercase tracking-wide text-slate-500">
+              {t("searchResultCount", { count: hits.length })}
+              {scope === "guild" ? ` · ${t("searchInGuild")}` : ` · ${channelLabel}`}
+            </p>
+            {hits.map((hit) => {
+              const where =
+                hit.channel.guildId === null
+                  ? `@ ${hit.recipient?.displayName ?? ""}`
+                  : `# ${hit.channel.name ?? ""}${
+                      hit.guildName === null ? "" : ` · ${hit.guildName}`
+                    }`;
+              const text = resultText(
+                hit.message.content,
+                hit.message.attachments.length,
+                translate("attachmentOnly"),
+              );
+              return (
+                <button
+                  key={hit.message.id}
+                  onClick={() => onSelect(hit)}
+                  className="flex w-full gap-3 px-4 py-2 text-left hover:bg-white/[0.03]"
+                >
+                  <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-slate-700 text-xs">
+                    {hit.author.displayName.slice(0, 1).toUpperCase()}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="truncate text-sm font-semibold text-slate-100">
+                        {hit.author.displayName}
+                      </span>
+                      <span className="truncate text-[11px] text-slate-500">{where}</span>
+                      <time className="ml-auto shrink-0 text-[11px] text-slate-500">
+                        {new Date(hit.message.createdAt).toLocaleString(locale, {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                    </div>
+                    <p className="truncate text-sm text-slate-300">
+                      {splitHighlight(snippetAround(text, submittedFor), submittedFor).map(
+                        (segment, index) =>
+                          segment.match ? (
+                            <mark
+                              key={index}
+                              className="rounded bg-amber-300/30 px-0.5 text-amber-100"
+                            >
+                              {segment.text}
+                            </mark>
+                          ) : (
+                            <span key={index}>{segment.text}</span>
+                          ),
+                      )}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+            {hasMore && (
+              <div className="px-4 py-3">
+                <button
+                  onClick={onLoadMore}
+                  disabled={loading}
+                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10 disabled:opacity-40"
+                >
+                  {loading ? t("loading") : t("loadMore")}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

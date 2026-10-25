@@ -5,10 +5,18 @@ import type {
   Guild,
   Message,
   MessageMention,
+  MessageSearchHit,
   ReadState,
   Role,
   User,
 } from "@umaru/protocol";
+
+function buildSearchParams(query: string, options: { before?: string; limit?: number }): string {
+  const params = new URLSearchParams({ q: query });
+  if (options.before !== undefined) params.set("before", options.before);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  return `?${params.toString()}`;
+}
 
 export class ApiError extends Error {
   override readonly name = "ApiError";
@@ -312,6 +320,31 @@ export class UmaruApi {
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     const query = params.size > 0 ? `?${params.toString()}` : "";
     return this.request<Message[]>(`${API_PREFIX}/channels/${channelId}/messages${query}`);
+  }
+
+  /**
+   * Tìm tin nhắn trong một kênh (kênh server hoặc DM).
+   * `q` tối thiểu 2 ký tự; kết quả mới nhất trước, phân trang bằng `before`.
+   */
+  searchChannelMessages(
+    channelId: string,
+    query: string,
+    options: { before?: string; limit?: number } = {},
+  ): Promise<MessageSearchHit[]> {
+    return this.request<MessageSearchHit[]>(
+      `${API_PREFIX}/channels/${channelId}/messages/search${buildSearchParams(query, options)}`,
+    );
+  }
+
+  /** Tìm tin nhắn trong toàn server (chỉ những kênh user được xem). */
+  searchGuildMessages(
+    guildId: string,
+    query: string,
+    options: { before?: string; limit?: number } = {},
+  ): Promise<MessageSearchHit[]> {
+    return this.request<MessageSearchHit[]>(
+      `${API_PREFIX}/guilds/${guildId}/messages/search${buildSearchParams(query, options)}`,
+    );
   }
 
   /**

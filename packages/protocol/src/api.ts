@@ -122,3 +122,18 @@ export interface MessageMention {
   author: UserSummary;
   recipient: UserSummary | null;
 }
+
+/**
+ * Một dòng kết quả tìm kiếm tin nhắn.
+ *
+ * Cùng hình dạng với `MessageMention` (kèm kênh + tên server + người gửi) để
+ * client dùng lại được phần render danh sách; `recipient` chỉ có ở kênh DM.
+ * `message.content` là nội dung đầy đủ — client tự cắt/tô sáng theo từ khoá.
+ */
+export interface MessageSearchHit {
+  message: Message;
+  channel: Channel;
+  guildName: string | null;
+  author: UserSummary;
+  recipient: UserSummary | null;
+}

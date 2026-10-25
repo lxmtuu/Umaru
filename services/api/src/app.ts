@@ -13,6 +13,7 @@ import { badRequest, registerErrorHandler } from "./http.js";
 import { registerMessageRoutes } from "./messages/routes.js";
 import { registerOverwriteRoutes } from "./overwrites/routes.js";
 import { registerReadStateRoutes } from "./read-states/routes.js";
+import { registerSearchRoutes } from "./search/routes.js";
 import { registerUploadRoutes } from "./uploads/routes.js";
 import { MAX_FILES_PER_MESSAGE } from "./uploads/storage.js";
 
@@ -80,6 +81,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerOverwriteRoutes(api, { pool, config, tokens, publisher: hub });
       registerDmRoutes(api, { pool, config, tokens, publisher: hub });
       registerReadStateRoutes(api, { pool, tokens });
+      registerSearchRoutes(api, { pool, tokens });
       registerUploadRoutes(api, { pool, config, tokens });
       registerGatewayRoutes(api, hub, tokens, config);
     },

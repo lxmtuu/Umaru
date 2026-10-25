@@ -102,7 +102,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 | **Voice message** (tối đa 20 phút, chỉ ghi trên mobile) | P2 |
 | **Forum channel** (channel kiểu diễn đàn, có tag, layout list/gallery) | P2 |
 | **Announcement channel** (kênh phát thanh, follow/crosspost, 10 lần/giờ) | P2 |
-| Tìm kiếm tin nhắn (toàn server, lọc theo người/loại file) | P1 (cơ bản), P2 (ngữ pháp tìm kiếm phong phú) |
+| Tìm kiếm tin nhắn (toàn server, lọc theo người/loại file) | ✅ P1 cơ bản đã có (keyword trong kênh/toàn server, cursor); P2 (lọc theo người/loại file, ngữ pháp tìm kiếm phong phú) |
 | Slowmode, quyền gửi tin theo role | P1 |
 | Nháp tin nhắn (drafts), gửi theo lịch | P2 / P3 |
 | Kho tin đã gửi (Library: ảnh, file, link) | P2 |

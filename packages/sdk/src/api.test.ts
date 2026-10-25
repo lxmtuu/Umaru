@@ -237,4 +237,24 @@ describe("UmaruApi", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(404);
   });
+
+  it("searchChannelMessages mã hoá q và cursor trong query string", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+    await api.searchChannelMessages("42", "xin chào & tệp", { before: "100", limit: 10 });
+
+    const url = new URL(calls[0]?.url ?? "", "http://local");
+    expect(url.pathname).toBe("/api/v1/channels/42/messages/search");
+    expect(url.searchParams.get("q")).toBe("xin chào & tệp");
+    expect(url.searchParams.get("before")).toBe("100");
+    expect(url.searchParams.get("limit")).toBe("10");
+  });
+
+  it("searchGuildMessages không gửi before/limit khi không truyền", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.searchGuildMessages("7", "abc");
+
+    expect(calls[0]?.url).toBe("/api/v1/guilds/7/messages/search?q=abc");
+  });
 });

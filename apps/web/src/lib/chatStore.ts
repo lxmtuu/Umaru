@@ -6,6 +6,7 @@ import type {
   GuildMemberSummary,
   Message,
   MessageMention,
+  MessageSearchHit,
   PresenceStatus,
   Role,
   Snowflake,
@@ -27,6 +28,9 @@ import {
 } from "./session.js";
 
 export type Screen = "boot" | "auth" | "chat";
+
+/** Phạm vi tìm kiếm: kênh đang mở, hoặc toàn server đang mở. */
+export type SearchScope = "channel" | "guild";
 
 interface TypingEntry {
   userId: string;
@@ -66,6 +70,20 @@ interface ChatState {
   mentionLoading: boolean;
   /** Trang vừa tải đầy → còn trang cũ hơn để lấy tiếp. */
   mentionHasMore: boolean;
+  /** Panel tìm kiếm tin nhắn đang mở trong khung chat. */
+  searchOpen: boolean;
+  /** Từ khoá đang gõ (chưa chắc đã tìm — bấm Enter/tìm mới gọi API). */
+  searchQuery: string;
+  /** Tìm trong kênh đang mở hay toàn server đang mở. */
+  searchScope: SearchScope;
+  /** Từ khoá của lần tìm gần nhất (dùng để tô sáng kết quả). */
+  searchSubmittedFor: string;
+  /** Kết quả tìm kiếm; null = chưa tìm lần nào. */
+  searchResults: MessageSearchHit[] | null;
+  searchLoading: boolean;
+  searchHasMore: boolean;
+  /** Tin cần cuộn tới và tô sáng sau khi nhảy từ kết quả tìm kiếm. */
+  highlightMessageId: string | null;
   typing: Record<string, TypingEntry[]>;
   presence: Record<string, PresenceStatus>;
   error: string | null;
@@ -97,6 +115,17 @@ interface ChatState {
   loadMoreMentions(): Promise<void>;
   /** Nhảy từ tab Mentions sang kênh chứa tin và đóng tab. */
   jumpToMention(mention: MessageMention): Promise<void>;
+  /** Mở panel tìm kiếm (mặc định tìm trong kênh đang mở). */
+  openSearch(): void;
+  closeSearch(): void;
+  setSearchQuery(query: string): void;
+  setSearchScope(scope: SearchScope): void;
+  /** Chạy tìm kiếm cho `searchQuery`; `q` dưới 2 ký tự thì không gọi API. */
+  runSearch(): Promise<void>;
+  /** Nối thêm một trang kết quả cũ hơn (cursor `before` = id tin cuối). */
+  loadMoreSearch(): Promise<void>;
+  /** Nhảy tới tin trong kết quả: mở đúng kênh, tải tới tin đó rồi tô sáng. */
+  openSearchHit(hit: MessageSearchHit): Promise<void>;
   /** Xoá badge của kênh + báo server mốc đã đọc mới nhất. */
   markRead(channelId: string): void;
   loadMessages(channelId: string): Promise<void>;
@@ -161,6 +190,12 @@ const typingSentAt = new Map<string, number>();
 const TYPING_THROTTLE_MS = 7_000;
 /** Số dòng mỗi trang của tab Mentions (server chặn tối đa 100). */
 const MENTION_PAGE_SIZE = 50;
+/** Số kết quả mỗi trang tìm kiếm (server chặn tối đa 50). */
+export const SEARCH_PAGE_SIZE = 25;
+/** Độ dài tối thiểu của từ khoá — trùng với ràng buộc phía server. */
+export const SEARCH_MIN_LENGTH = 2;
+/** Số trang tin nhắn tải thêm tối đa khi nhảy tới một kết quả tìm kiếm cũ. */
+const SEARCH_JUMP_MAX_PAGES = 8;
 /** Tránh bắn POST /read theo từng tin khi kênh đang mở nhận tin liên tục. */
 const ackedAt = new Map<string, number>();
 const ACK_THROTTLE_MS = 3_000;
@@ -195,6 +230,14 @@ const initialState = {
   mentionItems: null,
   mentionLoading: false,
   mentionHasMore: false,
+  searchOpen: false,
+  searchQuery: "",
+  searchScope: "channel" as SearchScope,
+  searchSubmittedFor: "",
+  searchResults: null,
+  searchLoading: false,
+  searchHasMore: false,
+  highlightMessageId: null,
   typing: {},
   presence: {},
   error: null,
@@ -624,6 +667,145 @@ export const useChat = create<ChatState>()((set, get) => ({
     }
   },
 
+  openSearch() {
+    set({
+      searchOpen: true,
+      mentionsOpen: false,
+      settingsOpen: false,
+      channelSettingsChannelId: null,
+      // Chưa chọn phạm vi thì mặc định tìm trong kênh đang mở.
+      searchScope: get().activeChannelId === null ? "guild" : "channel",
+    });
+  },
+  closeSearch() {
+    set({ searchOpen: false });
+  },
+  setSearchQuery(query) {
+    set({ searchQuery: query });
+  },
+  setSearchScope(scope) {
+    set({ searchScope: scope, searchResults: null, searchHasMore: false });
+  },
+  async runSearch() {
+    const { searchQuery, searchScope, activeChannelId, activeGuildId } = get();
+    const query = searchQuery.trim();
+    if (query.length < SEARCH_MIN_LENGTH) {
+      set({ searchResults: [], searchHasMore: false, searchSubmittedFor: query });
+      return;
+    }
+    const targetId = searchScope === "channel" ? activeChannelId : activeGuildId;
+    if (targetId === null) return;
+
+    set({ searchLoading: true, searchSubmittedFor: query });
+    try {
+      const page =
+        searchScope === "channel"
+          ? await authedApi.searchChannelMessages(targetId, query, { limit: SEARCH_PAGE_SIZE })
+          : await authedApi.searchGuildMessages(targetId, query, { limit: SEARCH_PAGE_SIZE });
+      set({
+        searchResults: page,
+        searchLoading: false,
+        searchHasMore: page.length === SEARCH_PAGE_SIZE,
+      });
+    } catch (error) {
+      set({ searchLoading: false, searchResults: [], searchHasMore: false, error: describeError(error) });
+    }
+  },
+  async loadMoreSearch() {
+    const current = get();
+    const loaded = current.searchResults;
+    const query = current.searchSubmittedFor;
+    if (
+      loaded === null ||
+      loaded.length === 0 ||
+      !current.searchHasMore ||
+      current.searchLoading ||
+      query.length < SEARCH_MIN_LENGTH
+    ) {
+      return;
+    }
+    const targetId = current.searchScope === "channel" ? current.activeChannelId : current.activeGuildId;
+    if (targetId === null) return;
+
+    const before = loaded[loaded.length - 1]!.message.id as string;
+    set({ searchLoading: true });
+    try {
+      const page =
+        current.searchScope === "channel"
+          ? await authedApi.searchChannelMessages(targetId, query, {
+              before,
+              limit: SEARCH_PAGE_SIZE,
+            })
+          : await authedApi.searchGuildMessages(targetId, query, {
+              before,
+              limit: SEARCH_PAGE_SIZE,
+            });
+      // Tin mới có thể chen vào giữa hai lần tải → nối theo id đã có.
+      const known = new Set((get().searchResults ?? []).map((hit) => hit.message.id as string));
+      const merged = [...(get().searchResults ?? [])];
+      for (const hit of page) {
+        const id = hit.message.id as string;
+        if (!known.has(id)) {
+          known.add(id);
+          merged.push(hit);
+        }
+      }
+      set({
+        searchResults: merged,
+        searchLoading: false,
+        searchHasMore: page.length === SEARCH_PAGE_SIZE,
+      });
+    } catch (error) {
+      set({ searchLoading: false, error: describeError(error) });
+    }
+  },
+  async openSearchHit(hit) {
+    const channelId = hit.channel.id as string;
+    set({
+      searchOpen: false,
+      mentionsOpen: false,
+      settingsOpen: false,
+      channelSettingsChannelId: null,
+      activeGuildId: hit.channel.guildId,
+      activeChannelId: channelId,
+    });
+    get().markRead(channelId);
+
+    const messageId = hit.message.id as string;
+    // Kết quả cũ hơn trang tin đang giữ → lật thêm trang cho tới khi thấy tin
+    // (giới hạn số lần để không quét cả kênh chỉ vì một cú bấm).
+    for (let page = 0; page <= SEARCH_JUMP_MAX_PAGES; page += 1) {
+      const loaded = get().messages[channelId];
+      if (loaded === undefined) {
+        await get().loadMessages(channelId);
+        continue;
+      }
+      if (loaded.some((message) => message.id === messageId)) break;
+      if (loaded.length === 0) break;
+      try {
+        const older = await authedApi.listMessages(channelId, { before: loaded[0]!.id as string });
+        if (older.length === 0) break;
+        set({
+          messages: {
+            ...get().messages,
+            [channelId]: [...[...older].reverse(), ...loaded],
+          },
+        });
+      } catch (error) {
+        set({ error: describeError(error) });
+        break;
+      }
+    }
+
+    set({ highlightMessageId: messageId });
+    // Cuộn sau khi React đã vẽ lại danh sách tin, rồi bỏ tô sáng.
+    setTimeout(() => {
+      document.getElementById(`message-${messageId}`)?.scrollIntoView({ block: "center" });
+    }, 0);
+    setTimeout(() => {
+      if (get().highlightMessageId === messageId) set({ highlightMessageId: null });
+    }, 2_500);
+  },
   async loadMoreMentions() {
     const current = get();
     const loaded = current.mentionItems;
