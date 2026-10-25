@@ -9,6 +9,7 @@ import type { FastifyInstance } from "fastify";
 import { listGuildChannelsForUser, loadChannelContext } from "../access.js";
 import { loadAttachmentsByMessage } from "../attachments.js";
 import { createAuthGuard, requireUserId } from "../auth/guard.js";
+import { notBlockedAuthorSql } from "../blocks.js";
 import type { TokenService } from "../auth/tokens.js";
 import type { Pool } from "../db.js";
 import { badRequest, readLimit } from "../http.js";
@@ -177,6 +178,15 @@ export function registerSearchRoutes(app: FastifyInstance, deps: SearchDeps): vo
           WHERE m.channel_id = $2
             AND m.content ILIKE $3 ESCAPE '\\'
             AND ($4::bigint IS NULL OR m.id < $4)
+            AND ${notBlockedAuthorSql("$1", "m.author_id")}
+            AND NOT EXISTS (
+              SELECT 1
+                FROM channel_members other
+                JOIN relationships rb ON rb.type = 'blocked'
+                 AND ((rb.user_id = $1 AND rb.target_id = other.user_id)
+                   OR (rb.user_id = other.user_id AND rb.target_id = $1))
+               WHERE other.channel_id = c.id AND other.user_id <> $1
+            )
           ORDER BY m.id DESC
           LIMIT $5`,
         [userId, request.params.channelId, toLikePattern(q), before, limit],
@@ -220,6 +230,8 @@ export function registerSearchRoutes(app: FastifyInstance, deps: SearchDeps): vo
             AND c.id = ANY($3::bigint[])
             AND m.content ILIKE $4 ESCAPE '\\'
             AND ($5::bigint IS NULL OR m.id < $5)
+            -- Tin của người đã chặn nhau không xuất hiện trong kết quả tìm kiếm.
+            AND ${notBlockedAuthorSql("$1", "m.author_id")}
           ORDER BY m.id DESC
           LIMIT $6`,
         [userId, request.params.guildId, visibleIds, toLikePattern(q), before, limit],

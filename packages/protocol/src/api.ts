@@ -139,3 +139,42 @@ export interface MessageSearchHit {
   author: UserSummary;
   recipient: UserSummary | null;
 }
+
+/** Lý do báo cáo vi phạm — danh sách cố định, server kiểm lại. */
+export const REPORT_REASONS = [
+  "spam",
+  "harassment",
+  "hate",
+  "sexual_content",
+  "violence",
+  "self_harm",
+  "impersonation",
+  "other",
+] as const;
+
+export type ReportReason = (typeof REPORT_REASONS)[number];
+
+export type ReportStatus = "open" | "reviewing" | "closed";
+
+/** Kết quả gửi báo cáo. Nội dung báo cáo chỉ admin xem được. */
+export interface ReportResult {
+  id: Snowflake;
+  status: ReportStatus;
+  createdAt: string;
+}
+
+/** Đầu vào gửi báo cáo: đúng một trong `messageId` / `userId`. */
+export interface ReportInput {
+  messageId?: string;
+  userId?: string;
+  reason: ReportReason;
+  details?: string;
+}
+
+/** Một người đang bị chặn (hiện trong danh sách để bỏ chặn). */
+export interface BlockedUser {
+  userId: Snowflake;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+}

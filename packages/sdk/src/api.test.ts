@@ -306,4 +306,40 @@ describe("UmaruApi", () => {
     expect(result.emailVerificationSent).toBe(true);
     expect(result.devVerificationToken).toBe("tok-1");
   });
+
+  it("blockUser/unblockUser dùng PUT và DELETE tới /users/@me/blocks/:id", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 204 });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    await api.blockUser("42");
+    await api.unblockUser("42");
+
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/blocks/42");
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(calls[1]?.init?.method).toBe("DELETE");
+  });
+
+  it("createReport gửi JSON kèm lý do và messageId", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "1", status: "open" } });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    const result = await api.createReport({ messageId: "99", reason: "spam", details: "quảng cáo" });
+
+    expect(calls[0]?.url).toBe("/api/v1/reports");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      messageId: "99",
+      reason: "spam",
+      details: "quảng cáo",
+    });
+    expect(result.status).toBe("open");
+  });
+
+  it("listBlocks trả danh sách summary", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [{ userId: "1" }] });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const blocks = await api.listBlocks();
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/blocks");
+    expect(blocks).toHaveLength(1);
+  });
 });

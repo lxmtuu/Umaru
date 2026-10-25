@@ -79,6 +79,13 @@ export async function loadDms(pool: Pool, userId: Snowflake): Promise<DmChannelS
        JOIN channel_members theirs ON theirs.channel_id = c.id AND theirs.user_id <> $1
        JOIN users u ON u.id = theirs.user_id
       WHERE c.type = 'dm' AND c.guild_id IS NULL
+        -- DM có người đã chặn (một trong hai chiều) biến khỏi danh sách của cả hai.
+        AND NOT EXISTS (
+          SELECT 1 FROM relationships rb
+           WHERE rb.type = 'blocked'
+             AND ((rb.user_id = $1 AND rb.target_id = theirs.user_id)
+               OR (rb.user_id = theirs.user_id AND rb.target_id = $1))
+        )
       ORDER BY c.id DESC`,
     [userId],
   );

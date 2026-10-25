@@ -10,7 +10,8 @@ import type { TokenService } from "../auth/tokens.js";
 import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
-import { badRequest, notFound, readId } from "../http.js";
+import { isBlockedBetween } from "../blocks.js";
+import { badRequest, forbidden, notFound, readId } from "../http.js";
 import { loadDms } from "../bootstrap.js";
 
 export interface DmDeps {
@@ -47,6 +48,10 @@ export function registerDmRoutes(app: FastifyInstance, deps: DmDeps): void {
     const recipientId = readId(body, "recipientId");
     if (recipientId === null) throw badRequest("Thiếu recipientId");
     if (recipientId === userId) throw badRequest("Không thể tự nhắn cho mình");
+    // Chặn một chiều cũng đủ để cắt liên lạc hai chiều (xem src/blocks.ts).
+    if (await isBlockedBetween(pool, userId, recipientId)) {
+      throw forbidden("Không thể nhắn tin với người này");
+    }
 
     const recipientResult = await pool.query<UserSummaryRow>(
       "SELECT id, username, display_name, avatar_url FROM users WHERE id = $1",

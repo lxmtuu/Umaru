@@ -1,12 +1,21 @@
 import { Permission, createSnowflake, hasPermission, type Snowflake } from "@umaru/protocol";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { loadChannelContext } from "../access.js";
+import { isDmBlocked } from "../blocks.js";
 import { createAuthGuard, requireUserId } from "../auth/guard.js";
 import type { TokenService } from "../auth/tokens.js";
 import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
-import { HttpError, badRequest, notFound, readId, readLimit, readString } from "../http.js";
+import {
+  HttpError,
+  badRequest,
+  forbidden,
+  notFound,
+  readId,
+  readLimit,
+  readString,
+} from "../http.js";
 import { attachmentUrl, mapMessagesWithAttachments } from "../attachments.js";
 import { mapMessage, type MessageRow } from "../mappers.js";
 import { syncMessageMentions } from "../mentions.js";
@@ -43,6 +52,9 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       const userId = requireUserId(request);
       await loadChannelContext(pool, userId as Snowflake, request.params.channelId);
 
+      // DM giữa hai người đã chặn nhau: coi như không còn lịch sử để đọc.
+      if (await isDmBlocked(pool, request.params.channelId, userId)) return reply.send([]);
+
       const limit = readLimit(request.query.limit, 50);
       const before = request.query.before ?? null;
       if (before !== null && !/^\d{1,20}$/.test(before)) {
@@ -74,6 +86,9 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       const userId = requireUserId(request);
       const { channelId } = request.params;
       await loadChannelContext(pool, userId as Snowflake, channelId, Permission.SEND_MESSAGES);
+      if (await isDmBlocked(pool, channelId, userId)) {
+        throw forbidden("Không thể nhắn tin với người này");
+      }
 
       const payload = request.isMultipart()
         ? await readMultipartMessage(request, config)

@@ -12,6 +12,7 @@ import type { TokenService } from "../auth/tokens.js";
 import type { Pool } from "../db.js";
 import { badRequest, readId, readLimit } from "../http.js";
 import { loadAttachmentsByMessage } from "../attachments.js";
+import { notBlockedAuthorSql } from "../blocks.js";
 import { loadBootstrap } from "../bootstrap.js";
 
 interface MentionRow {
@@ -152,6 +153,16 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
           WHERE mm.user_id = $1
             AND ($2::bigint IS NULL OR m.id < $2)
             AND c.id = ANY($4::bigint[])
+            -- Người tôi chặn (hoặc chặn tôi) không còn chen vào hộp thư nhắc.
+            AND ${notBlockedAuthorSql("$1", "m.author_id")}
+            AND NOT EXISTS (
+              SELECT 1
+                FROM channel_members other
+                JOIN relationships rb ON rb.type = 'blocked'
+                 AND ((rb.user_id = $1 AND rb.target_id = other.user_id)
+                   OR (rb.user_id = other.user_id AND rb.target_id = $1))
+               WHERE other.channel_id = c.id AND other.user_id <> $1
+            )
           ORDER BY m.id DESC
           LIMIT $3`,
         [userId, before, limit, visibleIds],

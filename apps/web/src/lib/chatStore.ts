@@ -7,6 +7,7 @@ import type {
   Message,
   MessageMention,
   MessageSearchHit,
+  ReportInput,
   PresenceStatus,
   Role,
   Snowflake,
@@ -32,6 +33,16 @@ export type Screen = "boot" | "auth" | "chat";
 
 /** Phạm vi tìm kiếm: kênh đang mở, hoặc toàn server đang mở. */
 export type SearchScope = "channel" | "guild";
+
+/** Đối tượng đang được báo cáo trong hộp thoại. */
+export interface ReportTarget {
+  /** Báo cáo một tin cụ thể. */
+  messageId?: string;
+  /** Báo cáo một người (dùng khi báo cáo từ menu thành viên). */
+  userId?: string;
+  /** Tên hiển thị để hộp thoại nói rõ đang báo cáo ai. */
+  label: string;
+}
 
 /** Thông báo ngắn hiển thị trên đầu khung chat. */
 export interface Banner {
@@ -91,6 +102,15 @@ interface ChatState {
   searchHasMore: boolean;
   /** Tin cần cuộn tới và tô sáng sau khi nhảy từ kết quả tìm kiếm. */
   highlightMessageId: string | null;
+  /** Panel "Người đã chặn" đang mở. */
+  blocksOpen: boolean;
+  /** Danh sách người đã chặn; null = chưa tải lần nào. */
+  blocks: GuildMemberSummary[] | null;
+  blocksLoading: boolean;
+  /** Hộp thoại báo cáo đang mở (một tin hoặc một người). */
+  reportTarget: ReportTarget | null;
+  /** Đang gửi báo cáo — khoá nút để không gửi hai lần. */
+  reportSending: boolean;
   typing: Record<string, TypingEntry[]>;
   presence: Record<string, PresenceStatus>;
   error: string | null;
@@ -190,6 +210,17 @@ interface ChatState {
     targetType: "role" | "member",
     targetId: string,
   ): Promise<boolean>;
+  /** Mở panel người đã chặn + tải lại danh sách. */
+  openBlocks(): Promise<void>;
+  closeBlocks(): void;
+  /** Chặn một người; DM với họ biến khỏi danh sách ngay. */
+  blockUser(userId: string): Promise<boolean>;
+  unblockUser(userId: string): Promise<boolean>;
+  /** Mở/đóng hộp thoại báo cáo. */
+  openReport(target: ReportTarget): void;
+  closeReport(): void;
+  /** Gửi báo cáo; `true` khi thành công (hộp thoại tự đóng). */
+  submitReport(input: Omit<ReportInput, "messageId" | "userId">): Promise<boolean>;
   /** Gửi lại mail xác thực; ở dev có token echo thì xác thực luôn. */
   resendVerification(): Promise<void>;
   /** Xác thực email bằng token trong link (`?verifyToken=...`). */
@@ -253,6 +284,11 @@ const initialState = {
   searchLoading: false,
   searchHasMore: false,
   highlightMessageId: null,
+  blocksOpen: false,
+  blocks: null,
+  blocksLoading: false,
+  reportTarget: null,
+  reportSending: false,
   typing: {},
   presence: {},
   error: null,
@@ -1172,6 +1208,87 @@ export const useChat = create<ChatState>()((set, get) => ({
     }
   },
 
+  async openBlocks() {
+    set({
+      blocksOpen: true,
+      searchOpen: false,
+      mentionsOpen: false,
+      settingsOpen: false,
+      channelSettingsChannelId: null,
+      blocksLoading: true,
+    });
+    try {
+      const blocks = await authedApi.listBlocks();
+      set({ blocks, blocksLoading: false });
+    } catch (error) {
+      set({ blocksLoading: false, error: describeError(error) });
+    }
+  },
+  closeBlocks() {
+    set({ blocksOpen: false });
+  },
+  async blockUser(userId) {
+    try {
+      await authedApi.blockUser(userId);
+      // DM với người vừa chặn bị server ẩn → bỏ khỏi sidebar ngay, không đợi tải lại.
+      set({
+        dms: get().dms.filter((dm) => dm.recipient.userId !== userId),
+        banner: { kind: "success", text: translate("userBlocked") },
+        error: null,
+      });
+      if (get().blocksOpen) await get().openBlocks();
+      else set({ blocks: null });
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+  async unblockUser(userId) {
+    try {
+      await authedApi.unblockUser(userId);
+      set({
+        blocks: (get().blocks ?? []).filter((entry) => entry.userId !== userId),
+        banner: { kind: "success", text: translate("userUnblocked") },
+        error: null,
+      });
+      // Bỏ chặn thì DM cũ hiện lại; tải lại danh sách DM thay vì tự đoán.
+      const dms = await authedApi.listDms();
+      set({ dms });
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+  openReport(target) {
+    set({ reportTarget: target, reportSending: false });
+  },
+  closeReport() {
+    set({ reportTarget: null, reportSending: false });
+  },
+  async submitReport(input) {
+    const target = get().reportTarget;
+    if (target === null) return false;
+    set({ reportSending: true });
+    try {
+      await authedApi.createReport({
+        ...input,
+        ...(target.messageId === undefined ? {} : { messageId: target.messageId }),
+        ...(target.userId === undefined ? {} : { userId: target.userId }),
+      });
+      set({
+        reportSending: false,
+        reportTarget: null,
+        banner: { kind: "success", text: translate("reportSent") },
+        error: null,
+      });
+      return true;
+    } catch (error) {
+      set({ reportSending: false, error: describeError(error) });
+      return false;
+    }
+  },
   async resendVerification() {
     try {
       const result = await authedApi.resendVerification();

@@ -20,6 +20,7 @@ import { MessageContent } from "./MessageContent.js";
 import { legalPath } from "../lib/legalRoute.js";
 import { resultText, snippetAround, splitHighlight } from "../lib/search.js";
 import { RoleSettings } from "./RoleSettings.js";
+import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
 
 export function ChatScreen() {
   const t = useT();
@@ -583,6 +584,19 @@ export function ChatScreen() {
                 {locale === "en" ? "EN" : "VI"}
               </button>
               <button
+                onClick={() =>
+                  void (state.blocksOpen ? state.closeBlocks() : state.openBlocks())
+                }
+                title={t("blockedUsers")}
+                aria-label={t("blockedUsers")}
+                aria-pressed={state.blocksOpen}
+                className={`rounded px-1.5 py-0.5 text-[11px] hover:bg-white/5 hover:text-slate-200 ${
+                  state.blocksOpen ? "bg-white/10 text-slate-100" : "text-slate-400"
+                }`}
+              >
+                🛡
+              </button>
+              <button
                 onClick={() => void state.logout()}
                 title={t("logout")}
                 className="rounded px-1.5 py-0.5 text-[11px] text-slate-400 hover:bg-white/5 hover:text-rose-300"
@@ -595,10 +609,12 @@ export function ChatScreen() {
       </aside>
 
       {/* Main */}
-      <main className="flex min-w-0 flex-1 flex-col bg-slate-900/30">
+      <main className="relative flex min-w-0 flex-1 flex-col bg-slate-900/30">
         <header className="flex items-center justify-between border-b border-white/5 px-4 py-3">
           <h1 className="truncate text-sm font-semibold">
-            {state.searchOpen
+            {state.blocksOpen
+              ? `🛡 ${t("blockedUsers")}`
+              : state.searchOpen
               ? `🔍 ${t("search")}`
               : state.channelSettingsChannelId !== null
               ? `⚙ ${t("channelSettings")}`
@@ -687,7 +703,22 @@ export function ChatScreen() {
           </div>
         )}
 
-        {state.searchOpen ? (
+        {state.reportTarget !== null && (
+          <ReportDialog
+            label={state.reportTarget.label}
+            sending={state.reportSending}
+            onCancel={() => state.closeReport()}
+            onSubmit={(input) => void state.submitReport(input)}
+          />
+        )}
+
+        {state.blocksOpen ? (
+          <BlocksPanel
+            blocks={state.blocks}
+            loading={state.blocksLoading}
+            onUnblock={(userId) => void state.unblockUser(userId)}
+          />
+        ) : state.searchOpen ? (
           <SearchPanel
             query={state.searchQuery}
             scope={state.searchScope}
@@ -807,6 +838,37 @@ export function ChatScreen() {
                             >
                               ↩
                             </button>
+                            {!mine && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    state.openReport({
+                                      messageId: message.id as string,
+                                      label: authorName(message),
+                                    })
+                                  }
+                                  title={t("reportMessage")}
+                                  aria-label={t("reportMessage")}
+                                  className="rounded px-1 text-[11px] text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
+                                >
+                                  🚩
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (window.confirm(t("blockConfirm", { name: authorName(message) }))) {
+                                      void state.blockUser(message.authorId as string);
+                                    }
+                                  }}
+                                  title={t("block")}
+                                  aria-label={t("block")}
+                                  className="rounded px-1 text-[11px] text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
+                                >
+                                  🚫
+                                </button>
+                              </>
+                            )}
                           </span>
                           {canModerate && !editing && (
                             <span className="flex shrink-0 items-center gap-1">

@@ -6,9 +6,12 @@ import type {
   Message,
   MessageMention,
   MessageSearchHit,
+  ReportInput,
+  ReportResult,
   ReadState,
   Role,
   User,
+  GuildMemberSummary,
 } from "@umaru/protocol";
 
 function buildSearchParams(query: string, options: { before?: string; limit?: number }): string {
@@ -160,6 +163,28 @@ export class UmaruApi {
   resendVerification(): Promise<ResendVerificationResult> {
     return this.request<ResendVerificationResult>(`${API_PREFIX}/auth/verify-email/resend`, {
       method: "POST",
+    });
+  }
+
+  /** Danh sách người tôi đã chặn. */
+  listBlocks(): Promise<GuildMemberSummary[]> {
+    return this.request<GuildMemberSummary[]>(`${API_PREFIX}/users/@me/blocks`);
+  }
+
+  /** Chặn một người (idempotent). Chặn cắt DM cả hai chiều. */
+  blockUser(userId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/blocks/${userId}`, { method: "PUT" });
+  }
+
+  unblockUser(userId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/blocks/${userId}`, { method: "DELETE" });
+  }
+
+  /** Gửi báo cáo vi phạm: `messageId` (một tin) hoặc `userId` (một người). */
+  createReport(input: ReportInput): Promise<ReportResult> {
+    return this.request<ReportResult>(`${API_PREFIX}/reports`, {
+      method: "POST",
+      body: JSON.stringify(input),
     });
   }
 
