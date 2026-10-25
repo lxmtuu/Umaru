@@ -360,10 +360,15 @@ export class UmaruApi {
     });
   }
 
+  /**
+   * Sửa role. `position` là **thứ hạng kéo-thả** (0 = trên cùng, không tính
+   * `@everyone`) — server renumber lại cả dãy và phát `ROLE_UPDATE` cho những
+   * role đổi chỗ.
+   */
   editRole(
     guildId: string,
     roleId: string,
-    input: { name?: string; color?: number; permissions?: string },
+    input: { name?: string; color?: number; permissions?: string; position?: number },
   ): Promise<Role> {
     return this.request<Role>(`${API_PREFIX}/guilds/${guildId}/roles/${roleId}`, {
       method: "PATCH",

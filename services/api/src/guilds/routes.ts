@@ -118,6 +118,77 @@ function requireCanGrant(context: GuildContext, bits: bigint): void {
   }
 }
 
+/**
+ * Kéo-thả đổi cấp role: chèn `role` vào chỉ số `index` (0 = trên cùng, **không
+ * tính** `@everyone`), rồi renumber toàn bộ role của server từ M (trên cùng)
+ * xuống 1 (dưới cùng). `@everyone` luôn giữ `position = 0` ở đáy nên không bao
+ * giờ bị đẩy lên/xuống theo.
+ *
+ * Trả về những role **thật sự đổi `position`**, theo đúng thứ tự mới, để
+ * fan-out `ROLE_UPDATE` — client khác xếp lại ngay mà không cần tải lại.
+ *
+ * Fail-closed: non-admin không được đẩy role lên trên cấp cao nhất của mình
+ * (làm vậy là tự nâng quyền qua phân cấp); khoá advisory theo guild để hai
+ * người kéo cùng lúc không renumber chồng nhau thành position trùng.
+ */
+async function reorderRoles(
+  pool: Pool,
+  context: GuildContext,
+  role: RoleRow,
+  index: number,
+  guildId: string,
+): Promise<RoleRow[]> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`roles:${guildId}`]);
+
+    const siblings = await client.query<{ id: string; position: number }>(
+      `SELECT id, position FROM roles
+        WHERE guild_id = $1 AND is_everyone = false AND id <> $2
+        ORDER BY position DESC, id DESC`,
+      [guildId, role.id],
+    );
+    const before = new Map<string, number>(siblings.rows.map((row) => [row.id, row.position]));
+    before.set(role.id, role.position);
+
+    const ids = siblings.rows.map((row) => row.id);
+    const at = Math.min(index, ids.length);
+    const ordered = [...ids.slice(0, at), role.id, ...ids.slice(at)];
+    const total = ordered.length;
+    // Chỉ số từ trên xuống 0..M-1 ↔ position M..1 (cao = mạnh hơn).
+    if (!isAdmin(context.permissions) && total - at > highestRolePosition(context)) {
+      throw forbidden("Không thể đưa role lên trên cấp cao nhất của bạn");
+    }
+
+    await client.query(
+      `UPDATE roles AS r
+          SET position = v.pos
+         FROM unnest($1::bigint[], $2::integer[]) AS v(id, pos)
+        WHERE r.id = v.id`,
+      [ordered, ordered.map((_, position) => total - position)],
+    );
+
+    const after = await client.query<RoleRow>(
+      `SELECT ${ROLE_COLUMNS} FROM roles WHERE id = ANY($1::bigint[])`,
+      [ordered],
+    );
+    const byId = new Map(after.rows.map((row) => [row.id, row]));
+    const changed: RoleRow[] = [];
+    for (const id of ordered) {
+      const row = byId.get(id);
+      if (row !== undefined && before.get(row.id) !== row.position) changed.push(row);
+    }
+    await client.query("COMMIT");
+    return changed;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 function readRoleColor(body: Record<string, unknown> | undefined): number | null {
   const raw = body?.color;
   if (raw === undefined || raw === null) return null;
@@ -508,35 +579,73 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       const name = body?.name === undefined ? null : readString(body, "name", { min: 1, max: 100 });
       const color = readRoleColor(body);
       const bits = readPermissionBits(body);
-      if (name === null && color === null && bits === null) {
+      // `position` ở đây là **thứ hạng kéo-thả** (0 = trên cùng), khác `Role.position`
+      // (cao = mạnh hơn) mà response trả về — đừng nhầm hai chiều.
+      const movesPosition = body !== undefined && "position" in body && body.position !== null;
+      if (name === null && color === null && bits === null && !movesPosition) {
         throw badRequest("Không có gì để cập nhật");
       }
       if (bits !== null) requireCanGrant(context, bits);
 
-      const updated = await pool.query<RoleRow>(
-        `UPDATE roles
-            SET name = COALESCE($3, name),
-                color = COALESCE($4, color),
-                permissions = COALESCE($5, permissions)
-          WHERE id = $1 AND guild_id = $2
-          RETURNING ${ROLE_COLUMNS}`,
-        [
-          request.params.roleId,
-          request.params.guildId,
-          name,
-          color,
-          bits === null ? null : serializePermissions(bits),
-        ],
-      );
-      const updatedRole = updated.rows[0];
-      if (updatedRole === undefined) throw notFound("Role không tồn tại");
+      let updatedRole = role;
+      if (name !== null || color !== null || bits !== null) {
+        const updated = await pool.query<RoleRow>(
+          `UPDATE roles
+              SET name = COALESCE($3, name),
+                  color = COALESCE($4, color),
+                  permissions = COALESCE($5, permissions)
+            WHERE id = $1 AND guild_id = $2
+            RETURNING ${ROLE_COLUMNS}`,
+          [
+            request.params.roleId,
+            request.params.guildId,
+            name,
+            color,
+            bits === null ? null : serializePermissions(bits),
+          ],
+        );
+        const row = updated.rows[0];
+        if (row === undefined) throw notFound("Role không tồn tại");
+        updatedRole = row;
+      }
 
+      const changedFields = name !== null || color !== null || bits !== null;
       // Quyền role đổi → hiệu dụng của mọi thành viên mang role đó đổi theo.
-      await publisher.refreshGuildVisibility(request.params.guildId);
-      publisher.publishToGuild(request.params.guildId, "ROLE_UPDATE", {
-        guildId: request.params.guildId as Snowflake,
-        role: mapRole(updatedRole),
-      });
+      // (Chỉ đổi tên/màu hoặc thứ hạng thì tập kênh hiển thị không đổi.)
+      if (bits !== null) await publisher.refreshGuildVisibility(request.params.guildId);
+
+      let published = false;
+      if (movesPosition) {
+        // Kéo-thả chỉ đổi **thứ hạng**: không ai được/mất quyền, nên không cần
+        // `refreshGuildVisibility` — chỉ fan-out role nào đổi chỗ, theo thứ tự mới.
+        if (updatedRole.is_everyone) throw badRequest("@everyone luôn ở dưới cùng");
+        const changed = await reorderRoles(
+          pool,
+          context,
+          updatedRole,
+          readPosition(body?.position),
+          request.params.guildId,
+        );
+        for (const row of changed) {
+          publisher.publishToGuild(request.params.guildId, "ROLE_UPDATE", {
+            guildId: request.params.guildId as Snowflake,
+            role: mapRole(row),
+          });
+          if (row.id === updatedRole.id) {
+            updatedRole = row;
+            published = true;
+          }
+        }
+      }
+      // Thả đúng chỗ cũ (không ai đổi position) vẫn phải phát nếu tên/quyền vừa
+      // sửa — và không bao giờ phát hai lần cho cùng một role trong một request.
+      if (changedFields && !published) {
+        publisher.publishToGuild(request.params.guildId, "ROLE_UPDATE", {
+          guildId: request.params.guildId as Snowflake,
+          role: mapRole(updatedRole),
+        });
+      }
+
       return reply.send(mapRole(updatedRole));
     },
   );

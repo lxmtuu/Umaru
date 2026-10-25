@@ -218,6 +218,12 @@ interface ChatState {
     roleId: string,
     input: { name?: string; color?: number; permissions?: string },
   ): Promise<boolean>;
+  /**
+   * Kéo-thả đổi cấp role: `position` = thứ hạng trên xuống (0 = trên cùng, không
+   * tính `@everyone`). Server renumber cả dãy và phát `ROLE_UPDATE` cho những
+   * role đổi chỗ nên các client khác xếp lại ngay.
+   */
+  reorderRole(roleId: string, position: number): Promise<boolean>;
   deleteRole(roleId: string): Promise<boolean>;
   /** Gán/thu một role của thành viên; server đẩy `GUILD_MEMBER_UPDATE` cho cả server. */
   setMemberRole(memberId: string, roleId: string, assign: boolean): Promise<boolean>;
@@ -1339,6 +1345,24 @@ export const useChat = create<ChatState>()((set, get) => ({
     if (guildId === null) return false;
     try {
       const role = await authedApi.editRole(guildId, roleId, input);
+      set({
+        roles: {
+          ...get().roles,
+          [guildId]: upsertRole(get().roles[guildId] ?? [], role),
+        },
+      });
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+
+  async reorderRole(roleId, position) {
+    const guildId = get().activeGuildId;
+    if (guildId === null) return false;
+    try {
+      const role = await authedApi.editRole(guildId, roleId, { position });
       set({
         roles: {
           ...get().roles,

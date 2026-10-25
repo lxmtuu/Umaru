@@ -1,8 +1,9 @@
 import type { GuildMemberSummary, Role } from "@umaru/protocol";
 import { Permission, parsePermissions, serializePermissions } from "@umaru/protocol";
-import { useState } from "react";
+import { useState, type DragEvent as ReactDragEvent } from "react";
 import { useChat } from "../lib/chatStore.js";
 import { useT } from "../lib/i18n.js";
+import { draggableRoles, resolveRoleDrop, roleDropChangesOrder } from "../lib/roleOrder.js";
 import { PERMISSION_ROWS, colorToHex, hexToColor } from "../lib/roleUi.js";
 import { Avatar } from "./Avatar.js";
 
@@ -29,6 +30,10 @@ export function RoleSettings() {
   const [bits, setBits] = useState<bigint>(DEFAULT_ROLE_PERMISSIONS);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [dragRoleId, setDragRoleId] = useState<string | null>(null);
+  const [dropRole, setDropRole] = useState<{ id: string; zone: "before" | "after" } | null>(
+    null,
+  );
 
   const selected = roles.find((role) => role.id === selectedId) ?? null;
   const editing = creating || selected !== null;
@@ -82,6 +87,32 @@ export function RoleSettings() {
     setBusy(false);
   }
 
+  /** Hàng role: nửa trên = chèn trước, nửa dưới = chèn sau (giống kênh ở sidebar). */
+  function zoneAt(event: ReactDragEvent): "before" | "after" {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+  }
+
+  function roleDragOver(event: ReactDragEvent, role: Role): void {
+    if (dragRoleId === null || dragRoleId === role.id || role.isEveryone) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDropRole({ id: role.id, zone: zoneAt(event) });
+  }
+
+  function roleDrop(event: ReactDragEvent, role: Role): void {
+    if (dragRoleId === null || role.isEveryone) return;
+    event.preventDefault();
+    const target = { roleId: role.id, zone: zoneAt(event) };
+    const moved = dragRoleId;
+    setDragRoleId(null);
+    setDropRole(null);
+    if (!roleDropChangesOrder(roles, moved, target)) return;
+    const position = resolveRoleDrop(roles, moved, target);
+    if (position === null) return;
+    void state.reorderRole(moved, position);
+  }
+
   async function remove(): Promise<void> {
     if (selected === null) return;
     setBusy(true);
@@ -120,37 +151,78 @@ export function RoleSettings() {
           {roles.length === 0 ? (
             <p className="px-1 py-3 text-xs text-slate-400">{t("noRoles")}</p>
           ) : (
-            <ul className="space-y-1">
-              {roles.map((role) => (
-                <li key={role.id}>
-                  <button
-                    type="button"
-                    onClick={() => pickRole(role)}
-                    aria-pressed={!creating && selectedId === role.id}
-                    className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm ${
-                      !creating && selectedId === role.id
-                        ? "bg-white/10 text-slate-100"
-                        : "text-slate-300 hover:bg-white/5"
-                    }`}
-                  >
-                    <span
-                      className="size-3 shrink-0 rounded-full border border-white/20"
-                      style={{ backgroundColor: colorToHex(role.color) }}
-                      aria-hidden
-                    />
-                    <span className="truncate">{role.name}</span>
-                    {role.isEveryone && (
-                      <span className="shrink-0 rounded bg-white/5 px-1 text-[10px] text-slate-400">
-                        {t("everyoneRoleHint")}
-                      </span>
-                    )}
-                    <span className="ml-auto shrink-0 text-[10px] text-slate-500">
-                      {role.position}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="space-y-1">
+                {roles.map((role) => {
+                  const dragging = dragRoleId === role.id;
+                  const zone = dropRole?.id === role.id ? dropRole.zone : null;
+                  return (
+                    <li
+                      key={role.id}
+                      // `@everyone` luôn ở đáy nên không kéo được (server cũng trả 400).
+                      draggable={!role.isEveryone}
+                      onDragStart={(event) => {
+                        if (role.isEveryone) return;
+                        setDragRoleId(role.id);
+                        event.dataTransfer.effectAllowed = "move";
+                        // Firefox không bắt đầu kéo nếu không có dữ liệu.
+                        event.dataTransfer.setData("text/plain", role.id);
+                        state.clearError();
+                      }}
+                      onDragEnd={() => {
+                        setDragRoleId(null);
+                        setDropRole(null);
+                      }}
+                      onDragOver={(event) => roleDragOver(event, role)}
+                      onDrop={(event) => roleDrop(event, role)}
+                      className={`relative rounded-lg ${
+                        zone === "before" ? "before:absolute before:-top-0.5 before:left-2 before:right-2 before:h-0.5 before:rounded before:bg-emerald-400" : ""
+                      } ${
+                        zone === "after" ? "after:absolute after:-bottom-0.5 after:left-2 after:right-2 after:h-0.5 after:rounded after:bg-emerald-400" : ""
+                      } ${dragging ? "opacity-40" : ""}`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => pickRole(role)}
+                        aria-pressed={!creating && selectedId === role.id}
+                        className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm ${
+                          !creating && selectedId === role.id
+                            ? "bg-white/10 text-slate-100"
+                            : "text-slate-300 hover:bg-white/5"
+                        }`}
+                      >
+                        <span
+                          className={`w-3 shrink-0 text-center text-[10px] ${
+                            role.isEveryone ? "text-transparent" : "cursor-grab text-slate-500"
+                          }`}
+                          aria-hidden
+                          title={role.isEveryone ? undefined : t("dragRoleHint")}
+                        >
+                          ⋮⋮
+                        </span>
+                        <span
+                          className="size-3 shrink-0 rounded-full border border-white/20"
+                          style={{ backgroundColor: colorToHex(role.color) }}
+                          aria-hidden
+                        />
+                        <span className="truncate">{role.name}</span>
+                        {role.isEveryone && (
+                          <span className="shrink-0 rounded bg-white/5 px-1 text-[10px] text-slate-400">
+                            {t("everyoneRoleHint")}
+                          </span>
+                        )}
+                        <span className="ml-auto shrink-0 text-[10px] text-slate-500">
+                          {role.position}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {draggableRoles(roles).length > 1 && (
+                <p className="mt-2 px-1 text-[11px] text-slate-500">{t("roleOrderHint")}</p>
+              )}
+            </>
           )}
         </section>
 
