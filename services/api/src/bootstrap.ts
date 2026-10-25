@@ -89,16 +89,21 @@ export async function loadDms(pool: Pool, userId: Snowflake): Promise<DmChannelS
             g.owner_id,
             -- Hai ký tự điều khiển làm phân cách: tên hiển thị có thể chứa dấu
             -- hai chấm hoặc dấu phẩy nên không dùng ký tự in được.
-            string_agg(
+            coalesce(string_agg(
               concat_ws(chr(30), u.id, u.username, u.display_name, coalesce(u.avatar_url, '')),
               chr(31) ORDER BY u.id
-            ) AS members
+            ), '') AS members
        FROM channels c
        JOIN channel_members mine ON mine.channel_id = c.id AND mine.user_id = $1
-       JOIN channel_members theirs ON theirs.channel_id = c.id AND theirs.user_id <> $1
-       JOIN users u ON u.id = theirs.user_id
+       -- LEFT JOIN vì group DM có thể còn **đúng một** thành viên (mọi người khác
+       -- đã rời). Nếu INNER JOIN thì nhóm đó biến mất khỏi danh sách của người
+       -- cuối cùng → họ không thể rời nốt và kênh thành rác vĩnh viễn.
+       LEFT JOIN channel_members theirs ON theirs.channel_id = c.id AND theirs.user_id <> $1
+       LEFT JOIN users u ON u.id = theirs.user_id
        LEFT JOIN group_dms g ON g.channel_id = c.id
       WHERE c.type IN ('dm', 'group_dm') AND c.guild_id IS NULL
+        -- DM 1-1 luôn phải có người bên kia; group DM thì không.
+        AND (c.type = 'group_dm' OR theirs.user_id IS NOT NULL)
         AND (
           c.type = 'group_dm'
           -- DM 1-1: ẩn nếu có block theo bất kỳ chiều nào giữa hai người.

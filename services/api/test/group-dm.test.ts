@@ -295,6 +295,30 @@ describe("group DM", () => {
     expect((await removeMember(outsider.token, channelId, "@me")).statusCode).toBe(404);
   });
 
+  it("người cuối cùng còn lại vẫn thấy nhóm trong danh sách và rời được", async () => {
+    // Hồi quy: `loadDms` từng INNER JOIN người bên kia nên khi mọi người khác đã
+    // rời, nhóm biến mất khỏi sidebar của người cuối cùng → họ không rời nốt được
+    // và kênh thành rác vĩnh viễn trong DB.
+    const created = (await createGroup(alice.token, [bob.id, carol.id])).json<SummaryBody>();
+    const channelId = created.channel.id;
+    for (const member of [bob, carol]) {
+      expect((await removeMember(member.token, channelId, "@me")).statusCode).toBe(204);
+    }
+
+    const listed = await listChannels(alice.token);
+    const alone = listed.find((dm) => dm.channel.id === channelId);
+    expect(alone).toBeDefined();
+    expect(alone?.recipients).toEqual([]);
+    expect(alone?.ownerId).toBe(alice.id);
+
+    expect((await removeMember(alice.token, channelId, "@me")).statusCode).toBe(204);
+    const channels = await ctx.pool.query("SELECT 1 FROM channels WHERE id = $1", [channelId]);
+    expect(channels.rowCount).toBe(0);
+    // Bảng group_dms xoá theo FK — không để lại dòng mồ côi.
+    const groups = await ctx.pool.query("SELECT 1 FROM group_dms WHERE channel_id = $1", [channelId]);
+    expect(groups.rowCount).toBe(0);
+  });
+
   it("người cuối cùng rời nhóm → kênh bị xoá (kèm tin nhắn)", async () => {
     const created = (await createGroup(alice.token, [bob.id, carol.id])).json<SummaryBody>();
     const channelId = created.channel.id;
@@ -309,6 +333,37 @@ describe("group DM", () => {
     expect(channels.rowCount).toBe(0);
     const messages = await ctx.pool.query("SELECT 1 FROM messages WHERE id = $1", [message.id]);
     expect(messages.rowCount).toBe(0);
+  });
+
+  it("DM 1-1 vẫn ẩn khi bị chặn (kể cả sau khi đổi sang LEFT JOIN), group DM thì không", async () => {
+    const dm = (await ctx.app.inject({
+      method: "POST",
+      url: "/api/v1/users/@me/channels",
+      headers: auth(alice.token),
+      payload: { recipientId: bob.id },
+    })).json<SummaryBody>();
+    const group = (await createGroup(alice.token, [bob.id, carol.id])).json<SummaryBody>();
+
+    // Chặn một chiều là đủ để cả hai bên không thấy cuộc trò chuyện 1-1.
+    expect((await ctx.app.inject({
+      method: "PUT",
+      url: `/api/v1/users/@me/blocks/${bob.id}`,
+      headers: auth(alice.token),
+    })).statusCode).toBe(204);
+
+    for (const who of [alice, bob]) {
+      const listed = await listChannels(who.token);
+      expect(listed.some((item) => item.channel.id === dm.channel.id)).toBe(false);
+      // Nhưng nhóm chung vẫn còn — chặn là chuyện giữa hai người.
+      expect(listed.some((item) => item.channel.id === group.channel.id)).toBe(true);
+    }
+
+    // Dọn: bỏ chặn để các test sau (tạo DM với bob) không bị 403.
+    expect((await ctx.app.inject({
+      method: "DELETE",
+      url: `/api/v1/users/@me/blocks/${bob.id}`,
+      headers: auth(alice.token),
+    })).statusCode).toBe(204);
   });
 
   it("không đổi tên được DM 1-1 (chỉ group DM mới có tên)", async () => {
