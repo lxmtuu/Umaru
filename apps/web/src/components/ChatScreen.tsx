@@ -1,9 +1,15 @@
 import type { Channel, GuildMemberSummary, Message, MessageMention } from "@umaru/protocol";
 import { Permission, hasPermission } from "@umaru/protocol";
 import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode } from "react";
+import {
+  formatBytes,
+  MAX_FILES_PER_MESSAGE,
+  validateFiles,
+} from "../lib/attachments.js";
 import { useChat } from "../lib/chatStore.js";
-import { useLocale, useT } from "../lib/i18n.js";
+import { translate, useLocale, useT } from "../lib/i18n.js";
 import { ChannelSettings } from "./ChannelSettings.js";
+import { MessageAttachments } from "./MessageAttachments.js";
 import { MessageContent } from "./MessageContent.js";
 import { RoleSettings } from "./RoleSettings.js";
 
@@ -14,6 +20,11 @@ export function ChatScreen() {
   const state = useChat();
 
   const [draft, setDraft] = useState("");
+  /** Tệp chờ gửi kèm tin kế tiếp (tối đa 4, kiểm ở lib/attachments). */
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [showCreateGuild, setShowCreateGuild] = useState(false);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [showNewDm, setShowNewDm] = useState(false);
@@ -233,12 +244,33 @@ export function ChatScreen() {
     return dropTarget.zone;
   }
 
+  function addFiles(files: File[]): void {
+    if (files.length === 0) return;
+    setPendingFiles((current) => {
+      const result = validateFiles(files, current);
+      setAttachError(result.error);
+      return result.accepted;
+    });
+  }
+
+  function removePendingFile(file: File): void {
+    setPendingFiles((current) => current.filter((item) => item !== file));
+  }
+
   async function submitMessage() {
     const content = draft.trim();
-    if (content.length === 0) return;
+    // Tin chỉ có tệp vẫn gửi được (server cho phép content rỗng khi có file).
+    if (content.length === 0 && pendingFiles.length === 0) return;
+    const files = pendingFiles;
     setDraft("");
-    const sent = await state.sendMessage(content);
-    if (!sent) setDraft(content);
+    setPendingFiles([]);
+    setAttachError(null);
+    const sent = await state.sendMessage(content, files);
+    if (!sent) {
+      // Gửi lỗi thì trả lại cả nội dung lẫn tệp để không phải chọn lại.
+      setDraft(content);
+      setPendingFiles(files);
+    }
   }
 
   function startEdit(message: Message): void {
@@ -598,7 +630,32 @@ export function ChatScreen() {
           </div>
         ) : (
           <>
-            <div className="flex-1 overflow-y-auto py-3">
+            <div
+              className="relative flex-1"
+              onDragOver={(event) => {
+                // Chỉ bắt khi thật sự kéo tệp từ hệ điều hành — kéo-thả
+                // sắp xếp kênh ở sidebar dùng dataTransfer khác.
+                if (!event.dataTransfer.types.includes("Files")) return;
+                event.preventDefault();
+                setDraggingFiles(true);
+              }}
+              onDragLeave={(event) => {
+                if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+                setDraggingFiles(false);
+              }}
+              onDrop={(event) => {
+                if (!event.dataTransfer.types.includes("Files")) return;
+                event.preventDefault();
+                setDraggingFiles(false);
+                addFiles([...event.dataTransfer.files]);
+              }}
+            >
+              {draggingFiles && (
+                <div className="pointer-events-none absolute inset-3 z-10 grid place-items-center rounded-xl border-2 border-dashed border-emerald-400/60 bg-emerald-400/10 text-sm font-medium text-emerald-200">
+                  {t("dropToAttach")}
+                </div>
+              )}
+            <div className="h-full overflow-y-auto py-3">
               {messages.length === 0 ? (
                 <p className="px-4 py-6 text-sm text-slate-500">{t("emptyChannel")}</p>
               ) : (
@@ -702,9 +759,14 @@ export function ChatScreen() {
                             </div>
                           </form>
                         ) : (
-                          <div className="text-sm text-slate-200">
-                            <MessageContent content={message.content} />
-                          </div>
+                          <>
+                            {message.content.length > 0 && (
+                              <div className="text-sm text-slate-200">
+                                <MessageContent content={message.content} />
+                              </div>
+                            )}
+                            <MessageAttachments attachments={message.attachments} />
+                          </>
                         )}
 
                         {confirmDeleteId === message.id && (
@@ -733,6 +795,7 @@ export function ChatScreen() {
               )}
               <div ref={bottomRef} />
             </div>
+            </div>
 
             <div className="h-5 px-4 text-xs text-slate-400">
               {typingNames.length === 1 && t("typingOne", { name: typingNames[0] ?? "" })}
@@ -746,7 +809,56 @@ export function ChatScreen() {
               }}
               className="border-t border-white/5 p-3"
             >
+              {pendingFiles.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-2">
+                  {pendingFiles.map((file) => (
+                    <span
+                      key={`${file.name}:${file.size}`}
+                      className="flex items-center gap-2 rounded-lg border border-white/10 bg-slate-900/70 px-2 py-1 text-xs text-slate-200"
+                    >
+                      <span aria-hidden>{file.type.startsWith("image/") ? "🖼" : "📄"}</span>
+                      <span className="max-w-[12rem] truncate">{file.name}</span>
+                      <span className="text-[11px] text-slate-500">{formatBytes(file.size)}</span>
+                      <button
+                        type="button"
+                        onClick={() => removePendingFile(file)}
+                        title={t("removeFile", { name: file.name })}
+                        aria-label={t("removeFile", { name: file.name })}
+                        className="rounded px-1 text-slate-400 hover:bg-white/10 hover:text-rose-300"
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                  <span className="self-center text-[11px] text-slate-500">
+                    {pendingFiles.length}/{MAX_FILES_PER_MESSAGE}
+                  </span>
+                </div>
+              )}
+              {attachError !== null && (
+                <p className="mb-2 text-xs text-rose-300">{attachError}</p>
+              )}
               <div className="flex items-end gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    addFiles([...(event.target.files ?? [])]);
+                    // Cho phép chọn lại đúng tệp vừa bỏ.
+                    event.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title={`${t("attachFile")} · ${t("attachHint")}`}
+                  aria-label={t("attachFile")}
+                  className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:border-emerald-400/40 hover:text-emerald-200"
+                >
+                  📎
+                </button>
                 <textarea
                   value={draft}
                   onChange={(event) => {
@@ -758,6 +870,13 @@ export function ChatScreen() {
                       event.preventDefault();
                       void submitMessage();
                     }
+                  }}
+                  onPaste={(event) => {
+                    // Dán ảnh từ clipboard (chụp màn hình, copy ảnh) → đính kèm.
+                    const files = [...(event.clipboardData?.files ?? [])];
+                    if (files.length === 0) return;
+                    event.preventDefault();
+                    addFiles(files);
                   }}
                   rows={1}
                   maxLength={2000}
@@ -775,7 +894,7 @@ export function ChatScreen() {
                 />
                 <button
                   type="submit"
-                  disabled={draft.trim().length === 0}
+                  disabled={draft.trim().length === 0 && pendingFiles.length === 0}
                   className="rounded-lg bg-emerald-400 px-3 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-300 disabled:opacity-40"
                 >
                   {t("send")}
@@ -1060,7 +1179,16 @@ function MentionsPanel({
                   })}
                 </time>
               </div>
-              <p className="truncate text-sm text-slate-200">{mention.message.content}</p>
+              <p className="truncate text-sm text-slate-200">
+                {mention.message.content.length > 0
+                  ? mention.message.content
+                  : translate("attachmentOnly")}
+                {mention.message.attachments.length > 0 && (
+                  <span className="ml-1 text-slate-400" title={translate("attachFile")}>
+                    📎
+                  </span>
+                )}
+              </p>
             </div>
           </button>
         );

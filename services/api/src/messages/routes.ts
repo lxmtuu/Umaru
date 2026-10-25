@@ -1,5 +1,5 @@
 import { Permission, createSnowflake, hasPermission, type Snowflake } from "@umaru/protocol";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { loadChannelContext } from "../access.js";
 import { createAuthGuard, requireUserId } from "../auth/guard.js";
 import type { TokenService } from "../auth/tokens.js";
@@ -7,8 +7,18 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
 import { HttpError, badRequest, notFound, readId, readLimit, readString } from "../http.js";
+import { attachmentUrl, mapMessagesWithAttachments } from "../attachments.js";
 import { mapMessage, type MessageRow } from "../mappers.js";
 import { syncMessageMentions } from "../mentions.js";
+import {
+  isAllowedMime,
+  MAX_FILES_PER_MESSAGE,
+  removeUpload,
+  sanitizeFilename,
+  writeUpload,
+} from "../uploads/storage.js";
+import { HEADER_BYTES, isImageMime, readImageSize } from "../uploads/imageSize.js";
+import { readUploadHeader } from "../uploads/storage.js";
 
 export interface MessageDeps {
   pool: Pool;
@@ -47,50 +57,98 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
           LIMIT $3`,
         [request.params.channelId, before, limit],
       );
-      return reply.send(result.rows.map(mapMessage));
+      return reply.send(await mapMessagesWithAttachments(pool, result.rows));
     },
   );
 
+  /**
+   * Gửi tin. Nhận **cả** `application/json` (text thuần) và `multipart/form-data`
+   * (text + file đính kèm) trên cùng một đường dẫn: JSON giữ nguyên như trước,
+   * multipart cho phép gửi kèm tới 4 file ≤ 10MB. Tin chỉ có file (không text)
+   * cũng hợp lệ.
+   */
   app.post<{ Params: { channelId: string } }>(
     "/channels/:channelId/messages",
     { preHandler: guard },
     async (request, reply) => {
       const userId = requireUserId(request);
-      await loadChannelContext(
-        pool,
-        userId as Snowflake,
-        request.params.channelId,
-        Permission.SEND_MESSAGES,
-      );
+      const { channelId } = request.params;
+      await loadChannelContext(pool, userId as Snowflake, channelId, Permission.SEND_MESSAGES);
 
-      const body = request.body as Record<string, unknown> | undefined;
-      const content = readString(body, "content", { min: 1, max: 2000, trim: false });
-      const replyToId = readId(body, "replyToId");
-      if (replyToId !== null) {
+      const payload = request.isMultipart()
+        ? await readMultipartMessage(request, config)
+        : readJsonMessage(request.body);
+
+      if (payload.content.trim().length === 0 && payload.files.length === 0) {
+        throw badRequest('Thiếu trường "content" (hoặc đính kèm tệp)');
+      }
+      if (payload.replyToId !== null) {
         const parent = await pool.query<{ channel_id: string }>(
           "SELECT channel_id FROM messages WHERE id = $1",
-          [replyToId],
+          [payload.replyToId],
         );
-        if (parent.rows[0]?.channel_id !== request.params.channelId) {
+        if (parent.rows[0]?.channel_id !== channelId) {
           throw badRequest("replyToId phải là tin nhắn trong cùng kênh");
         }
       }
 
       const id = nextId();
-      const inserted = await pool.query<MessageRow>(
-        `INSERT INTO messages (id, channel_id, author_id, content, reply_to_id)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, channel_id, author_id, content, reply_to_id, pinned, created_at, edited_at`,
-        [id, request.params.channelId, userId, content, replyToId],
-      );
-      const row = inserted.rows[0];
-      if (row === undefined) throw new Error("Không đọc được message vừa tạo");
+      const client = await pool.connect();
+      let row: MessageRow;
+      try {
+        await client.query("BEGIN");
+        const inserted = await client.query<MessageRow>(
+          `INSERT INTO messages (id, channel_id, author_id, content, reply_to_id)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, channel_id, author_id, content, reply_to_id, pinned, created_at, edited_at`,
+          [id, channelId, userId, payload.content, payload.replyToId],
+        );
+        const created = inserted.rows[0];
+        if (created === undefined) throw new Error("Không đọc được message vừa tạo");
+        row = created;
+
+        for (const file of payload.files) {
+          await client.query(
+            `INSERT INTO attachments
+               (id, message_id, filename, url, size, mime_type, width, height)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              file.id,
+              id,
+              file.filename,
+              attachmentUrl(file.id),
+              file.size,
+              file.mimeType,
+              file.width,
+              file.height,
+            ],
+          );
+        }
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        // Ghi DB lỗi thì xoá luôn file vừa ghi để không rác đĩa.
+        await Promise.all(payload.files.map((file) => removeUpload(config.uploadsDir, file.id)));
+        throw error;
+      } finally {
+        client.release();
+      }
+
       const message = mapMessage(row);
+      message.attachments = payload.files.map((file) => ({
+        id: file.id as Snowflake,
+        filename: file.filename,
+        url: attachmentUrl(file.id),
+        size: file.size,
+        mimeType: file.mimeType,
+        width: file.width,
+        height: file.height,
+      }));
 
       // @mention ghi ngay lúc gửi để badge tính được bằng một câu SQL.
-      await syncMessageMentions(pool, message.id as string, request.params.channelId, content);
+      await syncMessageMentions(pool, message.id as string, channelId, payload.content);
 
-      publisher.publishToChannel(request.params.channelId, "MESSAGE_CREATE", message);
+      publisher.publishToChannel(channelId, "MESSAGE_CREATE", message);
       return reply.code(201).send(message);
     },
   );
@@ -130,7 +188,8 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         content: row.content,
         editedAt: row.edited_at === null ? null : row.edited_at.toISOString(),
       });
-      return reply.send(mapMessage(row));
+      const [updatedMessage] = await mapMessagesWithAttachments(pool, [row]);
+      return reply.send(updatedMessage);
     },
   );
 
@@ -149,7 +208,15 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       if (message.author_id !== userId && !hasPermission(context.permissions, Permission.MANAGE_MESSAGES)) {
         throw new HttpError(403, "FORBIDDEN", "Chỉ xoá được tin nhắn của mình");
       }
+      // Lấy id attachment trước khi xoá: file trên đĩa không tự CASCADE theo DB.
+      const attachments = await pool.query<{ id: string }>(
+        "SELECT id FROM attachments WHERE message_id = $1",
+        [message.id],
+      );
       await pool.query("DELETE FROM messages WHERE id = $1", [message.id]);
+      await Promise.all(
+        attachments.rows.map((row) => removeUpload(config.uploadsDir, row.id)),
+      );
       publisher.publishToChannel(message.channel_id, "MESSAGE_DELETE", {
         id: message.id as Snowflake,
         channelId: message.channel_id as Snowflake,
@@ -184,6 +251,110 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       return reply.code(204).send();
     },
   );
+}
+
+interface PendingFile {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+}
+
+interface MessagePayload {
+  content: string;
+  replyToId: string | null;
+  files: PendingFile[];
+}
+
+/** Thân JSON cũ: chỉ text (+ reply), không kèm file. */
+function readJsonMessage(body: unknown): MessagePayload {
+  const record = body as Record<string, unknown> | undefined;
+  return {
+    content: readString(record, "content", { min: 1, max: 2000, trim: false }),
+    replyToId: readId(record, "replyToId"),
+    files: [],
+  };
+}
+
+/**
+ * Đọc multipart: field `content`/`replyToId` + các part file tên bất kỳ.
+ * Ghi file ra đĩa ngay khi nhận; lỗi giữa đường thì dọn những file đã ghi.
+ */
+async function readMultipartMessage(
+  request: FastifyRequest,
+  config: Config,
+): Promise<MessagePayload> {
+  const payload: MessagePayload = { content: "", replyToId: null, files: [] };
+
+  try {
+    for await (const part of request.parts()) {
+      if (part.type === "file") {
+        const mimeType = (part.mimetype || "application/octet-stream").toLowerCase();
+        if (!isAllowedMime(mimeType)) {
+          part.file.resume();
+          throw new HttpError(
+            415,
+            "UNSUPPORTED_MEDIA_TYPE",
+            `Định dạng ${mimeType} không được phép tải lên`,
+          );
+        }
+        if (payload.files.length >= MAX_FILES_PER_MESSAGE) {
+          part.file.resume();
+          throw badRequest(`Mỗi tin nhắn tối đa ${MAX_FILES_PER_MESSAGE} tệp`);
+        }
+
+        const id = createSnowflake(config.workerId);
+        const size = await writeUpload(config.uploadsDir, id, part.file, config.maxUploadBytes);
+        if (part.file.truncated) {
+          await removeUpload(config.uploadsDir, id);
+          throw new HttpError(
+            413,
+            "PAYLOAD_TOO_LARGE",
+            `Tệp vượt quá ${Math.floor(config.maxUploadBytes / (1024 * 1024))}MB`,
+          );
+        }
+
+        let width: number | null = null;
+        let height: number | null = null;
+        if (isImageMime(mimeType)) {
+          const header = await readUploadHeader(config.uploadsDir, id, HEADER_BYTES);
+          const dimensions = readImageSize(header);
+          width = dimensions?.width ?? null;
+          height = dimensions?.height ?? null;
+        }
+
+        payload.files.push({
+          id,
+          filename: sanitizeFilename(part.filename),
+          mimeType,
+          size,
+          width,
+          height,
+        });
+        continue;
+      }
+
+      const value = typeof part.value === "string" ? part.value : String(part.value ?? "");
+      if (part.fieldname === "content") {
+        if ([...value].length > 2000) {
+          throw badRequest('"content" phải dài 1–2000 ký tự');
+        }
+        payload.content = value;
+      } else if (part.fieldname === "replyToId" && value.trim().length > 0) {
+        if (!/^\d{1,20}$/.test(value.trim())) {
+          throw badRequest('"replyToId" phải là snowflake (chuỗi số)');
+        }
+        payload.replyToId = value.trim();
+      }
+    }
+  } catch (error) {
+    await Promise.all(payload.files.map((file) => removeUpload(config.uploadsDir, file.id)));
+    throw error;
+  }
+
+  return payload;
 }
 
 async function loadMessage(pool: Pool, messageId: string): Promise<MessageRow> {

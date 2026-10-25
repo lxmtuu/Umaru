@@ -1,3 +1,4 @@
+import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerAuthRoutes } from "./auth/routes.js";
@@ -12,6 +13,8 @@ import { badRequest, registerErrorHandler } from "./http.js";
 import { registerMessageRoutes } from "./messages/routes.js";
 import { registerOverwriteRoutes } from "./overwrites/routes.js";
 import { registerReadStateRoutes } from "./read-states/routes.js";
+import { registerUploadRoutes } from "./uploads/routes.js";
+import { MAX_FILES_PER_MESSAGE } from "./uploads/storage.js";
 
 export interface AppDeps {
   config: Config;
@@ -33,6 +36,16 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
 
   await app.register(websocket, {
     options: { maxPayload: 4 * 1024 }, // spec §1: frame ≤ 4 KiB
+  });
+  // Upload file đi qua multipart; trần cứng đặt ở đây để Fastify chặn trước
+  // khi ghi đĩa (route vẫn kiểm lại MIME và số file).
+  await app.register(multipart, {
+    limits: {
+      fileSize: config.maxUploadBytes,
+      files: MAX_FILES_PER_MESSAGE,
+      fields: 10,
+      parts: 20,
+    },
   });
   registerErrorHandler(app);
 
@@ -67,6 +80,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerOverwriteRoutes(api, { pool, config, tokens, publisher: hub });
       registerDmRoutes(api, { pool, config, tokens, publisher: hub });
       registerReadStateRoutes(api, { pool, tokens });
+      registerUploadRoutes(api, { pool, config, tokens });
       registerGatewayRoutes(api, hub, tokens, config);
     },
     { prefix: "/api/v1" },

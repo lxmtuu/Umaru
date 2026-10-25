@@ -59,11 +59,11 @@ Test backend cũng cần Postgres (tạo sẵn database `umaru_test`):
 
 ```bash
 docker exec umaru-pg-dev createdb -U umaru umaru_test   # một lần
-pnpm --filter @umaru/api test     # 83 test: auth, quyền, role, overwrite + category, thứ tự kênh (kéo-thả), cursor, gateway ws, DM, read state + mention, kiểm snowflake ở path param
-pnpm test                          # toàn bộ: 83 api + 29 protocol + 16 SDK + 23 web (parser markdown, render)
+pnpm --filter @umaru/api test     # 96 test: auth, quyền, role, overwrite + category, thứ tự kênh, cursor, gateway ws, DM, read state + mention, path param, tệp đính kèm (multipart, quyền, dọn file)
+pnpm test                          # toàn bộ: 96 api + 29 protocol + 20 SDK + 23 web (parser markdown, render)
 ```
 
-API đã có (`/api/v1`): `auth/register|login|refresh|logout`, `users/@me`, `users/@me/guilds`, `users/@me/channels` (list/create **DM 1-1**), `users/@me/read-states`, `users/@me/mentions` (mentions inbox), `guilds` (+`channels`, `roles`), `channels/:id/messages` (cursor `before`), `channels/:id` (PATCH tên/topic/**category**/**position**), `channels/:id/overwrites` (ghi đè quyền theo kênh), `channels/:id/read`, `messages/:id`, `channels/:id/typing`, invites, `gateway` + `gateway/ws`.
+API đã có (`/api/v1`): `auth/register|login|refresh|logout`, `users/@me`, `users/@me/guilds`, `users/@me/channels` (list/create **DM 1-1**), `users/@me/read-states`, `users/@me/mentions` (mentions inbox), `guilds` (+`channels`, `roles`), `channels/:id/messages` (cursor `before`; **multipart** khi gửi kèm tệp), `attachments/:id` (tải tệp, kiểm `VIEW_CHANNEL`), `channels/:id` (PATCH tên/topic/**category**/**position**), `channels/:id/overwrites` (ghi đè quyền theo kênh), `channels/:id/read`, `messages/:id`, `channels/:id/typing`, invites, `gateway` + `gateway/ws`.
 
 ## Stack (đã chốt — ROADMAP §4)
 
@@ -95,6 +95,8 @@ API đã có (`/api/v1`): `auth/register|login|refresh|logout`, `users/@me`, `us
 
 - **Markdown trong tin nhắn** (`apps/web/src/lib/markdown.ts` + `components/MessageContent.tsx`): parser tự viết (**không** dùng `dangerouslySetInnerHTML`, chỉ ánh xạ cây node sang React element nên HTML thô trong tin luôn hiện nguyên văn — an toàn XSS mà không cần sanitizer) hỗ trợ `` ```fence``` `` có nhãn ngôn ngữ, `` `code` ``, `**đậm**`, `*nghiêng*`, `__gạch chân__`, `~~gạch ngang~~`, `***cả hai***`, lồng nhau, `> quote` nhiều dòng, link tự động (`http(s)`, `rel="noopener noreferrer nofollow ugc"`, dấu chấm cuối câu không dính vào link); `snake_case` và email không bị hiểu nhầm thành in nghiêng/mention, dấu chưa đóng hiện nguyên văn; `@username` được highlight theo đúng bộ ký tự username của backend. 23 test web phủ parser + render (gồm test HTML thô bị escape).
 
+- **Tệp đính kèm** (P0 G1, `services/api/src/uploads/`): `POST /channels/:id/messages` nhận **cả JSON lẫn `multipart/form-data`** trên cùng đường dẫn — text + tối đa **4 tệp × 10MB** (trần đặt ở Fastify `limits` **và** khi ghi đĩa), tin chỉ có tệp (không text) cũng hợp lệ. Cho phép ảnh raster/PDF/text/zip/Office; **chặn `image/svg+xml` + `text/html`** vì file phục vụ từ chính origin API (XSS). Tên tệp bị lọc đường dẫn/ký tự điều khiển; file lưu theo id snowflake (không dùng tên gốc) nên không thể thoát thư mục. `GET /attachments/:id` kiểm `VIEW_CHANNEL` của kênh chứa tin (người ngoài server → **404**, không lộ sự tồn tại) + `nosniff`, CSP `sandbox`, cache `immutable`; ghi DB lỗi thì file bị xoá, xoá tin thì dọn file trên đĩa. Server đọc **`width`/`height` ảnh** từ header (PNG/GIF/JPEG/WebP, tự viết — không thêm dependency) để client giữ đúng tỉ lệ trước khi ảnh tải xong. UI: nút 📎, kéo-thả tệp vào khung chat, **dán ảnh từ clipboard**, chip tệp chờ gửi (bỏ từng cái, hiện dung lượng), lỗi định dạng/quá cỡ hiện ngay, ảnh hiện inline (bấm mở tab mới), tệp khác là chip tải về. Client tải tệp bằng fetch kèm Bearer token → **blob URL** (cache theo token) nên token không bao giờ nằm trong URL/`<img src>`.
+
 - **Kéo-thả sắp xếp sidebar** (`PATCH /channels/:id { position }`): `position` là chỉ số **trong nhóm kênh cùng category** (`parentId` kèm theo nếu thả sang danh mục khác, `null` = gốc) — server renumber lại 0..n cho cả nhóm rồi phát `CHANNEL_UPDATE` cho đúng những kênh đổi vị trí, nên client khác xếp lại ngay không cần tải lại. Chặn `position` không phải số nguyên 0–100000 (400) và category lồng vào category (400); cần `MANAGE_CHANNELS`/owner (403 với thành viên thường). UI: kéo hàng kênh hoặc tiêu đề danh mục, vạch xanh hiện đúng vị trí thả (trước/sau), thả lên tiêu đề danh mục = vào đầu hoặc cuối danh mục; kéo danh mục đổi thứ tự giữa các danh mục; hàng kênh voice vẫn kéo được dù chưa bấm được.
 
 **G0 còn mở:** Terms/Privacy EN/VI (phải xong trước bản public đầu tiên). **CI/CD đã có:** [.github/workflows/ci.yml](.github/workflows/ci.yml) — GitHub Actions chạy `pnpm install --frozen-lockfile` → `typecheck` → `build` → `test` với **PostgreSQL 16** service (test backend chạy trên DB thật, không mock), bước `lint` tự bỏ qua cho tới khi thêm ESLint.
@@ -104,6 +106,7 @@ API đã có (`/api/v1`): `auth/register|login|refresh|logout`, `users/@me`, `us
 - Replay log nằm **trong bộ nhớ của một process** (đúng cho 1 node). Đa node cần Redis Streams theo [ADR-0003](docs/adr/0003-gateway-resume-redis-streams.md) — giao thức không đổi.
 - Presence/ephemeral chưa dùng Redis; khởi động lại server làm mất session đang resume.
 - Chưa rate limit theo user cho REST (chỉ typing 1/8s), chưa sharding, chưa nén frame.
+- Tệp đính kèm lưu **trên đĩa của process API** (đúng cho 1 node) — đa node/CDN cần R2/S3 presign; chưa quét virus, chưa thumbnail/resize, chưa có quota theo user (mới chỉ trần 10MB/tệp và 4 tệp/tin).
 - Path param dạng id được kiểm snowflake một lần ở hook `preValidation` trong [app.ts](services/api/src/app.ts) → sai định dạng là **400 `BAD_REQUEST`** thay vì 500 kèm log lỗi DB (chạy trước cả guard xác thực, nên request không token + id sai nhận 400).
 - `READY` chưa gửi `voiceStates` (G2); chưa có event đổi thứ tự role/lên cấp role — kéo-thả đổi **cấp** role chưa làm (thứ tự **kênh** thì đã có `CHANNEL_UPDATE` kèm `position`).
 - UI chưa hiển thị danh sách thành viên/avatar (role chỉ hiện trong panel Server Settings), chưa phân quyền ẩn kênh trên sidebar bằng tay (server đã lọc kênh không xem được).

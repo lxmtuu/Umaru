@@ -15,6 +15,10 @@ export interface Config {
   migrationsDir: string;
   /** Bỏ trống = suy ra từ request (tiện dev). Production nên đặt tường minh. */
   gatewayPublicUrl: string | null;
+  /** Nơi lưu file tải lên (đĩa cục bộ ở G1; đổi sang R2/S3 thì chỉ thay lớp storage). */
+  uploadsDir: string;
+  /** Trần kích thước một file — 10MB theo ROADMAP §1.4 (free tier). */
+  maxUploadBytes: number;
   logger: boolean;
 }
 
@@ -47,6 +51,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     migrationsDir:
       env.MIGRATIONS_DIR ?? fileURLToPath(new URL("../../../db/migrations/", import.meta.url)),
     gatewayPublicUrl: env.GATEWAY_PUBLIC_URL ?? null,
+    uploadsDir:
+      env.UPLOADS_DIR ?? fileURLToPath(new URL("../.data/uploads/", import.meta.url)),
+    maxUploadBytes: Number(env.MAX_UPLOAD_BYTES ?? String(10 * 1024 * 1024)),
     logger: env.NODE_ENV !== "test" && env.LOG_LEVEL !== "silent",
   };
 }

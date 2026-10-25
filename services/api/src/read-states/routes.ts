@@ -11,6 +11,7 @@ import { createAuthGuard, requireUserId } from "../auth/guard.js";
 import type { TokenService } from "../auth/tokens.js";
 import type { Pool } from "../db.js";
 import { badRequest, readId, readLimit } from "../http.js";
+import { loadAttachmentsByMessage } from "../attachments.js";
 import { loadBootstrap } from "../bootstrap.js";
 
 interface MentionRow {
@@ -203,6 +204,14 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
           author,
           recipient,
         });
+      }
+      // Nạp attachment theo lô cho cả trang (một câu SQL).
+      const attachments = await loadAttachmentsByMessage(
+        pool,
+        result.rows.map((row) => row.id),
+      );
+      for (const mention of mentions) {
+        mention.message.attachments = attachments.get(mention.message.id) ?? [];
       }
       return mentions;
     },

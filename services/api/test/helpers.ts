@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { WebSocket } from "ws";
 import { buildApp } from "../src/app.js";
@@ -13,10 +16,15 @@ export interface TestContext {
   hub: GatewayHub;
   pool: Pool;
   config: Config;
+  /** Thư mục upload riêng cho từng lần chạy test (xoá khi close). */
+  uploadsDir: string;
   close(): Promise<void>;
 }
 
-export async function createTestContext(): Promise<TestContext> {
+export async function createTestContext(
+  envOverrides: NodeJS.ProcessEnv = {},
+): Promise<TestContext> {
+  const uploadsDir = await mkdtemp(path.join(tmpdir(), "umaru-uploads-"));
   const config: Config = {
     ...loadConfig({
       ...process.env,
@@ -26,6 +34,8 @@ export async function createTestContext(): Promise<TestContext> {
       HEARTBEAT_INTERVAL_MS: "5000",
       SESSION_TTL_MS: "5000",
       ACCESS_TOKEN_TTL_SEC: "900",
+      UPLOADS_DIR: uploadsDir,
+      ...envOverrides,
     }),
     logger: false,
   };
@@ -38,9 +48,11 @@ export async function createTestContext(): Promise<TestContext> {
     hub,
     pool,
     config,
+    uploadsDir,
     async close() {
       await app.close();
       await pool.end();
+      await rm(uploadsDir, { recursive: true, force: true });
     },
   };
 }

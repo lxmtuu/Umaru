@@ -46,6 +46,10 @@ export interface RegisterInput {
 
 const API_PREFIX = "/api/v1";
 
+function isFormData(value: unknown): boolean {
+  return typeof FormData !== "undefined" && value instanceof FormData;
+}
+
 /** REST client — phản chiếu services/api. Mọi path tính từ gốc API. */
 export class UmaruApi {
   private readonly baseUrl: string;
@@ -66,7 +70,10 @@ export class UmaruApi {
       headers: {
         // Chỉ khai content-type khi thực sự có body: Fastify từ chối
         // `content-type: application/json` mà body rỗng (typing, DELETE...).
-        ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+        // FormData phải để trình duyệt tự đặt kèm `boundary`.
+        ...(init.body !== undefined && !isFormData(init.body)
+          ? { "content-type": "application/json" }
+          : {}),
         ...(token !== null ? { authorization: `Bearer ${token}` } : {}),
         ...init.headers,
       },
@@ -302,10 +309,34 @@ export class UmaruApi {
     return this.request<Message[]>(`${API_PREFIX}/channels/${channelId}/messages${query}`);
   }
 
-  sendMessage(channelId: string, content: string, replyToId?: string): Promise<Message> {
-    return this.request<Message>(`${API_PREFIX}/channels/${channelId}/messages`, {
+  /**
+   * Gửi tin. Có `files` → dùng `multipart/form-data` (cùng đường dẫn API); không
+   * có file → JSON như cũ. Tham số thứ ba nhận cả chuỗi `replyToId` (kiểu cũ)
+   * lẫn object tuỳ chọn để không phải sửa mọi chỗ gọi.
+   */
+  sendMessage(
+    channelId: string,
+    content: string,
+    options: string | { replyToId?: string; files?: File[] } = {},
+  ): Promise<Message> {
+    const settings = typeof options === "string" ? { replyToId: options } : options;
+    const path = `${API_PREFIX}/channels/${channelId}/messages`;
+
+    if (settings.files !== undefined && settings.files.length > 0) {
+      const form = new FormData();
+      if (content.length > 0) form.set("content", content);
+      if (settings.replyToId !== undefined && settings.replyToId !== "") {
+        form.set("replyToId", settings.replyToId);
+      }
+      for (const file of settings.files) {
+        form.append("files", file, file.name);
+      }
+      return this.request<Message>(path, { method: "POST", body: form });
+    }
+
+    return this.request<Message>(path, {
       method: "POST",
-      body: JSON.stringify({ content, replyToId }),
+      body: JSON.stringify({ content, replyToId: settings.replyToId }),
     });
   }
 
@@ -314,6 +345,23 @@ export class UmaruApi {
       method: "PATCH",
       body: JSON.stringify({ content }),
     });
+  }
+
+  /**
+   * Tải nội dung tệp đính kèm. Trả `Blob` để client tự dựng object URL —
+   * không đặt token vào query string / `<img src>` (tránh lộ token qua log,
+   * referrer, cache của trình duyệt).
+   */
+  async fetchAttachment(attachmentId: string): Promise<Blob> {
+    const url = `${this.baseUrl}${API_PREFIX}/attachments/${attachmentId}`;
+    const token = this.getToken();
+    const response = await this.fetchImpl(url, {
+      headers: token !== null ? { authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) {
+      throw new ApiError(response.status, `API ${url} thất bại: ${response.status}`);
+    }
+    return response.blob();
   }
 
   deleteMessage(messageId: string): Promise<void> {

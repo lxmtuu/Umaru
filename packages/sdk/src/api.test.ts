@@ -186,4 +186,55 @@ describe("UmaruApi", () => {
     expect((error as ApiError).status).toBe(403);
     expect((error as ApiError).body).toEqual({ error: { code: "FORBIDDEN", message: "Không có quyền" } });
   });
+  it("sendMessage không có file vẫn là JSON (tương thích cũ)", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "1" } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.sendMessage("42", "chào", "99");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ content: "chào", replyToId: "99" });
+    expect((calls[0]?.init?.headers as Record<string, string>)["content-type"]).toBe(
+      "application/json",
+    );
+  });
+
+  it("sendMessage có file dùng FormData và KHÔNG tự đặt content-type", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "1", attachments: [] } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const file = new File([new Uint8Array([1, 2, 3])], "anh.png", { type: "image/png" });
+    await api.sendMessage("42", "kèm ảnh", { files: [file] });
+
+    const body = calls[0]?.init?.body;
+    expect(body).toBeInstanceOf(FormData);
+    const form = body as FormData;
+    expect(form.get("content")).toBe("kèm ảnh");
+    const uploaded = form.get("files") as File;
+    expect(uploaded.name).toBe("anh.png");
+    // Trình duyệt tự sinh `content-type` kèm boundary; SDK không được ghi đè.
+    expect((calls[0]?.init?.headers as Record<string, string>)["content-type"]).toBeUndefined();
+  });
+
+  it("fetchAttachment tải blob kèm Bearer token", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return new Response(new Uint8Array([7, 8, 9]), {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
+    }) as typeof fetch;
+    const api = new UmaruApi({ baseUrl: "http://api.test", getToken: () => "tok", fetchImpl });
+    const blob = await api.fetchAttachment("555");
+
+    expect(calls[0]?.url).toBe("http://api.test/api/v1/attachments/555");
+    expect((calls[0]?.init?.headers as Record<string, string>).authorization).toBe("Bearer tok");
+    expect(blob.size).toBe(3);
+    expect(blob.type).toBe("image/png");
+  });
+
+  it("fetchAttachment lỗi thì ném ApiError", async () => {
+    const fetchImpl = (async () => new Response("nope", { status: 404 })) as typeof fetch;
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const error = await api.fetchAttachment("1").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(404);
+  });
 });

@@ -8,3 +8,5 @@ coverage/
 !.env.example
 *.log
 .DS_Store
+# File tải lên khi chạy dev (services/api/.data/uploads)
+.data/
