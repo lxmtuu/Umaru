@@ -2,6 +2,11 @@ import { ApiError } from "@umaru/sdk";
 import { describe, expect, it } from "vitest";
 import {
   MAX_SPEAKERS,
+  MAX_VOICE_RECONNECT_ATTEMPTS,
+  decideVoiceDrop,
+  shouldRetryVoiceConnection,
+  voiceReconnectDelayMs,
+  voiceStatusAfterConnectionEvent,
   beginVoiceAudio,
   classifyVoiceError,
   isSpeaking,
@@ -141,5 +146,61 @@ describe("isSpeaking", () => {
     expect(isSpeaking(["u1"], undefined)).toBe(false);
     expect(isSpeaking(["u1"], "")).toBe(false);
     expect(isSpeaking([], "")).toBe(false);
+  });
+});
+
+describe("nối lại khi mất kết nối SFU", () => {
+  it("nhịp thử lại tăng dần nhưng có trần, để cả phòng rớt mạng không dồn lên server", () => {
+    const at = (attempt: number, random = () => 0.5) => voiceReconnectDelayMs(attempt, random);
+    expect(at(0)).toBeGreaterThanOrEqual(800);
+    expect(at(0)).toBeLessThanOrEqual(1_200);
+    expect(at(1)).toBeGreaterThan(at(0));
+    expect(at(2)).toBeGreaterThan(at(1));
+    // Trần 15s: dù thử lần thứ 20 cũng không chờ dài hơn.
+    expect(at(20)).toBeLessThanOrEqual(15_000 * 1.0);
+    expect(at(20)).toBeGreaterThanOrEqual(12_000);
+  });
+
+  it("jitter nằm trong biên: random 0 và 1 lệch nhau nhưng cùng một bậc", () => {
+    const low = voiceReconnectDelayMs(1, () => 0);
+    const high = voiceReconnectDelayMs(1, () => 1);
+    expect(low).toBeLessThan(high);
+    expect(low).toBeGreaterThanOrEqual(1_600);
+    expect(high).toBeLessThanOrEqual(2_400);
+  });
+
+  it("chỉ tự thử lại trong số lượt cho phép, hết lượt thì để người dùng bấm", () => {
+    for (let attempt = 0; attempt < MAX_VOICE_RECONNECT_ATTEMPTS; attempt += 1) {
+      expect(shouldRetryVoiceConnection(attempt)).toBe(true);
+    }
+    expect(shouldRetryVoiceConnection(MAX_VOICE_RECONNECT_ATTEMPTS)).toBe(false);
+  });
+
+  it("'reconnecting'/'reconnected' đổi được thành trạng thái; ngắt hẳn thì trả null để store quyết", () => {
+    expect(voiceStatusAfterConnectionEvent("reconnecting")).toBe("reconnecting");
+    expect(voiceStatusAfterConnectionEvent("reconnected")).toBe("connected");
+    expect(voiceStatusAfterConnectionEvent("disconnected")).toBeNull();
+  });
+});
+
+describe("decideVoiceDrop", () => {
+  it("không còn trong phòng (tab khác rời / mất quyền) → dọn, không hồi sinh", () => {
+    expect(decideVoiceDrop({ inChannel: false, attempt: 0 })).toEqual({ kind: "cleanup" });
+  });
+
+  it("còn lượt → nối lại với backoff, và mỗi lần đếm thêm một", () => {
+    const first = decideVoiceDrop({ inChannel: true, attempt: 0, random: () => 0.5 });
+    expect(first.kind).toBe("retry");
+    if (first.kind !== "retry") throw new Error("phải là retry");
+    expect(first.attempt).toBe(0);
+    expect(first.delayMs).toBeGreaterThan(0);
+  });
+
+  it("hết lượt → báo lỗi cho người dùng bấm, không thử tiếp trong im lặng", () => {
+    expect(decideVoiceDrop({ inChannel: true, attempt: MAX_VOICE_RECONNECT_ATTEMPTS })).toEqual({
+      kind: "giveup",
+    });
+    // Vẫn giữ nguyên tắc: đã rời phòng thì dọn, kể cả khi hết lượt.
+    expect(decideVoiceDrop({ inChannel: false, attempt: 99 })).toEqual({ kind: "cleanup" });
   });
 });

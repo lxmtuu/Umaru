@@ -29,8 +29,10 @@ import {
   VoiceAudioSession,
   beginVoiceAudio,
   classifyVoiceError,
+  decideVoiceDrop,
   shouldPublishMicrophone,
   voiceAudioError,
+  voiceStatusAfterConnectionEvent,
   type VoiceAudioErrorKey,
   type VoiceAudioState,
 } from "./voice.js";
@@ -418,6 +420,56 @@ function ackChannel(channelId: string, messageId?: string, force = false): void 
 
 /** Một phiên âm thanh cho mỗi tab (một phòng tại một thời điểm mỗi server). */
 let voiceSession: VoiceAudioSession | null = null;
+/**
+ * Số lần đã **tự** nối lại sau khi SFU ngắt (không tính lần người dùng tự bấm).
+ * Đếm ở đây chứ không trong phiên: mỗi lần nối lại là một `VoiceAudioSession` mới.
+ */
+let voiceReconnectAttempt = 0;
+let voiceReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearVoiceReconnectTimer(): void {
+  if (voiceReconnectTimer !== null) clearTimeout(voiceReconnectTimer);
+  voiceReconnectTimer = null;
+}
+
+/**
+ * SFU ngắt hẳn (LiveKit đã tự thử nối lại và bỏ cuộc). Ba khả năng, phải phân
+ * biệt rõ vì cách xử lý khác hẳn nhau:
+ * 1. **Không còn ở trong phòng** (tab khác rời, mất `VIEW_CHANNEL`) → dọn im lặng.
+ * 2. **Còn lượt thử** → tự nối lại kèm backoff, UI ghi "đang kết nối lại".
+ * 3. **Hết lượt** → trạng thái lỗi + nút Thử lại, thay vì mãi ghi "đang thông".
+ */
+function handleVoiceDropped(
+  channelId: string,
+  get: () => ChatState,
+  set: (patch: Partial<ChatState>) => void,
+): void {
+  const me = get().me;
+  const current = get().voiceAudio;
+  const action = decideVoiceDrop({
+    inChannel:
+      current !== null &&
+      get().voiceStates.some((entry) => entry.userId === me?.id && entry.channelId === channelId),
+    attempt: voiceReconnectAttempt,
+  });
+  if (action.kind === "cleanup") {
+    void stopVoiceAudio();
+    set({ voiceAudio: null, voiceSpeakers: [] });
+    return;
+  }
+  if (action.kind === "giveup" || current === null) {
+    void stopVoiceAudio();
+    set({ voiceAudio: voiceAudioError(channelId, "voiceErrorConnect"), voiceSpeakers: [] });
+    return;
+  }
+  voiceReconnectAttempt = action.attempt + 1;
+  clearVoiceReconnectTimer();
+  set({ voiceAudio: { ...current, status: "reconnecting" }, voiceSpeakers: [] });
+  voiceReconnectTimer = setTimeout(() => {
+    voiceReconnectTimer = null;
+    void startVoiceAudio(channelId, get, set);
+  }, action.delayMs);
+}
 
 /**
  * Bật/tắt mic + loa theo trạng thái **server** vừa phát. Không tự quyết định
@@ -475,7 +527,23 @@ async function startVoiceAudio(
         if (voiceSession !== session) return;
         set({ voiceSpeakers: speakers });
       },
+      onConnection: (event) => {
+        if (voiceSession !== session) return;
+        if (event === "disconnected") {
+          handleVoiceDropped(channelId, get, set);
+          return;
+        }
+        const status = voiceStatusAfterConnectionEvent(event);
+        const current = get().voiceAudio;
+        if (status === null || current === null || current.channelId !== channelId) return;
+        // Còn đang kết nối lần đầu thì đừng nhảy sang "reconnecting".
+        if (status === "reconnecting" && current.status !== "connected") return;
+        if (status === "connected") voiceReconnectAttempt = 0;
+        set({ voiceAudio: { ...current, status } });
+      },
     });
+    // Nối lại được (kể cả LiveKit tự lo) → coi như phiên mới, đếm lại từ đầu.
+    voiceReconnectAttempt = 0;
     set({
       voiceAudio: { channelId, status: "connected", errorKey: null, canPublish: token.canPublish },
     });
@@ -494,6 +562,7 @@ async function startVoiceAudio(
 }
 
 async function stopVoiceAudio(): Promise<void> {
+  clearVoiceReconnectTimer();
   const session = voiceSession;
   voiceSession = null;
   if (session !== null) await session.disconnect();
@@ -812,6 +881,12 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
 
   async logout() {
+    // Ngắt âm thanh **trước** khi xoá token: mic đang mở trong phòng của tài
+    // khoản cũ, và sau khi đăng xuất thì không còn màn hình nào để tắt nó nữa.
+    // `gateway.close()` không giúp gì — kết nối tới SFU là kết nối riêng.
+    await stopVoiceAudio();
+    voiceReconnectAttempt = 0;
+    set({ voiceAudio: null, voiceSpeakers: [] });
     const refreshToken = getRefreshToken();
     if (refreshToken !== null) {
       try {
@@ -2246,6 +2321,7 @@ export const useChat = create<ChatState>()((set, get) => ({
         set({ voiceAudio: null, voiceSpeakers: [] });
         await authedApi.leaveVoice(channelId);
       } else {
+        voiceReconnectAttempt = 0;
         await authedApi.joinVoice(channelId);
         // Không tự sửa `voiceStates` ở đây: server phát `VOICE_STATE_UPDATE` cho
         // chính mình, một nguồn sự thật duy nhất (tránh lệch khi bị từ chối).
@@ -2258,6 +2334,9 @@ export const useChat = create<ChatState>()((set, get) => ({
   async retryVoiceAudio() {
     const mine = get().voiceStates.find((entry) => entry.userId === get().me?.id);
     if (mine === undefined) return;
+    // Thử lại bằng tay phải **đếm lại từ đầu**, không thì người dùng bấm đúng
+    // một lần sau khi hết lượt tự động mà vẫn bị chặn.
+    voiceReconnectAttempt = 0;
     await startVoiceAudio(mine.channelId as string, get, (patch) => set(patch));
   },
   async toggleVoiceMute() {

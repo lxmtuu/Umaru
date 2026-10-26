@@ -1,4 +1,4 @@
-import { ApiError } from "@umaru/sdk";
+import { ApiError, computeBackoffMs } from "@umaru/sdk";
 
 /**
  * Âm thanh kênh thoại — lớp mỏng bọc `livekit-client`.
@@ -12,7 +12,14 @@ import { ApiError } from "@umaru/sdk";
  * là không có tiếng, và UI phải nói rõ như vậy thay vì im lặng.
  */
 
-export type VoiceAudioStatus = "idle" | "connecting" | "connected" | "unavailable" | "error";
+export type VoiceAudioStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  /** Mất kết nối tới SFU, đang tự nối lại — **vẫn đang ở trong phòng**. */
+  | "reconnecting"
+  | "unavailable"
+  | "error";
 
 export interface VoiceAudioState {
   channelId: string | null;
@@ -94,6 +101,70 @@ export function shouldPlayRemote(selfDeaf: boolean): boolean {
   return !selfDeaf;
 }
 
+/** Trần số lần **tự** nối lại sau khi SFU ngắt; quá thì để người dùng bấm. */
+export const MAX_VOICE_RECONNECT_ATTEMPTS = 5;
+
+/**
+ * Nhịp thử lại khi mất kết nối SFU: 1s, 2s, 4s, 8s… tối đa 15s (kèm jitter để
+ * cả phòng rớt mạng cùng lúc không dồn lên server). Lần đầu cố ý nhanh — rớt
+ * Wi-Fi một nhịp thì tiếng phải quay lại gần như tức thì, không để người dùng
+ * kịp nghĩ là app hỏng.
+ */
+export function voiceReconnectDelayMs(attempt: number, random: () => number = Math.random): number {
+  return computeBackoffMs({ attempt, baseMs: 1_000, maxMs: 15_000, jitter: 0.2, random });
+}
+
+/** Còn nên tự nối lại không (hết lượt thì hiện lỗi + nút Thử lại). */
+export function shouldRetryVoiceConnection(attempt: number): boolean {
+  return attempt < MAX_VOICE_RECONNECT_ATTEMPTS;
+}
+
+/** Việc phải làm sau khi SFU ngắt hẳn. */
+export type VoiceDropAction =
+  | { kind: "cleanup" }
+  | { kind: "retry"; attempt: number; delayMs: number }
+  | { kind: "giveup" };
+
+/**
+ * Quyết định sau khi mất kết nối SFU — hàm thuần để test được đúng chỗ dễ sai
+ * nhất: **khi nào còn hồi sinh phiên, khi nào phải nói thật là đã mất tiếng**.
+ *
+ * - Không còn trong phòng (tab khác rời, mất `VIEW_CHANNEL`) → dọn im lặng,
+ *   không hồi sinh một phòng mình đã rời.
+ * - Còn lượt → nối lại kèm backoff (đây là trường hợp thường gặp: rớt Wi-Fi).
+ * - Hết lượt → thôi tự thử, hiện lỗi + nút Thử lại; thử mãi trong im lặng là
+ *   kiểu hỏng tệ nhất vì người dùng tưởng mic vẫn mở.
+ */
+export function decideVoiceDrop(input: {
+  inChannel: boolean;
+  attempt: number;
+  random?: () => number;
+}): VoiceDropAction {
+  if (!input.inChannel) return { kind: "cleanup" };
+  if (!shouldRetryVoiceConnection(input.attempt)) return { kind: "giveup" };
+  return {
+    kind: "retry",
+    attempt: input.attempt,
+    delayMs: voiceReconnectDelayMs(input.attempt, input.random),
+  };
+}
+
+/** Trạng thái kết nối SFU báo lên từ `livekit-client`. */
+export type VoiceConnectionEvent = "reconnecting" | "reconnected" | "disconnected";
+
+/**
+ * Trạng thái audio sau một sự kiện kết nối, hoặc `null` khi phải **quyết định
+ * thêm** (ngắt hẳn thì còn phải xem người dùng còn ở trong phòng không, còn
+ * lượt thử lại không — việc đó thuộc store).
+ */
+export function voiceStatusAfterConnectionEvent(
+  event: VoiceConnectionEvent,
+): VoiceAudioStatus | null {
+  if (event === "reconnecting") return "reconnecting";
+  if (event === "reconnected") return "connected";
+  return null;
+}
+
 /** Trần số người "đang nói" giữ trong state — chặn phòng đông làm phình state. */
 export const MAX_SPEAKERS = 32;
 
@@ -156,6 +227,9 @@ export class VoiceAudioSession {
   private readonly elements = new Set<HTMLMediaElement>();
   /** Danh sách người đang nói gần nhất — cần để bỏ một người khi họ rời phòng. */
   private speakers: string[] = [];
+  /** Đang trong `disconnect()` do người dùng: đừng báo "mất kết nối" nữa. */
+  private closing = false;
+  private connectionState: VoiceConnectionEvent | "connected" = "connected";
   private speakersListener: ((userIds: string[]) => void) | null = null;
 
   /** Chỉ báo khi danh sách **thực sự** đổi, tránh React re-render mỗi 100ms. */
@@ -177,6 +251,13 @@ export class VoiceAudioSession {
      * theo độ trễ mạng. SFU đã tính sẵn mức âm thanh, client chỉ hiển thị.
      */
     onSpeakers?: (userIds: string[]) => void;
+    /**
+     * Mất kết nối / nối lại được. LiveKit tự nối lại vài lần trước khi bỏ cuộc;
+     * chỉ khi nó phát `Disconnected` mới là mất hẳn — lúc đó store phải **hoặc**
+     * nối lại (kèm backoff), **hoặc** nói thật là đã mất tiếng. Im lặng chờ đợi
+     * là kiểu hỏng tệ nhất: UI vẫn ghi "Đang thông" trong khi mic đã chết.
+     */
+    onConnection?: (event: VoiceConnectionEvent) => void;
   }): Promise<void> {
     const { Room, RoomEvent, Track } = await import("livekit-client");
     const room = new Room({ adaptiveStream: true, dynacast: true });
@@ -203,6 +284,19 @@ export class VoiceAudioSession {
     // Ai đang nói: lấy từ SFU, không phải từ mic của mình — nên người deafen
     // vẫn thấy đèn (họ không nghe được, nhưng vẫn cần biết ai đang nói).
     this.speakersListener = input.onSpeakers ?? null;
+    this.closing = false;
+    this.connectionState = "connected";
+    // Chỉ báo khi **đổi** trạng thái: LiveKit phát `Reconnecting` cho từng lần thử
+    // (signal rồi media), báo hết thì UI nhấp nháy và backoff của mình bị đếm sai.
+    const reportConnection = (event: VoiceConnectionEvent): void => {
+      if (this.closing || this.connectionState === event) return;
+      this.connectionState = event;
+      input.onConnection?.(event);
+    };
+    room.on(RoomEvent.Reconnecting, () => reportConnection("reconnecting"));
+    room.on(RoomEvent.SignalReconnecting, () => reportConnection("reconnecting"));
+    room.on(RoomEvent.Reconnected, () => reportConnection("reconnected"));
+    room.on(RoomEvent.Disconnected, () => reportConnection("disconnected"));
     room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
       const list = Array.isArray(speakers) ? speakers : [];
       this.emitSpeakers(
@@ -241,6 +335,7 @@ export class VoiceAudioSession {
   }
 
   async disconnect(): Promise<void> {
+    this.closing = true;
     for (const element of this.elements) element.remove();
     this.elements.clear();
     this.emitSpeakers([]);

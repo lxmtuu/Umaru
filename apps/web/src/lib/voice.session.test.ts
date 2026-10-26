@@ -46,6 +46,10 @@ class FakeRoom {
 }
 
 const ROOM_EVENTS = {
+  Reconnecting: "reconnecting",
+  SignalReconnecting: "signalReconnecting",
+  Reconnected: "reconnected",
+  Disconnected: "disconnected",
   ActiveSpeakersChanged: "activeSpeakers",
   ParticipantDisconnected: "participantDisconnected",
   TrackSubscribed: "trackSubscribed",
@@ -134,5 +138,47 @@ describe("VoiceAudioSession — đèn đang nói", () => {
     await t.session.connect({ ...base, canPublish: false });
     expect(t.room().connected).toHaveLength(1);
     expect(t.room().micCalls).toEqual([false]);
+  });
+});
+
+describe("VoiceAudioSession — mất kết nối", () => {
+  beforeEach(() => {
+    FakeRoom.last = null;
+  });
+
+  it("báo 'reconnecting' đúng một lần dù LiveKit phát cả signal rồi media", async () => {
+    const events: string[] = [];
+    const t = session();
+    await t.session.connect({ ...base, onConnection: (e) => events.push(e) });
+    t.room().emit(ROOM_EVENTS.Reconnecting, {});
+    t.room().emit(ROOM_EVENTS.SignalReconnecting, {});
+    expect(events).toEqual(["reconnecting"]);
+  });
+
+  it("nối lại được thì báo 'reconnected', và lần mất sau lại báo tiếp", async () => {
+    const events: string[] = [];
+    const t = session();
+    await t.session.connect({ ...base, onConnection: (e) => events.push(e) });
+    t.room().emit(ROOM_EVENTS.Reconnecting, {});
+    t.room().emit(ROOM_EVENTS.Reconnected, {});
+    t.room().emit(ROOM_EVENTS.Reconnecting, {});
+    expect(events).toEqual(["reconnecting", "reconnected", "reconnecting"]);
+  });
+
+  it("ngắt hẳn thì báo 'disconnected' — store mới quyết định nối lại hay báo lỗi", async () => {
+    const events: string[] = [];
+    const t = session();
+    await t.session.connect({ ...base, onConnection: (e) => events.push(e) });
+    t.room().emit(ROOM_EVENTS.Disconnected, {});
+    expect(events).toEqual(["disconnected"]);
+  });
+
+  it("người dùng tự rời phòng thì KHÔNG báo 'disconnected' (không hồi sinh phiên đã đóng)", async () => {
+    const events: string[] = [];
+    const t = session();
+    await t.session.connect({ ...base, onConnection: (e) => events.push(e) });
+    await t.session.disconnect();
+    t.room().emit(ROOM_EVENTS.Disconnected, {});
+    expect(events).toEqual([]);
   });
 });

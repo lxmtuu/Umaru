@@ -704,9 +704,13 @@ export function ChatScreen() {
               {/* Trạng thái âm thanh: nói rõ "đang thông / chưa bật / lỗi gì" thay
                   vì im lặng — người dùng phải phân biệt được "phòng câm" với
                   "micro của tôi bị chặn". */}
-              {state.voiceAudio === null || state.voiceAudio.status === "connecting" ? (
-                <span className="ml-auto text-[10px] text-slate-500">
-                  {t("voiceAudioConnecting")}
+              {state.voiceAudio === null ||
+              state.voiceAudio.status === "connecting" ||
+              state.voiceAudio.status === "reconnecting" ? (
+                <span className="ml-auto text-[10px] text-amber-300/80">
+                  {state.voiceAudio?.status === "reconnecting"
+                    ? t("voiceAudioReconnecting")
+                    : t("voiceAudioConnecting")}
                 </span>
               ) : state.voiceAudio.status === "connected" ? (
                 <span
