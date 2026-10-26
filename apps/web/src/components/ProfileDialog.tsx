@@ -3,6 +3,8 @@ import { useChat } from "../lib/chatStore.js";
 import { useT } from "../lib/i18n.js";
 import { pushHintKey } from "../lib/push.js";
 import { Avatar } from "./Avatar.js";
+import { PRESENCE_DOT } from "../lib/presence.js";
+import type { PresenceStatus } from "@umaru/protocol";
 
 /**
  * Hộp thoại hồ sơ: đổi / gỡ ảnh đại diện.
@@ -30,6 +32,16 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
   const enablePush = useChat((state) => state.enablePush);
   const disablePush = useChat((state) => state.disablePush);
   const testPush = useChat((state) => state.testPush);
+  const selfStatus = useChat((state) => state.selfStatus);
+  const setPresence = useChat((state) => state.setPresence);
+
+  // Thứ tự như Discord: Trực tuyến → Đang chờ → Không làm phiền → Ẩn.
+  const statuses: Array<{ status: PresenceStatus; label: string }> = [
+    { status: "online", label: t("statusOnline") },
+    { status: "idle", label: t("statusIdle") },
+    { status: "dnd", label: t("statusDnd") },
+    { status: "offline", label: t("statusInvisible") },
+  ];
 
   const handleFile = async (file: File | undefined): Promise<void> => {
     if (file === undefined) return;
@@ -62,6 +74,31 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
             <p className="truncate text-xs text-slate-500">@{me?.username}</p>
           </div>
         </div>
+
+        {/* Trạng thái hiển thị: đổi là gửi ngay qua gateway, không cần bấm Lưu. */}
+        <fieldset className="mb-4 rounded-lg border border-white/10 p-2.5">
+          <legend className="px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            {t("myStatus")}
+          </legend>
+          <div className="flex flex-wrap gap-1.5">
+            {statuses.map((option) => (
+              <button
+                key={option.status}
+                type="button"
+                onClick={() => setPresence(option.status)}
+                aria-pressed={selfStatus === option.status}
+                className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs ${
+                  selfStatus === option.status
+                    ? "bg-white/10 text-slate-100 ring-1 ring-emerald-400/40"
+                    : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                }`}
+              >
+                <span className={`size-2 rounded-full ${PRESENCE_DOT[option.status]}`} aria-hidden />
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </fieldset>
 
         <input
           ref={inputRef}

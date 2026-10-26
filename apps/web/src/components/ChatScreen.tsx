@@ -1486,10 +1486,12 @@ export function ChatScreen() {
         <MemberList
           members={members}
           roles={guildRoles}
+          presence={state.presence}
           ownerId={(activeGuild?.ownerId as string | undefined) ?? null}
           meId={(state.me?.id as string | undefined) ?? null}
           defaultSectionLabel={t("members")}
           countLabel={(count) => `${t("members")} — ${count}`}
+          offlineLabel={t("offlineMembers")}
           youLabel={t("you")}
           ownerLabel={t("serverOwner")}
         />

@@ -157,6 +157,9 @@ function seedChat() {
     // VIEW_CHANNEL | SEND_MESSAGES | READ_HISTORY | CONNECT | SPEAK — không có
     // quyền xem kênh thì sidebar ẩn kênh, và test sẽ hiểu sai là "mất kênh".
     permissions: { [CHANNEL.id as string]: 1795n },
+    // Demo đang online (giữ role Quản trị), Minh ngoại tuyến.
+    presence: { "1000": "online" },
+    selfStatus: "online",
     voiceStates: [],
     voiceScreens: [],
     voiceAudio: "idle",
@@ -202,7 +205,9 @@ describe("ChatScreen — dựng giao diện thật", () => {
   it("có danh sách thành viên với role và đúng số người", () => {
     render(<ChatScreen />);
     expect(screen.getByRole("heading", { name: "Thành viên — 2" })).toBeTruthy();
+    // Người online nhóm theo role; người offline gom vào nhóm cuối (như Discord).
     expect(screen.getByText("Quản trị — 1")).toBeTruthy();
+    expect(screen.getByText("Ngoại tuyến — 1")).toBeTruthy();
   });
 
   it("gộp tin liên tiếp cùng người: tên chỉ hiện một lần cho cụm", () => {

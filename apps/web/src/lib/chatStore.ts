@@ -176,6 +176,12 @@ interface ChatState {
   adminLoading: boolean;
   typing: Record<string, TypingEntry[]>;
   presence: Record<string, PresenceStatus>;
+  /**
+   * Trạng thái **mình đã chọn** (Trực tuyến / Không làm phiền / Đang chờ / Ẩn).
+   * Giữ ở store để nút chọn hiện đúng sau khi mở lại app trong cùng phiên và để
+   * biết mình đang ẩn (người khác thấy offline, ta vẫn nhận tin).
+   */
+  selfStatus: PresenceStatus;
   /** Bạn bè + lời mời hai chiều + quyền riêng tư DM; `null` = chưa tải lần nào. */
   friends: FriendList | null;
   friendsLoading: boolean;
@@ -406,6 +412,8 @@ interface ChatState {
   declineMessageRequest(channelId: string): Promise<boolean>;
   /** Bật/tắt thông báo máy (bật thì xin quyền trình duyệt ngay trong thao tác này). */
   setDesktopNotifications(enabled: boolean): Promise<void>;
+  /** Đổi trạng thái hiển thị của mình; gửi qua gateway và cập nhật lạc quan. */
+  setPresence(status: PresenceStatus): void;
   /** Bật/tắt số chưa đọc trên tiêu đề tab. */
   setTabTitleNotifications(enabled: boolean): void;
   /** Bật thông báo đẩy khi đóng tab (phải gọi từ thao tác người dùng). */
@@ -785,6 +793,7 @@ const initialState = {
   adminLoading: false,
   typing: {},
   presence: {},
+  selfStatus: "online" as PresenceStatus,
   friends: null,
   friendsLoading: false,
   friendQuery: "",
@@ -1065,6 +1074,13 @@ export const useChat = create<ChatState>()((set, get) => ({
       }
       // Giữ nguyên bigint trong state (không đưa vào JSON) — chỉ parse một lần lúc READY.
       const permissions = parsePermissionMap(data.channelPermissions ?? {});
+      // Snapshot presence: người online **trước khi mình vào** không có event
+      // nào tới mình, nên nếu bỏ qua thì chấm trạng thái gần như luôn trống.
+      const presence: Record<string, PresenceStatus> = {};
+      for (const entry of data.presences ?? []) {
+        presence[entry.userId as string] = entry.status;
+      }
+      if (current.me !== null) presence[current.me.id as string] = current.selfStatus;
       set({
         me: data.user,
         guilds,
@@ -1076,6 +1092,7 @@ export const useChat = create<ChatState>()((set, get) => ({
         unread,
         mentions,
         permissions,
+        presence,
         activeGuildId: guildId,
         activeChannelId: channelId,
       });
@@ -2587,6 +2604,19 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
   setTabTitleNotifications(enabled) {
     applyNotificationSettings({ ...get().notificationSettings, tabTitle: enabled });
+  },
+  /**
+   * Đổi trạng thái hiển thị. Cập nhật lạc quan trước rồi mới gửi: nút chọn phải
+   * đổi ngay, kể cả khi đang mất mạng (gateway tự gửi lại sau khi nối lại, xem
+   * `GatewayClient.updatePresence`).
+   */
+  setPresence(status) {
+    const me = get().me;
+    set({
+      selfStatus: status,
+      ...(me === null ? {} : { presence: { ...get().presence, [me.id as string]: status } }),
+    });
+    gateway?.updatePresence(status);
   },
   /**
    * Bật thông báo đẩy. Phải chạy trong thao tác người dùng: xin quyền tự động

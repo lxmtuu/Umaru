@@ -44,6 +44,8 @@ function setup(pushStatus: PushStatus, extra: Partial<ReturnType<typeof useChat.
     setDesktopNotifications: vi.fn(),
     setTabTitleNotifications: vi.fn(),
     pushStatus,
+    selfStatus: "online",
+    setPresence: vi.fn(),
     pushBusy: false,
     pushNotice: null,
     ...actions,
@@ -139,5 +141,33 @@ describe("ProfileDialog — thông báo trình duyệt (khi tab mở)", () => {
     setup("off", { setDesktopNotifications: setDesktop });
     fireEvent.click(screen.getByRole("checkbox", { name: /Thông báo trên máy/ }));
     expect(setDesktop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ProfileDialog — trạng thái hiển thị", () => {
+  it("bốn lựa chọn trạng thái, mặc định Trực tuyến đang được chọn", () => {
+    setup("off");
+    const online = screen.getByRole("button", { name: /Trực tuyến/ });
+    expect(online.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: /Đang chờ/ }).getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    expect(screen.getByRole("button", { name: /Không làm phiền/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Ẩn/ })).toBeTruthy();
+  });
+
+  it("bấm một trạng thái gọi setPresence với đúng giá trị", () => {
+    const setPresence = vi.fn();
+    setup("off", { setPresence } as never);
+    fireEvent.click(screen.getByRole("button", { name: /Không làm phiền/ }));
+    expect(setPresence).toHaveBeenCalledWith("dnd");
+  });
+
+  it("đang ẩn thì nút Ẩn được đánh dấu, không phải Trực tuyến", () => {
+    setup("off", { selfStatus: "offline" } as never);
+    expect(screen.getByRole("button", { name: /^Ẩn$/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: /Trực tuyến/ }).getAttribute("aria-pressed")).toBe(
+      "false",
+    );
   });
 });

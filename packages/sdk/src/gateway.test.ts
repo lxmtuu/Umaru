@@ -344,4 +344,55 @@ describe("GatewayClient", () => {
     vi.advanceTimersByTime(60_000);
     expect(sockets).toHaveLength(1);
   });
+
+  it("updatePresence gửi op 3, và gửi lại sau khi nối lại (trạng thái không bị mất)", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "s1", user: {} } });
+
+    client.updatePresence("dnd");
+    const sent = sockets[0]!.sent.map((raw) => JSON.parse(raw) as Record<string, any>);
+    expect(sent.at(-1)).toMatchObject({ op: 3, d: { status: "dnd" } });
+
+    // Mất kết nối rồi resume: server quên trạng thái khi socket đóng, client phải
+    // gửi lại — nếu không người đang "Không làm phiền" lại hiện "Trực tuyến".
+    sockets[0]!.emitClose(1006);
+    vi.advanceTimersByTime(5_000);
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.emitOpen();
+    sockets[1]!.emitMessage({ op: 0, t: "RESUMED", s: 2, d: {} });
+
+    const resent = sockets[1]!.sent.map((raw) => JSON.parse(raw) as Record<string, any>);
+    expect(resent.some((frame) => frame.op === 3 && frame.d.status === "dnd")).toBe(true);
+  });
+
+  it("chưa chọn trạng thái thì không gửi frame op 3 thừa sau READY", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "s1", user: {} } });
+    const frames = sockets[0]!.sent.map((raw) => JSON.parse(raw) as Record<string, any>);
+    expect(frames.some((frame) => frame.op === 3)).toBe(false);
+  });
 });

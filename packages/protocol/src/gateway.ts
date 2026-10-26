@@ -51,7 +51,21 @@ export interface ResumePayload {
   d: { token: string; sessionId: string; seq: number };
 }
 
-export type GatewaySendPayload = HeartbeatPayload | IdentifyPayload | ResumePayload;
+/**
+ * client → server: đổi trạng thái hiển thị (mục "Trực tuyến / Không làm phiền /
+ * Đang chờ / Ẩn" như Discord). `"offline"` ở đây nghĩa là **ẩn** — người khác
+ * thấy offline nhưng tài khoản vẫn nhận tin; không có opcode riêng cho ẩn.
+ */
+export interface PresenceUpdatePayload {
+  op: 3;
+  d: { status: PresenceStatus };
+}
+
+export type GatewaySendPayload =
+  | HeartbeatPayload
+  | IdentifyPayload
+  | ResumePayload
+  | PresenceUpdatePayload;
 
 // —— server → client ——
 
@@ -98,6 +112,12 @@ export type GatewayReceivePayload =
 // —— sự kiện server → client ——
 
 /** Thông tin tối thiểu để render tên/avatar thành viên trong tin nhắn. */
+/** Một dòng trạng thái trong READY / event `PRESENCE_UPDATE`. */
+export interface PresenceEntry {
+  userId: Snowflake;
+  status: PresenceStatus;
+}
+
 export interface GuildMemberSummary {
   userId: Snowflake;
   username: string;
@@ -214,6 +234,13 @@ export interface GatewayEventMap {
      * qua `visibleChannels`) — đúng theo tiêu chí "permission leak" ở §8.
      */
     voiceStates: VoiceState[];
+    /**
+     * Trạng thái hiện tại của những người **có chung guild** với mình.
+     *
+     * Không có trong danh sách = chưa từng kết nối (offline). Chỉ gửi người có
+     * chung guild để không lộ "ai đang online" ngoài phạm vi được thấy.
+     */
+    presences: PresenceEntry[];
   };
   RESUMED: Record<string, never>;
   /**

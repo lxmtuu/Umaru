@@ -7,6 +7,7 @@ import {
   type GatewayEventName,
   type GatewayReceivePayload,
   type GatewaySendPayload,
+  type PresenceStatus,
 } from "@umaru/protocol";
 import { computeBackoffMs } from "./backoff.js";
 
@@ -82,6 +83,8 @@ export class GatewayClient {
   private readonly stateListeners = new Set<(state: GatewayState) => void>();
 
   private readonly wsFactory: (url: string) => WebSocketLike;
+  /** Trạng thái người dùng đã chọn — gửi lại sau mỗi lần identify/resume. */
+  private desiredPresence: PresenceStatus | null = null;
   private readonly random: () => number;
   private readonly maxReconnectAttempts: number;
 
@@ -236,17 +239,25 @@ export class GatewayClient {
         this.authFailureCount = 0;
         this.refreshedToken = null;
         this.setState("ready");
+        this.resendPresence();
         break;
       }
       case "RESUMED":
         this.reconnectAttempt = 0;
         this.authFailureCount = 0;
         this.setState("ready");
+        this.resendPresence();
         break;
       default:
         break;
     }
     this.emit(t, d);
+  }
+
+  /** Gửi lại trạng thái đã chọn sau khi session mới sẵn sàng (xem `updatePresence`). */
+  private resendPresence(): void {
+    if (this.desiredPresence === null) return;
+    this.send({ op: GatewayOpcode.PresenceUpdate, d: { status: this.desiredPresence } });
   }
 
   private emit<E extends GatewayEventName>(event: E, data: GatewayEventMap[E]): void {
@@ -284,6 +295,19 @@ export class GatewayClient {
     if (this.heartbeatTimer !== null) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+  }
+
+  /**
+   * Đổi trạng thái hiển thị của chính mình (Trực tuyến / Không làm phiền /
+   * Đang chờ / Ẩn). Ghi nhớ để **gửi lại sau khi nối lại** — server mất trạng
+   * thái khi socket đóng, nếu không nhớ thì mỗi lần rớt mạng người đang để
+   * "Không làm phiền" lại hiện thành "Trực tuyến".
+   */
+  updatePresence(status: PresenceStatus): void {
+    this.desiredPresence = status;
+    if (this.state === "ready") {
+      this.send({ op: GatewayOpcode.PresenceUpdate, d: { status } });
     }
   }
 

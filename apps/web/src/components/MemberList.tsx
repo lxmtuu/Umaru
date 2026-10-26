@@ -1,23 +1,26 @@
-import type { GuildMemberSummary, Role } from "@umaru/protocol";
+import type { GuildMemberSummary, PresenceStatus, Role } from "@umaru/protocol";
 import { Avatar } from "./Avatar.js";
 import { useLocale } from "../lib/i18n.js";
 import { groupMembersByRole, type MemberSection } from "../lib/memberList.js";
+import { PRESENCE_DOT, partitionByPresence, presenceOf } from "../lib/presence.js";
 
 /**
- * Danh sách thành viên bên phải — thứ mà Discord luôn có ở mỗi server.
+ * Danh sách thành viên bên phải — thứ Discord luôn có ở mỗi server.
  *
  * Trước đây app chỉ có cột kênh và khung chat: muốn biết server có ai thì phải
  * mở panel Bạn bè, và không thấy được ai giữ role gì. Component này chỉ nhận
  * props (không đọc store) để render được trong test.
  *
- * Nhóm theo **role cao nhất** của từng người, giống Discord: thứ tự nhóm = thứ
- * tự thẩm quyền role, trong nhóm sắp theo tên. Người chưa có role riêng nằm ở
- * nhóm đầu tiên (nhãn "Thành viên").
+ * Bố cục giống Discord: người **đang online** nhóm theo role cao nhất (thứ tự
+ * nhóm = thẩm quyền role), người **ngoại tuyến** (kể cả người chọn "Ẩn") gom vào
+ * một nhóm cuối, tên mờ đi.
  */
 
 export interface MemberListProps {
   members: GuildMemberSummary[];
   roles: Role[];
+  /** userId → trạng thái; thiếu = offline. */
+  presence?: Record<string, PresenceStatus>;
   /** Chủ server — có vương miện, không phụ thuộc role. */
   ownerId: string | null;
   meId: string | null;
@@ -25,31 +28,83 @@ export interface MemberListProps {
   defaultSectionLabel: string;
   /** Nhãn đếm, ví dụ "Thành viên — 12". */
   countLabel: (count: number) => string;
+  /** Nhãn nhóm ngoại tuyến, thường là "Ngoại tuyến". */
+  offlineLabel: string;
   youLabel: string;
   ownerLabel: string;
-  /** Tên role hiển thị dạng tooltip khi rê chuột. */
-  roleHoverLabel?: (roleName: string) => string;
 }
 
-function colorOf(section: MemberSection): string {
-  if (section.color === null) return "text-slate-300";
-  return "";
+function hex(color: number): string {
+  return `#${color.toString(16).padStart(6, "0")}`;
+}
+
+function dotClass(status: PresenceStatus): string {
+  return PRESENCE_DOT[status];
 }
 
 export function MemberList({
   members,
   roles,
+  presence,
   ownerId,
   meId,
   defaultSectionLabel,
   countLabel,
+  offlineLabel,
   youLabel,
   ownerLabel,
-  roleHoverLabel,
 }: MemberListProps) {
   // `locale` để component render lại khi đổi ngôn ngữ, kể cả khi props không đổi.
   useLocale((state) => state.locale);
-  const sections = groupMembersByRole({ members, roles, defaultSectionLabel });
+  const { online, offline } = partitionByPresence(members, presence);
+  const sections: MemberSection[] = groupMembersByRole({
+    members: online,
+    roles,
+    defaultSectionLabel,
+  });
+
+  const row = (member: GuildMemberSummary, sectionColor: number | null, muted: boolean) => {
+    const isOwner = ownerId !== null && member.userId === ownerId;
+    const isMe = meId !== null && member.userId === meId;
+    const status = presenceOf(presence, member.userId as string);
+    return (
+      <li key={member.userId}>
+        <div
+          className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-white/5"
+          title={isOwner ? ownerLabel : undefined}
+        >
+          <span className="relative shrink-0">
+            <Avatar
+              avatarUrl={member.avatarUrl}
+              name={member.displayName}
+              size="size-7"
+              textClass="text-[10px]"
+            />
+            <span
+              className={`absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-slate-900 ${dotClass(status)}`}
+              aria-hidden
+            />
+          </span>
+          <span
+            className={`truncate text-sm ${muted ? "text-slate-500" : "text-slate-300"}`}
+            style={sectionColor === null || muted ? undefined : { color: hex(sectionColor) }}
+          >
+            {member.displayName}
+          </span>
+          {isOwner && (
+            <span className="shrink-0 text-[10px] text-amber-300" aria-label={ownerLabel}>
+              ♛
+            </span>
+          )}
+          {isMe && (
+            <span className="ml-auto shrink-0 rounded bg-emerald-400/10 px-1 text-[10px] text-emerald-300">
+              {youLabel}
+            </span>
+          )}
+        </div>
+      </li>
+    );
+  };
 
   return (
     <aside
@@ -63,64 +118,21 @@ export function MemberList({
         <section key={section.id} className="mb-2">
           <h3
             className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500"
-            style={section.color === null ? undefined : { color: `#${section.color.toString(16).padStart(6, "0")}` }}
+            style={section.color === null ? undefined : { color: hex(section.color) }}
           >
             {section.name} — {section.members.length}
           </h3>
-          <ul>
-            {section.members.map((member) => {
-              const isOwner = ownerId !== null && member.userId === ownerId;
-              const isMe = meId !== null && member.userId === meId;
-              return (
-                <li key={member.userId}>
-                  <div
-                    className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-white/5"
-                    title={
-                      isOwner
-                        ? ownerLabel
-                        : roleHoverLabel === undefined
-                          ? undefined
-                          : roleHoverLabel(section.name)
-                    }
-                  >
-                    {/* Chấm trạng thái: chưa có presence thật nên chỉ hiện khi
-                        chính mình — hiện "trực tuyến" cho mọi người là nói dối. */}
-                    <span className="relative shrink-0">
-                      <Avatar avatarUrl={member.avatarUrl} name={member.displayName} size="size-7" textClass="text-[10px]" />
-                      {isMe && (
-                        <span
-                          className="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-slate-900 bg-emerald-400"
-                          aria-hidden
-                        />
-                      )}
-                    </span>
-                    <span
-                      className={`truncate text-sm ${colorOf(section) || "text-slate-300"}`}
-                      style={
-                        section.color === null
-                          ? undefined
-                          : { color: `#${section.color.toString(16).padStart(6, "0")}` }
-                      }
-                    >
-                      {member.displayName}
-                    </span>
-                    {isOwner && (
-                      <span className="shrink-0 text-[10px] text-amber-300" aria-label={ownerLabel}>
-                        ♛
-                      </span>
-                    )}
-                    {isMe && (
-                      <span className="ml-auto shrink-0 rounded bg-emerald-400/10 px-1 text-[10px] text-emerald-300">
-                        {youLabel}
-                      </span>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          <ul>{section.members.map((member) => row(member, section.color, false))}</ul>
         </section>
       ))}
+      {offline.length > 0 && (
+        <section className="mb-2">
+          <h3 className="px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+            {offlineLabel} — {offline.length}
+          </h3>
+          <ul>{offline.map((member) => row(member, null, true))}</ul>
+        </section>
+      )}
     </aside>
   );
 }

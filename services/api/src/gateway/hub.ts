@@ -7,6 +7,8 @@ import {
   type GatewayEventMap,
   type GatewayEventName,
   type GatewayReceivePayload,
+  type PresenceEntry,
+  type PresenceStatus,
   type Snowflake,
   type User,
   type VoiceState,
@@ -108,6 +110,15 @@ interface SocketState {
 export class GatewayHub implements EventPublisher {
   private readonly sessions = new Map<string, Session>();
   private readonly socketStates = new Map<WebSocket, SocketState>();
+  /**
+   * Trạng thái người dùng **tự chọn** (idle / dnd / ẩn). Không có dòng nào =
+   * "online" khi còn kết nối, "offline" khi hết. Không lưu DB: đây là trạng
+   * thái sống, mất khi API restart — đúng như Discord (restart là về online).
+   *
+   * Một node thì Map là đủ; đa node phải chuyển sang Redis (cùng chỗ với replay
+   * buffer, xem ADR-0003).
+   */
+  private readonly selectedStatus = new Map<string, PresenceStatus>();
   private readonly sweepTimer: NodeJS.Timeout;
 
   constructor(private readonly deps: HubDeps) {
@@ -190,6 +201,12 @@ export class GatewayHub implements EventPublisher {
         }
         state.heartbeatDrops = 0;
         this.send(socket, { op: GatewayOpcode.HeartbeatAck, d: null });
+        return;
+      }
+      case GatewayOpcode.PresenceUpdate: {
+        const session = state.session;
+        if (session === null) return;
+        this.handlePresenceUpdate(session, frame.d);
         return;
       }
       case GatewayOpcode.Identify:
@@ -290,8 +307,13 @@ export class GatewayHub implements EventPublisher {
       readStates: bootstrap.readStates,
       channelPermissions: bootstrap.channelPermissions,
       voiceStates: bootstrap.voiceStates,
+      // Người đã online **trước khi mình vào** sẽ không có event PRESENCE_UPDATE
+      // nào tới mình, nên snapshot này là thứ duy nhất cho biết ai đang ở đây.
+      presences: this.presenceSnapshotFor(session),
     });
-    this.broadcastPresence(session, "online");
+    // `presenceStatusFor` đã tính cả trạng thái tự chọn: người để "ẩn" thì
+    // người khác vẫn phải thấy offline, không phải online.
+    this.broadcastPresence(session, this.presenceStatusFor(session.userId));
   }
 
   private async handleResume(socket: WebSocket, state: SocketState, data: unknown): Promise<void> {
@@ -336,7 +358,13 @@ export class GatewayHub implements EventPublisher {
     const missed = session.replay.filter((frame) => frame.s > seq);
     for (const frame of missed) this.send(socket, frame.payload);
     this.dispatch(session, "RESUMED", {});
-    this.broadcastPresence(session, "online");
+    // Trong lúc mất kết nối, người khác có thể đã đổi trạng thái mà replay
+    // không chứa PRESENCE_UPDATE (event tạm thời, không phát lại) → gửi snapshot
+    // để chấm online/offline không bị cũ sau khi nối lại.
+    for (const entry of this.presenceSnapshotFor(session)) {
+      this.dispatch(session, "PRESENCE_UPDATE", entry);
+    }
+    this.broadcastPresence(session, this.presenceStatusFor(session.userId));
   }
 
   private handleSocketClose(socket: WebSocket, state: SocketState): void {
@@ -546,11 +574,66 @@ export class GatewayHub implements EventPublisher {
     if (session.socket !== null) this.send(session.socket, payload);
   }
 
-  private broadcastPresence(session: Session, status: "online" | "offline"): void {
+  /**
+   * Trạng thái hiện tại của một người: không có socket nào sống → offline; có
+   * socket nhưng người dùng chọn "ẩn" → offline với người khác.
+   */
+  private presenceStatusFor(userId: Snowflake | string): PresenceStatus {
+    const selected = this.selectedStatus.get(String(userId));
+    if (selected === "offline") return "offline";
+    if (!this.userHasConnectedSession(userId as Snowflake)) return "offline";
+    return selected ?? "online";
+  }
+
+  /** Người có chung ít nhất một guild với session này (không gồm chính họ). */
+  private presenceSnapshotFor(session: Session): PresenceEntry[] {
+    const byUser = new Map<string, PresenceEntry>();
+    for (const other of this.sessions.values()) {
+      if (other.socket === null) continue;
+      if (String(other.userId) === String(session.userId)) continue;
+      if (byUser.has(String(other.userId))) continue;
+      let sharesGuild = false;
+      for (const guildId of other.guildIds) {
+        if (session.guildIds.has(guildId)) {
+          sharesGuild = true;
+          break;
+        }
+      }
+      if (!sharesGuild) continue;
+      byUser.set(String(other.userId), {
+        userId: other.userId,
+        status: this.presenceStatusFor(other.userId),
+      });
+    }
+    return [...byUser.values()];
+  }
+
+  /**
+   * Người dùng bấm đổi trạng thái. Ghi nhớ rồi phát cho mọi session có chung
+   * guild — **kể cả session khác của chính họ** (mở hai máy phải đồng bộ), chỉ
+   * bỏ qua đúng socket vừa gửi để không dội lại chính nó.
+   */
+  private handlePresenceUpdate(session: Session, data: unknown): void {
+    const status = (data as { status?: unknown } | null)?.status;
+    if (status !== "online" && status !== "idle" && status !== "dnd" && status !== "offline") {
+      // Frame rác: bỏ qua, không đóng — đổi trạng thái không phải lỗi giao thức.
+      return;
+    }
+    const key = String(session.userId);
+    if (status === "online") this.selectedStatus.delete(key);
+    else this.selectedStatus.set(key, status);
+    this.broadcastPresence(session, this.presenceStatusFor(session.userId), session.id);
+  }
+
+  private broadcastPresence(session: Session, status: PresenceStatus, skipSessionId?: string): void {
     const targets = new Map<string, Session>();
     for (const other of this.sessions.values()) {
       if (other.socket === null) continue;
-      if (other.userId === session.userId) continue;
+      if (skipSessionId !== undefined && other.id === skipSessionId) continue;
+      // Trạng thái của **chính mình** chỉ cần phát cho thiết bị khác của mình
+      // khi mình vừa chủ động đổi (`skipSessionId` có giá trị). Lúc kết nối thì
+      // bỏ qua: họ vừa vào, tự biết mình online.
+      if (other.userId === session.userId && skipSessionId === undefined) continue;
       let sharesGuild = false;
       for (const guildId of session.guildIds) {
         if (other.guildIds.has(guildId)) {
