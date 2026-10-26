@@ -777,3 +777,29 @@ describe("slowmode — đếm ngược ở ô soạn", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Gửi" })).toBeTruthy());
   });
 });
+
+describe("ChatScreen — nhắc role", () => {
+  it("tin có `@Quản trị` được tô sáng như nhắc role (khác màu nhắc người)", () => {
+    useChat.setState({
+      messages: {
+        [CHANNEL.id]: [
+          message("9101", "1001", "@Quản trị xem giúp", "2026-10-26T06:00:00.000Z"),
+        ],
+      },
+    } as never);
+    const { container } = render(<ChatScreen />);
+    const chip = [...container.querySelectorAll("span")].find(
+      (node) => node.textContent === "@Quản trị",
+    );
+    expect(chip).toBeTruthy();
+    expect(chip?.className).toContain("text-indigo-300");
+  });
+
+  it("gõ `@` trong ô soạn thì gợi ý có cả role của server", async () => {
+    render(<ChatScreen />);
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "@", selectionStart: 1 } });
+    const list = await screen.findByTestId("mention-suggest");
+    expect(within(list).getByText("Quản trị")).toBeTruthy();
+  });
+});

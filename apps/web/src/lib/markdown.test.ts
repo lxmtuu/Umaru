@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseInline, parseMessage, type BlockNode, type InlineNode } from "./markdown.js";
+import {
+  findRoleMentions,
+  parseInline,
+  parseMessage,
+  type BlockNode,
+  type InlineNode,
+} from "./markdown.js";
 
 /** Chuyển cây node về dạng dễ so sánh trong test. */
 function serialize(nodes: InlineNode[]): unknown[] {
@@ -12,7 +18,7 @@ function serialize(nodes: InlineNode[]): unknown[] {
       case "link":
         return { link: node.href };
       case "mention":
-        return { mention: node.value };
+        return { mention: node.value, role: node.role === true };
       default:
         return { [node.type]: serialize(node.children) };
     }
@@ -82,7 +88,7 @@ describe("parseInline", () => {
 
   it("highlight @mention theo đúng bộ ký tự username của backend", () => {
     expect(serialize(parseInline("@alice_smoke chào"))).toEqual([
-      { mention: "@alice_smoke" },
+      { mention: "@alice_smoke", role: false },
       " chào",
     ]);
     expect(serialize(parseInline("@a không phải mention"))).toEqual(["@a không phải mention"]);
@@ -134,5 +140,39 @@ describe("parseMessage", () => {
     expect(blocksOf("<img src=x onerror=alert(1)>")).toEqual([
       { paragraph: ["<img src=x onerror=alert(1)>"] },
     ]);
+  });
+});
+
+describe("nhắc role trong markdown", () => {
+  it("khớp tên role có dấu và khoảng trắng, không cắt giữa từ", () => {
+    const nodes = parseInline("@Đội QA xem giúp", 0, { roleNames: ["QA", "Đội QA"] });
+    expect(serialize(nodes)).toEqual([
+      { mention: "@Đội QA", role: true },
+      " xem giúp",
+    ]);
+  });
+
+  it("`@QAs` không khớp role `@QA` nhưng vẫn là mention username", () => {
+    const nodes = parseInline("@QAs ơi", 0, { roleNames: ["QA"] });
+    // Username chỉ nhận `@QAs` nếu đúng 2-32 ký tự — ở đây vẫn là mention thường.
+    expect(serialize(nodes)).toEqual([{ mention: "@QAs", role: false }, " ơi"]);
+  });
+
+  it("`@everyone` trong tên role không bị nhân đôi dấu `@`", () => {
+    const nodes = parseInline("@everyone họp nhé", 0, { roleNames: ["@everyone"] });
+    expect(serialize(nodes)).toEqual([{ mention: "@everyone", role: true }, " họp nhé"]);
+  });
+
+  it("email `a@QA` không thành nhắc role", () => {
+    expect(findRoleMentions("mail a@QA nhé", ["QA"])).toEqual([]);
+  });
+
+  it("findRoleMentions trả tên role theo thứ tự xuất hiện", () => {
+    expect(findRoleMentions("@QA và @Đội QA", ["QA", "Đội QA"])).toEqual(["QA", "Đội QA"]);
+  });
+
+  it("không có roleNames thì không có node role nào", () => {
+    const nodes = parseInline("@Đội QA xem", 0);
+    expect(nodes.some((node) => node.type === "mention" && node.role === true)).toBe(false);
   });
 });

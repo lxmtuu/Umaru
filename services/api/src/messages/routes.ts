@@ -279,7 +279,14 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       }));
 
       // @mention ghi ngay lúc gửi để badge tính được bằng một câu SQL.
-      await syncMessageMentions(pool, message.id as string, channelId, payload.content);
+      // Nhắc `@everyone` (role mặc định) là ping cả server ⇒ chỉ người trực kênh.
+      await syncMessageMentions(pool, message.id as string, channelId, payload.content, {
+        allowEveryoneMention:
+          hasPermission(context.permissions, Permission.MANAGE_MESSAGES) ||
+          hasPermission(context.permissions, Permission.ADMINISTRATOR) ||
+          (context.guild !== null &&
+            hasPermission(context.guild.permissions, Permission.ADMINISTRATOR)),
+      });
       // Có tin mới trong thread ⇒ đếm tin + dời mốc hoạt động (no-op với kênh
       // thường, chỉ là một lần tra PK).
       await touchThread(pool, channelId);
@@ -345,7 +352,13 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       const row = updated.rows[0];
       if (row === undefined) throw notFound("Tin nhắn không tồn tại");
       // Sửa nội dung → mention cũ sai, ghi lại từ đầu.
-      await syncMessageMentions(pool, row.id as string, row.channel_id as string, content);
+      await syncMessageMentions(pool, row.id as string, row.channel_id as string, content, {
+        allowEveryoneMention:
+          hasPermission(context.permissions, Permission.MANAGE_MESSAGES) ||
+          hasPermission(context.permissions, Permission.ADMINISTRATOR) ||
+          (context.guild !== null &&
+            hasPermission(context.guild.permissions, Permission.ADMINISTRATOR)),
+      });
 
       publisher.publishToChannel(row.channel_id, "MESSAGE_UPDATE", {
         id: row.id as Snowflake,

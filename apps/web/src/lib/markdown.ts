@@ -31,6 +31,13 @@ export interface LinkNode {
 export interface MentionNode {
   type: "mention";
   value: string;
+  /** `true` = nhắc **role** (`@Đội QA`), khác màu với nhắc người. */
+  role?: boolean;
+}
+
+/** Tuỳ chọn khi parse: tên role của server để nhận ra `@Tên role`. */
+export interface ParseOptions {
+  roleNames?: string[];
 }
 
 export interface MarkNode {
@@ -115,7 +122,63 @@ function wrap(marks: MarkNode["type"][], children: InlineNode[]): InlineNode {
   return node;
 }
 
-export function parseInline(input: string, depth = 0): InlineNode[] {
+/**
+ * Các role được nhắc trong `text` (tên role, đúng thứ tự xuất hiện).
+ *
+ * Dùng chung cho việc tô sáng khi render **và** cho quyết định "tin này có nhắc
+ * mình không" ở `chatStore` — hai chỗ lệch nhau là kiểu lỗi tệ nhất: tin được tô
+ * sáng mà không có thông báo (hoặc ngược lại).
+ */
+export function findRoleMentions(text: string, roleNames: string[]): string[] {
+  if (roleNames.length === 0) return [];
+  const hits: string[] = [];
+  let index = 0;
+  while (index < text.length) {
+    if (text[index] !== "@") {
+      index += 1;
+      continue;
+    }
+    const match = matchRoleMention(text, index, roleNames);
+    if (match === null) {
+      index += 1;
+      continue;
+    }
+    hits.push(match.slice(1));
+    index += match.length;
+  }
+  return hits;
+}
+
+/**
+ * Khớp `@Tên role` tại `index`, trả về chuỗi đã khớp (kèm `@`) hoặc `null`.
+ *
+ * Quy tắc giống phía server (`services/api/src/mentions.ts`):
+ *  - `@` phải đứng đầu câu hoặc sau khoảng trắng (`a@Role` là email);
+ *  - không cắt giữa từ (`@Moderator` không khớp role `@Mod`);
+ *  - tên role dài khớp trước.
+ */
+function matchRoleMention(input: string, index: number, roleNames?: string[]): string | null {
+  if (roleNames === undefined || roleNames.length === 0) return null;
+  if (input[index] !== "@") return null;
+  const previous = index === 0 ? undefined : input[index - 1];
+  if (previous !== undefined && !/\s/.test(previous)) return null;
+  const ordered = [...roleNames]
+    .filter((name) => name.trim().length > 0)
+    .sort((a, b) => b.length - a.length);
+  const rest = input.slice(index + 1).toLowerCase();
+  for (const name of ordered) {
+    // `@everyone` có sẵn dấu `@` trong tên role — không ghép thêm (xem
+    // `services/api/src/mentions.ts`).
+    const needle = name.toLowerCase().replace(/^@/, "");
+    if (!rest.startsWith(needle)) continue;
+    const after = rest[needle.length];
+    if (after !== undefined && /[\p{L}\p{N}_]/u.test(after)) continue;
+    return input.slice(index, index + 1 + needle.length);
+  }
+  return null;
+}
+
+export function parseInline(input: string, depth = 0, options: ParseOptions = {}): InlineNode[] {
   const nodes: InlineNode[] = [];
   let text = "";
   let index = 0;
@@ -149,7 +212,7 @@ export function parseInline(input: string, depth = 0): InlineNode[] {
         const close = findClosing(input, from, delimiter.token);
         if (close !== -1) {
           flushText();
-          nodes.push(wrap(delimiter.marks, parseInline(input.slice(from, close), depth + 1)));
+          nodes.push(wrap(delimiter.marks, parseInline(input.slice(from, close), depth + 1, options)));
           index = close + delimiter.token.length;
           continue;
         }
@@ -158,6 +221,16 @@ export function parseInline(input: string, depth = 0): InlineNode[] {
         index = from;
         continue;
       }
+    }
+
+    // Nhắc role đứng trước: tên role có thể chứa khoảng trắng/tiếng Việt nên
+    // không dùng regex username được. Tên dài khớp trước (`@Đội QA` thắng `@QA`).
+    const role = matchRoleMention(input, index, options.roleNames);
+    if (role !== null) {
+      flushText();
+      nodes.push({ type: "mention", value: role, role: true });
+      index += role.length;
+      continue;
     }
 
     const mention = MENTION_PATTERN.exec(rest);
@@ -194,7 +267,7 @@ export function parseInline(input: string, depth = 0): InlineNode[] {
 }
 
 /** Tách khối: fence code, quote, đoạn văn. */
-export function parseMessage(content: string): BlockNode[] {
+export function parseMessage(content: string, options: ParseOptions = {}): BlockNode[] {
   const blocks: BlockNode[] = [];
   const lines = content.replace(/\r\n?/g, "\n").split("\n");
   let paragraph: string[] = [];
@@ -202,7 +275,7 @@ export function parseMessage(content: string): BlockNode[] {
   const flushParagraph = () => {
     if (paragraph.length === 0) return;
     const value = paragraph.join("\n").trim();
-    if (value.length > 0) blocks.push({ type: "paragraph", children: parseInline(value) });
+    if (value.length > 0) blocks.push({ type: "paragraph", children: parseInline(value, 0, options) });
     paragraph = [];
   };
 
@@ -236,7 +309,7 @@ export function parseMessage(content: string): BlockNode[] {
       }
       index -= 1;
       const value = quoted.join("\n").trim();
-      if (value.length > 0) blocks.push({ type: "quote", children: parseInline(value) });
+      if (value.length > 0) blocks.push({ type: "quote", children: parseInline(value, 0, options) });
       continue;
     }
 

@@ -10,8 +10,14 @@
  * tay vẫn hiểu, và không có chỗ nào lệch giữa client với server.
  */
 
-/** Ký tự được phép trong username, khớp CHECK của bảng `users`. */
-const USERNAME_CHARS = /^[a-z0-9._-]*$/i;
+/**
+ * Ký tự được phép trong phần đang gõ sau `@`.
+ *
+ * Rộng hơn username (có thêm chữ Unicode) vì gợi ý còn liệt kê **role**, và tên
+ * role hay có dấu tiếng Việt (`@Đội QA`). Vẫn **không** cho khoảng trắng: gặp
+ * khoảng trắng là người dùng đã gõ xong từ cần nhắc, popup phải đóng.
+ */
+const MENTION_QUERY_CHARS = /^[\p{L}\p{N}._-]*$/u;
 
 export interface MentionTrigger {
   /** Vị trí dấu `@` trong chuỗi. */
@@ -36,7 +42,7 @@ export function activeMention(text: string, caret: number): MentionTrigger | nul
   const query = before.slice(at + 1);
   // Query quá dài thì không còn là username nữa (trần username là 32).
   if (query.length > 32) return null;
-  if (!USERNAME_CHARS.test(query)) return null;
+  if (!MENTION_QUERY_CHARS.test(query)) return null;
   if (at > 0 && !/\s/.test(text[at - 1] ?? "")) return null;
   return { start: at, query };
 }

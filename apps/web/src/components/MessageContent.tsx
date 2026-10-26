@@ -1,5 +1,5 @@
 import { Fragment, useMemo, type ReactNode } from "react";
-import { parseMessage, type InlineNode } from "../lib/markdown.js";
+import { parseMessage, type InlineNode, type ParseOptions } from "../lib/markdown.js";
 
 /**
  * Render nội dung tin nhắn thành React element.
@@ -39,7 +39,13 @@ function renderInline(nodes: InlineNode[], keyPrefix: string): ReactNode[] {
         return (
           <span
             key={key}
-            className="rounded bg-emerald-400/15 px-1 font-medium text-emerald-300"
+            // Nhắc role tô màu khác nhắc người: hai thứ khác nhau (một cái đánh
+            // thức một người, cái kia cả một nhóm) — cùng màu thì không phân biệt được.
+            className={
+              node.role === true
+                ? "rounded bg-indigo-400/20 px-1 font-medium text-indigo-300"
+                : "rounded bg-emerald-400/15 px-1 font-medium text-emerald-300"
+            }
           >
             {node.value}
           </span>
@@ -74,8 +80,23 @@ function renderInline(nodes: InlineNode[], keyPrefix: string): ReactNode[] {
   });
 }
 
-export function MessageContent({ content }: { content: string }) {
-  const blocks = useMemo(() => parseMessage(content), [content]);
+export function MessageContent({
+  content,
+  roleNames,
+}: {
+  content: string;
+  /**
+   * Tên các role của server để nhận ra `@Tên role` trong nội dung.
+   *
+   * Phải truyền cùng danh sách mà server dùng để ghi nhận mention, nếu không
+   * sẽ có tin được tô sáng mà không ai nhận thông báo (hoặc ngược lại).
+   */
+  roleNames?: string[];
+}) {
+  const blocks = useMemo(() => {
+    const options: ParseOptions = roleNames === undefined ? {} : { roleNames };
+    return parseMessage(content, options);
+  }, [content, roleNames]);
 
   if (blocks.length === 0) return null;
 

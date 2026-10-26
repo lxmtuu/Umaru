@@ -140,6 +140,16 @@ export function ChatScreen() {
   const channels = useMemo(() => state.channels[guildId ?? ""] ?? [], [state.channels, guildId]);
   const members = useMemo(() => state.members[guildId ?? ""] ?? [], [state.members, guildId]);
   const guildRoles = useMemo(() => state.roles[guildId ?? ""] ?? [], [state.roles, guildId]);
+  /**
+   * Tên role để tô sáng `@Tên role` trong tin nhắn.
+   *
+   * `@everyone` có mặt ở đây: tin cũ do người có quyền gửi vẫn phải hiện đúng
+   * là một lần nhắc, kể cả khi người đang xem không nhắc lại được.
+   */
+  const roleNames = useMemo(
+    () => guildRoles.map((role) => role.name).filter((name) => name.trim().length > 0),
+    [guildRoles],
+  );
   // Trong DM, tên người gửi có thể không thuộc guild nào của tôi → tra cả danh sách DM.
   const memberById = useMemo(() => {
     const map = new Map<string, GuildMemberSummary>();
@@ -490,7 +500,14 @@ export function ChatScreen() {
     const self = state.me?.id;
     const rows = activeDm !== null ? [activeDm.recipient, ...(activeDm.recipients ?? [])] : members;
     const seen = new Set<string>();
-    const out: Array<{ userId: string; username: string; displayName: string; avatarUrl: string | null }> = [];
+    const out: Array<{
+      userId: string;
+      username: string;
+      displayName: string;
+      avatarUrl: string | null;
+      role?: boolean;
+      color?: number;
+    }> = [];
     for (const row of rows) {
       if (row === null || row === undefined) continue;
       if (self !== undefined && row.userId === self) continue;
@@ -503,8 +520,23 @@ export function ChatScreen() {
         avatarUrl: row.avatarUrl ?? null,
       });
     }
+    // Role của server, xếp sau người: người dùng gõ `@` phần lớn là để gọi một
+    // người; role là lựa chọn chủ ý nên không được chiếm mấy dòng đầu.
+    if (activeDm === null) {
+      for (const role of [...guildRoles].sort((a, b) => b.position - a.position)) {
+        if (role.name.trim().length === 0) continue;
+        out.push({
+          userId: `role:${role.id}`,
+          username: role.name,
+          displayName: role.name,
+          avatarUrl: null,
+          role: true,
+          color: role.color,
+        });
+      }
+    }
     return out;
-  }, [activeDm, members, state.me?.id]);
+  }, [activeDm, members, guildRoles, state.me?.id]);
 
   const mentionTrigger = activeMention(draft, caret);
   /**
@@ -1832,12 +1864,12 @@ export function ChatScreen() {
                                     {authorName(message)}
                                   </span>
                                   <div className="min-w-0 flex-1 [&>p:first-of-type]:inline">
-                                    <MessageContent content={message.content} />
+                                    <MessageContent content={message.content} roleNames={roleNames} />
                                   </div>
                                 </div>
                               ) : (
                                 <div className="text-sm text-slate-200">
-                                  <MessageContent content={message.content} />
+                                  <MessageContent content={message.content} roleNames={roleNames} />
                                 </div>
                               ))}
                             <MessageAttachments attachments={message.attachments} />
@@ -2115,6 +2147,7 @@ export function ChatScreen() {
                   <MentionSuggest
                     id="mention-suggest"
                     label={t("mentionSuggest")}
+                    roleLabel={t("roleMentionLabel")}
                     items={mentionSuggestions}
                     activeIndex={activeMentionIndex}
                     onPick={pickMention}

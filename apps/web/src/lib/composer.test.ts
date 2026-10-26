@@ -94,3 +94,25 @@ describe("insertSnippet / applyMention", () => {
     expect(insertSnippet("abc", -5, 1, "X")).toEqual({ text: "Xbc", caret: 1 });
   });
 });
+
+describe("gợi ý role trong ô soạn", () => {
+  const candidates = [
+    { username: "minh", displayName: "Minh" },
+    { username: "Đội QA", displayName: "Đội QA", role: true },
+    { username: "QA", displayName: "QA", role: true },
+  ];
+
+  it("gõ `@` rồi chữ có dấu vẫn lọc được role", () => {
+    expect(activeMention("@Đội", 4)).toEqual({ start: 0, query: "Đội" });
+    const ranked = rankMentionCandidates(candidates, "Đội");
+    expect(ranked.map((item) => item.username)).toEqual(["Đội QA"]);
+  });
+
+  it("khoảng trắng kết thúc query — tên role có dấu cách được chèn trọn gói", () => {
+    // Người dùng gõ `@` rồi chọn từ popup: chèn `@Đội QA ` một lần, không gõ tay.
+    expect(activeMention("@Đội QA ", 8)).toBeNull();
+    const inserted = applyMention("@Đội", { start: 0, query: "Đội" }, 4, "Đội QA");
+    expect(inserted.text).toBe("@Đội QA ");
+    expect(inserted.caret).toBe(8);
+  });
+});

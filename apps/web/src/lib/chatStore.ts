@@ -19,6 +19,7 @@ import type {
   User,
 } from "@umaru/protocol";
 import { parsePermissions, serializePermissions, type ThreadSummary } from "@umaru/protocol";
+import { findRoleMentions } from "./markdown.js";
 import { ApiError, GatewayClient, type GatewayState } from "@umaru/sdk";
 import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
@@ -736,7 +737,7 @@ const notifiedAt = new Map<string, number>();
 
 function maybeNotify(message: Message, state: ChatState): void {
   const dm = state.dms.find((entry) => entry.channel.id === message.channelId);
-  const important = dm !== undefined || isMention(message.content, state.me?.username);
+  const important = dm !== undefined || mentionsMe(message.content, state, message.channelId as string);
   const verdict = decideNotify({
     authorId: message.authorId as string,
     meId: state.me?.id ?? null,
@@ -1318,7 +1319,7 @@ export const useChat = create<ChatState>()((set, get) => ({
             ...current.unread,
             [message.channelId]: (current.unread[message.channelId] ?? 0) + 1,
           };
-          if (isMention(message.content, current.me?.username)) {
+          if (mentionsMe(message.content, current, message.channelId as string)) {
             patch.mentions = {
               ...current.mentions,
               [message.channelId]: (current.mentions[message.channelId] ?? 0) + 1,
@@ -3157,6 +3158,42 @@ export const useChat = create<ChatState>()((set, get) => ({
  * Tin nhắn có @gọi tên mình không? Username chứa `a-z0-9._-` nên cắt theo
  * đúng bộ ký tự đó, giống server (services/api/src/mentions.ts).
  */
+/**
+ * Tin này có nhắc tới mình không — theo **username** hoặc theo **role** mình có.
+ *
+ * Nhắc role (`@Đội QA`) là ping cả nhóm, server đã ghi nhận cho từng người; nếu
+ * client chỉ kiểm username thì tin đó hiện badge xanh nhưng **không** báo "có
+ * nhắc bạn" và người dùng dễ bỏ qua đúng tin cần đọc.
+ */
+function mentionsMe(content: string, state: ChatState, channelId: string): boolean {
+  if (isMention(content, state.me?.username)) return true;
+  const names = myRoleNames(state, channelId);
+  return names.length > 0 && findRoleMentions(content, names).length > 0;
+}
+
+/**
+ * Tên các role **mình đang có** trong server chứa kênh.
+ *
+ * Thread không nằm trong `state.channels`, nên rơi về `activeGuildId` — thread
+ * luôn cùng server với kênh cha.
+ */
+function myRoleNames(state: ChatState, channelId: string): string[] {
+  const me = state.me?.id;
+  if (me === undefined) return [];
+  const channel = Object.values(state.channels)
+    .flat()
+    .find((entry) => entry.id === channelId);
+  const guildId = channel?.guildId ?? state.activeGuildId;
+  if (guildId === null) return [];
+  const member = (state.members[guildId] ?? []).find((entry) => entry.userId === me);
+  if (member === undefined) return [];
+  const owned = new Set(member.roleIds as string[]);
+  return (state.roles[guildId] ?? [])
+    .filter((role) => owned.has(role.id as string))
+    .map((role) => role.name)
+    .filter((name) => name.trim().length > 0);
+}
+
 function isMention(content: string, username: string | undefined): boolean {
   if (username === undefined || username.length === 0) return false;
   const target = username.toLowerCase();
