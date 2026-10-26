@@ -112,7 +112,29 @@ export interface Config {
   push: { publicKey: string; privateKey: string; subject: string } | null;
   /** Giãn cách tối thiểu giữa hai push cho cùng một người (giây), chống dội. */
   pushCooldownSec: number;
+  /**
+   * Nơi lưu tệp đính kèm + avatar. `null` = đĩa cục bộ (`UPLOADS_DIR`).
+   *
+   * Bật bằng `STORAGE_DRIVER=s3` + đủ `S3_BUCKET`, `S3_ENDPOINT`,
+   * `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`. Thiếu một biến là **ném lỗi
+   * lúc khởi động** thay vì lặng lẽ ghi ra đĩa: chạy nửa cấu hình thì tệp của
+   * người dùng nằm ở nơi không ai ngờ và biến mất ở lần deploy sau.
+   */
+  storage: S3Config | null;
   logger: boolean;
+}
+
+/** Cấu hình object storage tương thích S3 (Cloudflare R2, S3, MinIO…). */
+export interface S3Config {
+  bucket: string;
+  /** Gốc endpoint, vd `https://<account>.r2.cloudflarestorage.com`. */
+  endpoint: string;
+  /** `auto` cho R2; `us-east-1` cho S3/MinIO mặc định. */
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  /** Tiền tố chung cho mọi khoá, vd `umaru`. Rỗng = đặt ở gốc bucket. */
+  prefix: string;
 }
 
 /** `off`/`false`/`0`/`no` = tắt; bỏ trống = bật (mặc định an toàn cho tính năng báo cáo). */
@@ -170,6 +192,55 @@ function readPush(env: NodeJS.ProcessEnv): Config["push"] {
   if (!publicKey || !privateKey) return null;
   const subject = env.VAPID_SUBJECT?.trim() || "mailto:admin@example.com";
   return { publicKey, privateKey, subject };
+}
+
+/**
+ * Đọc cấu hình object storage.
+ *
+ * Ba trạng thái, cố ý **không** có trạng thái thứ tư:
+ *   - `STORAGE_DRIVER` trống/`local` → `null` (đĩa cục bộ).
+ *   - `STORAGE_DRIVER=s3` + đủ biến → cấu hình dùng được.
+ *   - `STORAGE_DRIVER=s3` thiếu biến → **ném lỗi**. Không đoán, không lùi về
+ *     đĩa cục bộ: lùi im lặng nghĩa là tệp đi vào volume của container và mất
+ *     sau lần deploy kế tiếp, còn người vận hành thì tưởng đã bật object storage.
+ *   - `STORAGE_DRIVER` lạ → ném lỗi (gõ sai `S3` hay `r2` là chuyện thường).
+ */
+function readStorage(env: NodeJS.ProcessEnv): S3Config | null {
+  const driver = (env.STORAGE_DRIVER ?? "local").trim().toLowerCase();
+  if (driver === "" || driver === "local" || driver === "disk") return null;
+  if (driver !== "s3") {
+    throw new Error(
+      `STORAGE_DRIVER="${env.STORAGE_DRIVER}" không hợp lệ — chỉ nhận "local" hoặc "s3"`,
+    );
+  }
+
+  const bucket = env.S3_BUCKET?.trim();
+  const endpoint = env.S3_ENDPOINT?.trim();
+  const accessKeyId = env.S3_ACCESS_KEY_ID?.trim();
+  const secretAccessKey = env.S3_SECRET_ACCESS_KEY?.trim();
+  const missing = [
+    bucket === undefined || bucket.length === 0 ? "S3_BUCKET" : null,
+    endpoint === undefined || endpoint.length === 0 ? "S3_ENDPOINT" : null,
+    accessKeyId === undefined || accessKeyId.length === 0 ? "S3_ACCESS_KEY_ID" : null,
+    secretAccessKey === undefined || secretAccessKey.length === 0
+      ? "S3_SECRET_ACCESS_KEY"
+      : null,
+  ].filter((name): name is string => name !== null);
+  if (missing.length > 0) {
+    throw new Error(
+      `STORAGE_DRIVER=s3 nhưng thiếu ${missing.join(", ")} — ` +
+        "đặt đủ biến hoặc bỏ STORAGE_DRIVER để dùng đĩa cục bộ",
+    );
+  }
+
+  return {
+    bucket: bucket ?? "",
+    endpoint: endpoint ?? "",
+    region: env.S3_REGION?.trim() || "auto",
+    accessKeyId: accessKeyId ?? "",
+    secretAccessKey: secretAccessKey ?? "",
+    prefix: (env.S3_PREFIX ?? "umaru").trim().replace(/^\/+|\/+$/g, ""),
+  };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -242,6 +313,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     livekitTokenTtlSec: readPositiveInt(env.LIVEKIT_TOKEN_TTL_SEC, 3600, 60, 86_400),
     push: readPush(env),
     pushCooldownSec: readPositiveInt(env.PUSH_COOLDOWN_SEC, 10, 0, 3600),
+    storage: readStorage(env),
     emailVerificationEcho: env.EMAIL_VERIFICATION_ECHO
       ? env.EMAIL_VERIFICATION_ECHO !== "0"
       : !isProduction,

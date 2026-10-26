@@ -23,12 +23,11 @@ import { syncMessageMentions } from "../mentions.js";
 import {
   isAllowedMime,
   MAX_FILES_PER_MESSAGE,
-  removeUpload,
   sanitizeFilename,
-  writeUpload,
+  type FileStore,
+  type Stores,
 } from "../uploads/storage.js";
 import { HEADER_BYTES, isImageMime, readImageSize } from "../uploads/imageSize.js";
-import { readUploadHeader } from "../uploads/storage.js";
 import type { PushSender } from "../push/sender.js";
 
 export interface MessageDeps {
@@ -38,6 +37,8 @@ export interface MessageDeps {
   publisher: EventPublisher;
   /** Thông báo đẩy khi người nhận đã đóng tab; bỏ trống = không đẩy. */
   push?: PushSender;
+  /** Kho tệp đính kèm/avatar (đĩa cục bộ hoặc S3/R2 — xem `createStores`). */
+  storage: Stores;
 }
 
 /** Trần số tin ghim mỗi kênh — giống Discord; chặn phình danh sách ghim. */
@@ -48,7 +49,7 @@ const typingTimestamps = new Map<string, number>();
 const TYPING_COOLDOWN_MS = 8_000;
 
 export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): void {
-  const { pool, config, publisher, push } = deps;
+  const { pool, config, publisher, push, storage } = deps;
   const guard = createAuthGuard(deps.tokens);
   const nextId = () => createSnowflake(config.workerId);
 
@@ -129,7 +130,7 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       }
 
       const payload = request.isMultipart()
-        ? await readMultipartMessage(request, config)
+        ? await readMultipartMessage(request, config, storage.attachments)
         : readJsonMessage(request.body);
 
       if (payload.content.trim().length === 0 && payload.files.length === 0) {
@@ -181,7 +182,7 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       } catch (error) {
         await client.query("ROLLBACK").catch(() => undefined);
         // Ghi DB lỗi thì xoá luôn file vừa ghi để không rác đĩa.
-        await Promise.all(payload.files.map((file) => removeUpload(config.uploadsDir, file.id)));
+        await Promise.all(payload.files.map((file) => storage.attachments.remove(file.id)));
         throw error;
       } finally {
         client.release();
@@ -292,9 +293,7 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         [message.id],
       );
       await pool.query("DELETE FROM messages WHERE id = $1", [message.id]);
-      await Promise.all(
-        attachments.rows.map((row) => removeUpload(config.uploadsDir, row.id)),
-      );
+      await Promise.all(attachments.rows.map((row) => storage.attachments.remove(row.id)));
       publisher.publishToChannel(message.channel_id, "MESSAGE_DELETE", {
         id: message.id as Snowflake,
         channelId: message.channel_id as Snowflake,
@@ -472,6 +471,7 @@ function readJsonMessage(body: unknown): MessagePayload {
 async function readMultipartMessage(
   request: FastifyRequest,
   config: Config,
+  store: FileStore,
 ): Promise<MessagePayload> {
   const payload: MessagePayload = { content: "", replyToId: null, files: [] };
 
@@ -493,9 +493,11 @@ async function readMultipartMessage(
         }
 
         const id = createSnowflake(config.workerId);
-        const size = await writeUpload(config.uploadsDir, id, part.file, config.maxUploadBytes);
+        const size = await store.write(id, part.file, config.maxUploadBytes, {
+          contentType: mimeType,
+        });
         if (part.file.truncated) {
-          await removeUpload(config.uploadsDir, id);
+          await store.remove(id);
           throw new HttpError(
             413,
             "PAYLOAD_TOO_LARGE",
@@ -506,7 +508,7 @@ async function readMultipartMessage(
         let width: number | null = null;
         let height: number | null = null;
         if (isImageMime(mimeType)) {
-          const header = await readUploadHeader(config.uploadsDir, id, HEADER_BYTES);
+          const header = await store.peek(id, HEADER_BYTES);
           const dimensions = readImageSize(header);
           width = dimensions?.width ?? null;
           height = dimensions?.height ?? null;
@@ -537,7 +539,7 @@ async function readMultipartMessage(
       }
     }
   } catch (error) {
-    await Promise.all(payload.files.map((file) => removeUpload(config.uploadsDir, file.id)));
+    await Promise.all(payload.files.map((file) => store.remove(file.id)));
     throw error;
   }
 

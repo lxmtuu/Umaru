@@ -71,12 +71,22 @@ services:
       LIVEKIT_URL: ${LIVEKIT_URL:-}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      # Nơi lưu tệp. Để `local` thì dùng volume `uploads`; đặt `s3` thì tệp nằm
+      # trong bucket (R2/S3/MinIO) và volume không còn được ghi tới.
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-auto}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      S3_PREFIX: ${S3_PREFIX:-umaru}
       # Thông báo đẩy. Thiếu VAPID_* là tắt hẳn (503).
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
     volumes:
-      # Tệp đính kèm + avatar nằm ở đây; mất volume là mất file của người dùng.
+      # Chỉ dùng khi STORAGE_DRIVER=local. Với `s3`, tệp nằm trong bucket nên
+      # volume này bỏ trống — giữ lại để đổi driver không phải sửa compose.
       - uploads:/data/uploads
     depends_on:
       db:

@@ -12,6 +12,7 @@ import type { TokenService } from "../auth/tokens.js";
 import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
+import type { Stores } from "../uploads/storage.js";
 import { isBlockedBetween } from "../blocks.js";
 import { checkCanStartDm } from "../friends/relations.js";
 import { HttpError, badRequest, conflict, forbidden, notFound, readId } from "../http.js";
@@ -28,6 +29,7 @@ export interface DmDeps {
   config: Config;
   tokens: TokenService;
   publisher: EventPublisher;
+  storage: Stores;
 }
 
 interface UserSummaryRow {
@@ -38,7 +40,7 @@ interface UserSummaryRow {
 }
 
 export function registerDmRoutes(app: FastifyInstance, deps: DmDeps): void {
-  const { pool, config, publisher } = deps;
+  const { pool, config, publisher, storage } = deps;
   const guard = createAuthGuard(deps.tokens);
 
   /** Danh sách cuộc trò chuyện riêng của tôi (DM 1-1 + group DM), mới nhất trước. */
@@ -296,8 +298,7 @@ export function registerDmRoutes(app: FastifyInstance, deps: DmDeps): void {
           [group.id],
         );
         await pool.query("DELETE FROM channels WHERE id = $1", [group.id]);
-        const { removeUpload } = await import("../uploads/storage.js");
-        await Promise.all(attachments.rows.map((row) => removeUpload(config.uploadsDir, row.id)));
+        await Promise.all(attachments.rows.map((row) => storage.attachments.remove(row.id)));
       } else {
         // Session của người bị mời ra phải thôi nhận message của kênh này ngay.
         // `refreshUserVisibility` tính lại từ DB nên đá luôn kênh khỏi

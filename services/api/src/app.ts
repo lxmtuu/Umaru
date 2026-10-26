@@ -26,7 +26,7 @@ import { registerSearchRoutes } from "./search/routes.js";
 import { registerUploadRoutes } from "./uploads/routes.js";
 import { registerUserRoutes } from "./users/routes.js";
 import { registerVoiceRoutes } from "./voice/routes.js";
-import { MAX_FILES_PER_MESSAGE } from "./uploads/storage.js";
+import { MAX_FILES_PER_MESSAGE, createStores } from "./uploads/storage.js";
 
 export interface AppDeps {
   config: Config;
@@ -77,6 +77,16 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   registerErrorHandler(app);
 
   const tokens = createTokenService(config.jwtSecret, config.accessTokenTtlSec);
+  // Kho tệp: đĩa cục bộ hoặc S3/R2 tuỳ `STORAGE_DRIVER`. Dựng **một lần** ở đây
+  // rồi truyền xuống route — dựng theo từng request là tạo client mới mỗi lần.
+  const storage = createStores(config);
+  if (config.logger) {
+    app.log.info(
+      storage.driver === "s3"
+        ? `Kho tệp: S3 (bucket ${config.storage?.bucket ?? "?"})`
+        : `Kho tệp: đĩa cục bộ (${config.uploadsDir})`,
+    );
+  }
   // Chưa có SMTP_URL → ghi mail ra log để dev tự bấm link (xem mail.ts).
   const mailer = deps.mailer ?? createMailer(config, (line) => app.log.info(line));
   const hub = new GatewayHub({ pool, config, tokens, log: (line) => app.log.warn(line) });
@@ -120,16 +130,16 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     async (api) => {
       registerAuthRoutes(api, { pool, tokens, config, mailer });
       registerGuildRoutes(api, { pool, config, tokens, publisher: hub });
-      registerMessageRoutes(api, { pool, config, tokens, publisher: hub, push: pushSender });
+      registerMessageRoutes(api, { pool, config, tokens, publisher: hub, push: pushSender, storage });
       registerOverwriteRoutes(api, { pool, config, tokens, publisher: hub });
-      registerDmRoutes(api, { pool, config, tokens, publisher: hub });
-      registerDmRequestRoutes(api, { pool, config, tokens, publisher: hub });
+      registerDmRoutes(api, { pool, config, tokens, publisher: hub, storage });
+      registerDmRequestRoutes(api, { pool, config, tokens, publisher: hub, storage });
       registerReadStateRoutes(api, { pool, tokens, publisher: hub });
       registerSearchRoutes(api, { pool, tokens });
       registerSafetyRoutes(api, { pool, tokens, config, reportNotifier, publisher: hub });
       registerAdminRoutes(api, { pool, tokens, config });
-      registerUploadRoutes(api, { pool, config, tokens });
-      registerUserRoutes(api, { pool, config, tokens, publisher: hub });
+      registerUploadRoutes(api, { pool, config, tokens , storage });
+      registerUserRoutes(api, { pool, config, tokens, publisher: hub, storage });
       registerVoiceRoutes(api, { pool, config, tokens, publisher: hub });
       registerPushRoutes(api, { pool, config, tokens, sender: pushSender });
       registerFriendRoutes(api, {

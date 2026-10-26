@@ -6,7 +6,7 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
 import { notFound } from "../http.js";
-import { removeUpload } from "../uploads/storage.js";
+import type { Stores } from "../uploads/storage.js";
 import { loadDmSummary } from "./group.js";
 
 export interface DmRequestDeps {
@@ -14,6 +14,7 @@ export interface DmRequestDeps {
   config: Config;
   tokens: TokenService;
   publisher: EventPublisher;
+  storage: Stores;
 }
 
 /**
@@ -130,7 +131,7 @@ export async function clearDmRequestsBetween(
 }
 
 export function registerDmRequestRoutes(app: FastifyInstance, deps: DmRequestDeps): void {
-  const { pool, config, publisher } = deps;
+  const { pool, config, publisher, storage } = deps;
   const guard = createAuthGuard(deps.tokens);
 
   /** Danh sách yêu cầu nhắn tin đang chờ mình duyệt (kèm preview tin mới nhất). */
@@ -199,7 +200,7 @@ export function registerDmRequestRoutes(app: FastifyInstance, deps: DmRequestDep
         [channelId],
       );
       await pool.query("DELETE FROM channels WHERE id = $1", [channelId]);
-      await Promise.all(attachments.rows.map((row) => removeUpload(config.uploadsDir, row.id)));
+      await Promise.all(attachments.rows.map((row) => storage.attachments.remove(row.id)));
 
       // Người nhận: bỏ kênh khỏi mọi session (kèm CHANNEL_DELETE) + bỏ yêu cầu.
       publisher.revokeChannelAccess(channelId, [userId]);

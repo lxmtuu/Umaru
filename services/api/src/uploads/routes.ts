@@ -6,12 +6,13 @@ import type { TokenService } from "../auth/tokens.js";
 import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import { notFound } from "../http.js";
-import { readUpload, uploadSize } from "./storage.js";
+import type { Stores } from "./storage.js";
 
 export interface UploadDeps {
   pool: Pool;
   config: Config;
   tokens: TokenService;
+  storage: Stores;
 }
 
 interface AttachmentLookupRow {
@@ -53,7 +54,7 @@ export function registerUploadRoutes(app: FastifyInstance, deps: UploadDeps): vo
       if (row === undefined) throw notFound("Tệp không tồn tại");
       await loadChannelContext(pool, userId as Snowflake, row.channel_id);
 
-      const size = await uploadSize(config.uploadsDir, attachmentId);
+      const size = await deps.storage.attachments.size(attachmentId);
       if (size === null) throw notFound("Tệp không tồn tại");
 
       // Tên file đã được lọc ký tự điều khiển lúc lưu; vẫn thêm dạng RFC 5987
@@ -67,7 +68,7 @@ export function registerUploadRoutes(app: FastifyInstance, deps: UploadDeps): vo
         .header("content-security-policy", "default-src 'none'; sandbox")
         .header("cache-control", "private, max-age=31536000, immutable")
         .header("content-disposition", `inline; filename*=UTF-8''${encoded}`)
-        .send(readUpload(config.uploadsDir, attachmentId));
+        .send(await deps.storage.attachments.read(attachmentId));
     },
   );
 }

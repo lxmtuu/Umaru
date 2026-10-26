@@ -1,7 +1,3 @@
-import { createWriteStream } from "node:fs";
-import { unlink } from "node:fs/promises";
-import path from "node:path";
-import { pipeline } from "node:stream/promises";
 import { createSnowflake, type UserProfile } from "@umaru/protocol";
 import type { FastifyInstance } from "fastify";
 import { createAuthGuard, requireUserId } from "../auth/guard.js";
@@ -13,19 +9,14 @@ import { HttpError, badRequest, notFound } from "../http.js";
 import { avatarUrl, isAvatarMime } from "../avatars.js";
 import { mapUser, type UserRow } from "../mappers.js";
 import { HEADER_BYTES, detectImageMime, readImageSize } from "../uploads/imageSize.js";
-import {
-  ensureUploadsDir,
-  readUpload,
-  readUploadHeader,
-  removeUpload,
-  uploadSize,
-} from "../uploads/storage.js";
+import type { Stores } from "../uploads/storage.js";
 
 export interface UserDeps {
   pool: Pool;
   config: Config;
   tokens: TokenService;
   publisher: EventPublisher;
+  storage: Stores;
 }
 
 interface AvatarRow {
@@ -43,7 +34,7 @@ interface AvatarRow {
  * tải bằng fetch + Bearer rồi dựng blob URL — cùng cơ chế với tệp đính kèm.
  */
 export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
-  const { pool, config, publisher } = deps;
+  const { pool, config, publisher, storage } = deps;
   const guard = createAuthGuard(deps.tokens);
 
   /**
@@ -83,7 +74,7 @@ export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
       // URL cũ sau khi đổi avatar (id khác) → 404, không trả ảnh mới dưới URL cũ.
       if (row === undefined || row.upload_id !== uploadId) throw notFound("Ảnh không tồn tại");
 
-      const size = await uploadSize(config.avatarsDir, uploadId);
+      const size = await storage.avatars.size(uploadId);
       if (size === null) throw notFound("Ảnh không tồn tại");
 
       return reply
@@ -94,7 +85,7 @@ export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
         .header("content-security-policy", "default-src 'none'; sandbox")
         .header("cache-control", "private, max-age=31536000, immutable")
         .header("etag", `"${uploadId}"`)
-        .send(readUpload(config.avatarsDir, uploadId));
+        .send(await storage.avatars.read(uploadId));
     },
   );
 
@@ -133,12 +124,16 @@ export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
         }
 
         uploadId = createSnowflake(config.workerId);
-        await ensureUploadsDir(config.avatarsDir);
-        size = await writeAvatar(part.file, uploadId);
+        size = await storage.avatars.write(uploadId, part.file, config.maxAvatarBytes, {
+          contentType: declared,
+          tooLargeMessage: `Ảnh đại diện vượt quá ${Math.floor(
+            config.maxAvatarBytes / (1024 * 1024),
+          )}MB`,
+        });
         // Trần của @fastify/multipart (`fileSize`) cắt stream trước bộ đếm byte
         // riêng — phải kiểm để không lưu ảnh bị cắt cụt.
         if (part.file.truncated) {
-          await removeUpload(config.avatarsDir, uploadId);
+          await storage.avatars.remove(uploadId);
           uploadId = null;
           throw new HttpError(
             413,
@@ -149,17 +144,17 @@ export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
         mimeType = declared;
       }
     } catch (error) {
-      if (uploadId !== null) await removeUpload(config.avatarsDir, uploadId);
+      if (uploadId !== null) await storage.avatars.remove(uploadId);
       throw error;
     }
 
     if (uploadId === null) throw badRequest('Thiếu file ảnh (trường "file")');
 
     // Ảnh thật hay chỉ là file đổi tên: kiểm magic bytes.
-    const header = await readUploadHeader(config.avatarsDir, uploadId, HEADER_BYTES);
+    const header = await storage.avatars.peek(uploadId, HEADER_BYTES);
     const dimensions = readImageSize(header);
     if (dimensions === null) {
-      await removeUpload(config.avatarsDir, uploadId);
+      await storage.avatars.remove(uploadId);
       throw new HttpError(
         415,
         "UNSUPPORTED_MEDIA_TYPE",
@@ -169,7 +164,7 @@ export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
     // Dùng MIME suy ra từ header, không tin MIME client khai (jpeg khai png vẫn đúng).
     const detected = detectImageMime(header);
     if (detected === null) {
-      await removeUpload(config.avatarsDir, uploadId);
+      await storage.avatars.remove(uploadId);
       throw new HttpError(
         415,
         "UNSUPPORTED_MEDIA_TYPE",
@@ -205,7 +200,7 @@ export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
 
     // Xoá file cũ SAU khi DB đã trỏ sang ảnh mới.
     if (oldUploadId !== null && oldUploadId !== uploadId) {
-      await removeUpload(config.avatarsDir, oldUploadId);
+      await storage.avatars.remove(oldUploadId);
     }
 
     await broadcastUser(user);
@@ -229,42 +224,10 @@ export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
     const user = updated.rows[0];
     if (user === undefined) throw notFound("Người dùng không tồn tại");
 
-    if (oldUploadId !== null) await removeUpload(config.avatarsDir, oldUploadId);
+    if (oldUploadId !== null) await storage.avatars.remove(oldUploadId);
     await broadcastUser(user);
     // Endpoint của chính mình: người gọi đang online (giống GET /users/@me).
     return reply.send(mapUser(user, "online"));
   });
 
-  /**
-   * Ghi ảnh avatar xuống đĩa, chặn cứng ở `maxAvatarBytes`.
-   * Viết tại đây (thay vì dùng `writeUpload`) để thông báo lỗi nói rõ "ảnh".
-   */
-  async function writeAvatar(source: NodeJS.ReadableStream, id: string): Promise<number> {
-    const target = path.join(config.avatarsDir, id);
-    let written = 0;
-    try {
-      await pipeline(
-        source,
-        async function* (chunks: AsyncIterable<Buffer | string>) {
-          for await (const chunk of chunks) {
-            const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-            written += buffer.length;
-            if (written > config.maxAvatarBytes) {
-              throw new HttpError(
-                413,
-                "PAYLOAD_TOO_LARGE",
-                `Ảnh đại diện vượt quá ${Math.floor(config.maxAvatarBytes / (1024 * 1024))}MB`,
-              );
-            }
-            yield buffer;
-          }
-        },
-        createWriteStream(target),
-      );
-    } catch (error) {
-      await unlink(target).catch(() => undefined);
-      throw error;
-    }
-    return written;
-  }
 }
