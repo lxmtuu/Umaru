@@ -187,6 +187,13 @@ interface ChatState {
    * ở đây chỉ nói "có tiếng hay không" và vì sao.
    */
   voiceAudio: VoiceAudioState | null;
+  /**
+   * `userId` của những người **đang nói** trong phòng mình đang ngồi, lấy từ SFU
+   * (`ActiveSpeakersChanged`). Cố tình **không** đi qua gateway: đổi vài lần mỗi
+   * giây, đẩy lên server chỉ tốn băng thông và làm đèn của người khác nhấp nháy
+   * theo độ trễ mạng. Rỗng khi không có âm thanh — trạng thái phòng vẫn đúng.
+   */
+  voiceSpeakers: string[];
   error: string | null;
   notice: string | null;
   /** Thông báo một dòng (xác thực email, gửi lại mail...) — tự tắt được. */
@@ -449,19 +456,26 @@ async function startVoiceAudio(
   set: (patch: Partial<ChatState>) => void,
 ): Promise<void> {
   await stopVoiceAudio();
-  set({ voiceAudio: beginVoiceAudio(channelId) });
+  set({ voiceAudio: beginVoiceAudio(channelId), voiceSpeakers: [] });
   try {
     const token = await authedApi.getVoiceToken(channelId);
     const session = new VoiceAudioSession();
     const mine = get().voiceStates.find((entry) => entry.userId === get().me?.id);
+    // Gán trước `connect` để callback "đang nói" của phiên này tự loại mình khi
+    // đã có phiên mới hơn (bấm đổi phòng liên tục) — nếu không, phiên cũ rò rỉ
+    // đèn của phòng cũ sang phòng mới.
+    voiceSession = session;
     await session.connect({
       url: token.url,
       token: token.token,
       canPublish: token.canPublish,
       selfMute: mine?.selfMute ?? false,
       selfDeaf: mine?.selfDeaf ?? false,
+      onSpeakers: (speakers) => {
+        if (voiceSession !== session) return;
+        set({ voiceSpeakers: speakers });
+      },
     });
-    voiceSession = session;
     set({
       voiceAudio: { channelId, status: "connected", errorKey: null, canPublish: token.canPublish },
     });
@@ -621,6 +635,7 @@ const initialState = {
   notificationPermission: notificationPermission(),
   voiceStates: [],
   voiceAudio: null,
+  voiceSpeakers: [],
   error: null,
   notice: null,
   banner: null,
@@ -1060,8 +1075,26 @@ export const useChat = create<ChatState>()((set, get) => ({
           ],
         };
       });
+      if (data.userId !== get().me?.id) return;
+      const audio = get().voiceAudio;
+      if (data.channelId === null) {
+        // Bị đưa ra khỏi phòng (mất `VIEW_CHANNEL`, hoặc tab khác rời): phải
+        // **ngắt mic ngay**. Giữ kết nối tới phòng mình không còn quyền ở là
+        // đúng loại lỗi mà lớp quyền phía server đang cố ngăn.
+        if (audio !== null) {
+          void stopVoiceAudio();
+          set({ voiceAudio: null, voiceSpeakers: [] });
+        }
+        return;
+      }
+      if (audio !== null && audio.channelId !== data.channelId) {
+        // Cùng một người đổi phòng ở tab khác: tab này đi theo, thay vì tiếp tục
+        // nói trong phòng cũ mà server đã coi là đã rời.
+        void startVoiceAudio(data.channelId, get, (patch) => set(patch));
+        return;
+      }
       // Mute/deafen của chính mình (kể cả thao tác từ tab khác) → áp vào media.
-      if (data.userId === get().me?.id) applyVoiceAudio(get());
+      applyVoiceAudio(get());
     });
 
     /**
@@ -2210,7 +2243,7 @@ export const useChat = create<ChatState>()((set, get) => ({
         // Cắt tiếng **trước** khi báo rời: rời chậm một nhịp cũng không được để
         // mic còn mở trong phòng mình đã rời.
         await stopVoiceAudio();
-        set({ voiceAudio: null });
+        set({ voiceAudio: null, voiceSpeakers: [] });
         await authedApi.leaveVoice(channelId);
       } else {
         await authedApi.joinVoice(channelId);

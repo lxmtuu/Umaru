@@ -1,8 +1,12 @@
 import { ApiError } from "@umaru/sdk";
 import { describe, expect, it } from "vitest";
 import {
+  MAX_SPEAKERS,
   beginVoiceAudio,
   classifyVoiceError,
+  isSpeaking,
+  normalizeSpeakers,
+  sameSpeakers,
   shouldPlayRemote,
   shouldPublishMicrophone,
   shouldRetryVoice,
@@ -95,5 +99,47 @@ describe("trạng thái audio", () => {
       errorKey: "voiceErrorMicDenied",
       canPublish: false,
     });
+  });
+});
+
+describe("normalizeSpeakers", () => {
+  it("bỏ rỗng, bỏ trùng, và sắp xếp để thứ tự âm lượng không gây re-render", () => {
+    // LiveKit xếp theo độ to nên hai lần phát cùng một tập người vẫn khác thứ tự.
+    expect(normalizeSpeakers(["b", "a", "b"])).toEqual(["a", "b"]);
+    expect(normalizeSpeakers(["a", "b"])).toEqual(normalizeSpeakers(["b", "a"]));
+  });
+
+  it("payload mạng không tin được: bỏ phần tử không phải chuỗi, chuỗi rỗng, khoảng trắng", () => {
+    expect(normalizeSpeakers([null, 42, {}, "", "   ", " u1 "])).toEqual(["u1"]);
+    expect(normalizeSpeakers([])).toEqual([]);
+  });
+
+  it("chặn trần số người nói để phòng đông không làm phình state", () => {
+    const many = Array.from({ length: MAX_SPEAKERS + 10 }, (_, i) => `u${i}`);
+    expect(normalizeSpeakers(many)).toHaveLength(MAX_SPEAKERS);
+  });
+});
+
+describe("sameSpeakers", () => {
+  it("khác độ dài hoặc khác phần tử là khác; cùng nội dung cùng thứ tự là như nhau", () => {
+    expect(sameSpeakers([], [])).toBe(true);
+    expect(sameSpeakers(["a", "b"], ["a", "b"])).toBe(true);
+    expect(sameSpeakers(["a"], ["a", "b"])).toBe(false);
+    expect(sameSpeakers(["a", "b"], ["b", "a"])).toBe(false);
+  });
+});
+
+describe("isSpeaking", () => {
+  it("chỉ đúng khi có id thật và id đó đang nói", () => {
+    expect(isSpeaking(["u1"], "u1")).toBe(true);
+    expect(isSpeaking(["u1"], "u2")).toBe(false);
+  });
+
+  it("`me` chưa tải xong (null/undefined/rỗng) thì không ai sáng đèn", () => {
+    // Nếu trả true ở đây thì mọi avatar cùng sáng trong lúc `READY` chưa tới.
+    expect(isSpeaking(["u1"], null)).toBe(false);
+    expect(isSpeaking(["u1"], undefined)).toBe(false);
+    expect(isSpeaking(["u1"], "")).toBe(false);
+    expect(isSpeaking([], "")).toBe(false);
   });
 });

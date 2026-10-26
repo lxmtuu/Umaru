@@ -26,6 +26,7 @@ import { GroupDmPanel } from "./GroupDmPanel.js";
 import { ProfileDialog } from "./ProfileDialog.js";
 import { RoleSettings } from "./RoleSettings.js";
 import { type DropTarget, resolveDrop } from "../lib/channelDrop.js";
+import { isSpeaking } from "../lib/voice.js";
 import { FriendsPanel } from "./FriendsPanel.js";
 import { formatTabTitle } from "../lib/notifications.js";
 import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
@@ -604,18 +605,31 @@ export function ChatScreen() {
                     />
                     {(voiceByChannel.get(channel.id) ?? []).length > 0 && (
                       <ul className="mb-1 ml-3 space-y-0.5 border-l border-white/10 pl-2">
-                        {(voiceByChannel.get(channel.id) ?? []).map((entry) => (
+                        {(voiceByChannel.get(channel.id) ?? []).map((entry) => {
+                          // Đèn "đang nói" đến từ SFU (xem `voiceSpeakers`), không
+                          // phải từ trạng thái mute của server — người mute vẫn
+                          // không bao giờ sáng đèn.
+                          const speaking = isSpeaking(state.voiceSpeakers, entry.userId);
+                          return (
                           <li
                             key={entry.userId}
                             className="flex items-center gap-1.5 text-[11px] text-slate-400"
+                            data-speaking={speaking ? "true" : undefined}
                           >
-                            <Avatar
-                              avatarUrl={memberById.get(entry.userId)?.avatarUrl ?? null}
-                              name={memberById.get(entry.userId)?.displayName ?? entry.userId}
-                              size="size-4"
-                              className="bg-slate-700 text-[8px]"
-                            />
-                            <span className="truncate">
+                            <span
+                              className={`rounded-full transition-shadow ${
+                                speaking ? "ring-2 ring-emerald-400" : "ring-2 ring-transparent"
+                              }`}
+                              title={speaking ? t("voiceSpeaking") : undefined}
+                            >
+                              <Avatar
+                                avatarUrl={memberById.get(entry.userId)?.avatarUrl ?? null}
+                                name={memberById.get(entry.userId)?.displayName ?? entry.userId}
+                                size="size-4"
+                                className="bg-slate-700 text-[8px]"
+                              />
+                            </span>
+                            <span className={`truncate ${speaking ? "text-emerald-200" : ""}`}>
                               {memberById.get(entry.userId)?.displayName ?? entry.userId}
                             </span>
                             {entry.selfMute && (
@@ -629,7 +643,8 @@ export function ChatScreen() {
                               </span>
                             )}
                           </li>
-                        ))}
+                          );
+                        })}
                       </ul>
                     )}
                     </div>
@@ -664,7 +679,11 @@ export function ChatScreen() {
                 aria-pressed={myVoice.selfMute}
                 title={myVoice.selfMute ? t("voiceUnmute") : t("voiceMute")}
                 aria-label={myVoice.selfMute ? t("voiceUnmute") : t("voiceMute")}
-                className={`rounded px-2 py-0.5 text-xs hover:bg-white/5 ${
+                className={`rounded px-2 py-0.5 text-xs ring-2 hover:bg-white/5 ${
+                  isSpeaking(state.voiceSpeakers, state.me?.id)
+                    ? "ring-emerald-400"
+                    : "ring-transparent"
+                } ${
                   myVoice.selfMute ? "bg-rose-400/20 text-rose-200" : "text-slate-300"
                 }`}
               >
@@ -700,7 +719,11 @@ export function ChatScreen() {
                       : t("voiceAudioNoSpeaker")
                   }
                 >
-                  {state.voiceAudio.canPublish ? `● ${t("voiceAudioLive")}` : `👂 ${t("voiceAudioNoSpeaker")}`}
+                  {state.voiceAudio.canPublish
+                    ? isSpeaking(state.voiceSpeakers, state.me?.id)
+                      ? `● ${t("voiceSpeaking")}`
+                      : `● ${t("voiceAudioLive")}`
+                    : `👂 ${t("voiceAudioNoSpeaker")}`}
                 </span>
               ) : (
                 <span className="ml-auto flex items-center gap-1 text-[10px] text-amber-300">

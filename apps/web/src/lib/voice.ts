@@ -94,6 +94,45 @@ export function shouldPlayRemote(selfDeaf: boolean): boolean {
   return !selfDeaf;
 }
 
+/** Trần số người "đang nói" giữ trong state — chặn phòng đông làm phình state. */
+export const MAX_SPEAKERS = 32;
+
+/**
+ * Chuẩn hoá danh sách identity của người đang nói.
+ *
+ * LiveKit phát `identity` chính là `userId` (server ký như vậy), nhưng payload
+ * đến từ mạng nên vẫn phải lọc: bỏ phần tử không phải chuỗi/rỗng, bỏ trùng, và
+ * **sắp xếp** — thứ tự trong `ActiveSpeakersChanged` đổi theo âm lượng, giữ
+ * nguyên thứ tự đó sẽ làm state và React re-render liên tục dù tập người nói
+ * không đổi.
+ */
+export function normalizeSpeakers(identities: readonly unknown[], max = MAX_SPEAKERS): string[] {
+  const unique = new Set<string>();
+  for (const identity of identities) {
+    if (typeof identity !== "string") continue;
+    const trimmed = identity.trim();
+    if (trimmed === "") continue;
+    unique.add(trimmed);
+    if (unique.size >= max) break;
+  }
+  return [...unique].sort();
+}
+
+/** Hai danh sách người nói có thực sự khác nhau không (để bỏ qua set thừa). */
+export function sameSpeakers(prev: readonly string[], next: readonly string[]): boolean {
+  if (prev.length !== next.length) return false;
+  return prev.every((id, index) => id === next[index]);
+}
+
+/**
+ * Người này có đang nói không. `userId` rỗng (chưa biết mình là ai) luôn là
+ * "không", tránh trường hợp mọi người cùng sáng đèn khi `me` chưa tải xong.
+ */
+export function isSpeaking(speakers: readonly string[], userId: string | null | undefined): boolean {
+  if (typeof userId !== "string" || userId === "") return false;
+  return speakers.includes(userId);
+}
+
 /**
  * Một phiên âm thanh sống. Chỉ tạo được sau khi đã `PUT /channels/:id/voice`
  * thành công và đã có token từ server.
@@ -111,9 +150,20 @@ export class VoiceAudioSession {
       { audioTrackPublications: Map<string, { track?: { attach: () => HTMLMediaElement | undefined } }> }
     >;
     on: (event: string, handler: (payload: unknown) => void) => void;
+    off?: (event: string, handler: (payload: unknown) => void) => void;
   } | null = null;
   /** Thẻ <audio> của người khác, giữ để deafen/mute toàn bộ một lần. */
   private readonly elements = new Set<HTMLMediaElement>();
+  /** Danh sách người đang nói gần nhất — cần để bỏ một người khi họ rời phòng. */
+  private speakers: string[] = [];
+  private speakersListener: ((userIds: string[]) => void) | null = null;
+
+  /** Chỉ báo khi danh sách **thực sự** đổi, tránh React re-render mỗi 100ms. */
+  private emitSpeakers(next: string[]): void {
+    if (sameSpeakers(this.speakers, next)) return;
+    this.speakers = next;
+    this.speakersListener?.(next);
+  }
 
   async connect(input: {
     url: string;
@@ -121,6 +171,12 @@ export class VoiceAudioSession {
     canPublish: boolean;
     selfMute: boolean;
     selfDeaf: boolean;
+    /**
+     * Ai đang nói. Việc này **không** đi qua gateway: nó đổi vài lần mỗi giây,
+     * đẩy lên server chỉ tốn băng thông và làm state của người khác nhấp nháy
+     * theo độ trễ mạng. SFU đã tính sẵn mức âm thanh, client chỉ hiển thị.
+     */
+    onSpeakers?: (userIds: string[]) => void;
   }): Promise<void> {
     const { Room, RoomEvent, Track } = await import("livekit-client");
     const room = new Room({ adaptiveStream: true, dynacast: true });
@@ -142,6 +198,22 @@ export class VoiceAudioSession {
         element.remove();
         this.elements.delete(element);
       }
+    });
+
+    // Ai đang nói: lấy từ SFU, không phải từ mic của mình — nên người deafen
+    // vẫn thấy đèn (họ không nghe được, nhưng vẫn cần biết ai đang nói).
+    this.speakersListener = input.onSpeakers ?? null;
+    room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      const list = Array.isArray(speakers) ? speakers : [];
+      this.emitSpeakers(
+        normalizeSpeakers(list.map((participant) => (participant as { identity?: unknown }).identity)),
+      );
+    });
+    // Người rời phòng phải tắt đèn ngay, kể cả khi SFU chậm phát lại danh sách.
+    room.on(RoomEvent.ParticipantDisconnected, (participant) => {
+      const identity = (participant as { identity?: unknown }).identity;
+      if (typeof identity !== "string") return;
+      this.emitSpeakers(this.speakers.filter((id) => id !== identity));
     });
 
     await room.connect(input.url, input.token);
@@ -171,6 +243,8 @@ export class VoiceAudioSession {
   async disconnect(): Promise<void> {
     for (const element of this.elements) element.remove();
     this.elements.clear();
+    this.emitSpeakers([]);
+    this.speakersListener = null;
     const room = this.room;
     this.room = null;
     if (room === null) return;
