@@ -7,6 +7,8 @@ import { ReportNotifier } from "./admin/notify.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import { registerTotpRoutes } from "./auth/totp-routes.js";
+import { registerPasswordRoutes } from "./auth/password-routes.js";
+import { registerOAuthRoutes } from "./oauth/routes.js";
 import { registerThreadRoutes } from "./threads/routes.js";
 import { createMailer, type Mailer } from "./mail.js";
 import { createTokenService, type TokenService } from "./auth/tokens.js";
@@ -65,6 +67,14 @@ export interface AppDeps {
    * 127.0.0.1 nên thường không cần). `undefined` = tải thật có hàng rào SSRF.
    */
   embedFetch?: (url: string, options: FetchHtmlOptions) => Promise<{ html: string; finalUrl: string }>;
+  /**
+   * Thay `fetch` khi test luồng OAuth (giả lập Google/GitHub).
+   *
+   * `undefined` = gọi mạng thật. Sandbox/CI không có credential nên toàn bộ test
+   * OAuth chạy qua đây — đường code được kiểm là **đường thật**, chỉ phần HTTP ra
+   * ngoài là giả.
+   */
+  oauthFetch?: typeof fetch;
   /** Bỏ qua để tự dựng theo `config.embeds`; `null` = tắt hẳn embed. */
   embeds?: LinkEmbedResolver | null;
 }
@@ -224,6 +234,8 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     async (api) => {
       registerAuthRoutes(api, { pool, tokens, config, mailer });
       registerTotpRoutes(api, { pool, config, tokens });
+      registerPasswordRoutes(api, { pool, config, tokens });
+      registerOAuthRoutes(api, { pool, config, tokens, ...(deps.oauthFetch === undefined ? {} : { fetch: deps.oauthFetch }) });
       registerGuildRoutes(api, { pool, config, tokens, publisher });
       registerMessageRoutes(api, {
         pool,

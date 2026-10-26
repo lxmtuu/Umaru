@@ -4,6 +4,7 @@ import { useT } from "../lib/i18n.js";
 import { pushHintKey } from "../lib/push.js";
 import { Avatar } from "./Avatar.js";
 import { TotpSettings } from "./TotpSettings.js";
+import { LinkedAccountsSettings } from "./LinkedAccountsSettings.js";
 import { PRESENCE_DOT } from "../lib/presence.js";
 import type { PresenceStatus } from "@umaru/protocol";
 
@@ -81,6 +82,9 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
         {/* Trạng thái hiển thị: đổi là gửi ngay qua gateway, không cần bấm Lưu. */}
         {/* Xác thực hai lớp: khối tự tải trạng thái, ẩn nếu API không trả. */}
         <TotpSettings />
+        {/* Tài khoản liên kết + mật khẩu: tài khoản OAuth-only phải đặt mật khẩu
+            trước khi gỡ provider cuối cùng. */}
+        <LinkedAccountsSettings />
 
         <fieldset className="mb-4 rounded-lg border border-white/10 p-2.5">
           <legend className="px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">

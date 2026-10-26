@@ -55,6 +55,8 @@ export interface TestContextOptions {
   sessionStore?: SessionStore;
   /** Bộ dựng embed dùng `config.embeds` thật (test embed bơm `fetch` giả). */
   embeds?: LinkEmbedResolver;
+  /** `fetch` giả cho luồng OAuth (Google/GitHub) — xem `oauth/routes.ts`. */
+  oauthFetch?: typeof fetch;
 }
 
 export async function createTestContext(
@@ -107,6 +109,7 @@ export async function createTestContext(
     bus: options.bus,
     sessionStore: options.sessionStore,
     embeds: options.embeds,
+    oauthFetch: options.oauthFetch,
   });
   const { app, hub, reportNotifier, pushSender } = built;
   return {

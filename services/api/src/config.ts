@@ -2,6 +2,11 @@ import path from "node:path";
 import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 
+export interface OAuthClientConfig {
+  clientId: string;
+  clientSecret: string;
+}
+
 export interface Config {
   port: number;
   host: string;
@@ -35,6 +40,22 @@ export interface Config {
    * chọn 1 giờ / 1 ngày / 3 ngày / 1 tuần). Quét lười khi mở danh sách thread.
    */
   threadArchiveMinutes: number;
+  /**
+   * Đăng nhập qua OAuth2 (`null` = provider chưa cấu hình ⇒ nút đó không hiện và
+   * route trả 404, không có trạng thái "nửa bật").
+   */
+  oauth: {
+    google: OAuthClientConfig | null;
+    github: OAuthClientConfig | null;
+    /**
+     * Gốc URL công khai của API **kèm** tiền tố `/api/v1` — provider sẽ gọi lại
+     * `${callbackBase}/auth/oauth/<provider>/callback`, và giá trị này phải khớp
+     * **từng ký tự** với thứ đã khai trong console của Google/GitHub.
+     */
+    callbackBase: string;
+    stateTtlSec: number;
+    loginCodeTtlSec: number;
+  };
   migrationsDir: string;
   /** Bỏ trống = suy ra từ request (tiện dev). Production nên đặt tường minh. */
   gatewayPublicUrl: string | null;
@@ -279,6 +300,22 @@ function readStorage(env: NodeJS.ProcessEnv): S3Config | null {
   };
 }
 
+/**
+ * Một provider OAuth chỉ bật khi có **đủ** client id và secret.
+ *
+ * Thiếu một nửa (hay gặp: đã dán id, chưa dán secret) thì tắt hẳn — nửa bật nghĩa
+ * là nút hiện ra rồi lỗi ở bước cuối, sau khi người dùng đã tick đồng ý điều khoản.
+ */
+function readOAuthClient(
+  clientId: string | undefined,
+  clientSecret: string | undefined,
+): OAuthClientConfig | null {
+  const id = (clientId ?? "").trim();
+  const secret = (clientSecret ?? "").trim();
+  if (id === "" || secret === "") return null;
+  return { clientId: id, clientSecret: secret };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const isProduction = env.NODE_ENV === "production";
   const jwtSecret = env.JWT_SECRET ?? DEV_JWT_SECRET;
@@ -322,6 +359,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         : (env.GATEWAY_NODE_ID ?? "").trim(),
     maxReplayEvents: Number(env.MAX_REPLAY_EVENTS ?? "2000"),
     threadArchiveMinutes: readPositiveInt(env.THREAD_ARCHIVE_MINUTES, 1440, 60, 20_160),
+    oauth: {
+      google: readOAuthClient(env.OAUTH_GOOGLE_CLIENT_ID, env.OAUTH_GOOGLE_CLIENT_SECRET),
+      github: readOAuthClient(env.OAUTH_GITHUB_CLIENT_ID, env.OAUTH_GITHUB_CLIENT_SECRET),
+      callbackBase: (env.PUBLIC_API_URL ?? "http://localhost:4000/api/v1").replace(/\/+$/, ""),
+      stateTtlSec: readPositiveInt(env.OAUTH_STATE_TTL_SEC, 600, 60, 3_600),
+      // Ngắn có chủ ý: mã này chỉ sống từ lúc redirect về tới khi SPA gọi
+      // `/auth/oauth/exchange` — thường dưới một giây.
+      loginCodeTtlSec: readPositiveInt(env.OAUTH_LOGIN_CODE_TTL_SEC, 120, 30, 900),
+    },
     migrationsDir:
       env.MIGRATIONS_DIR ?? fileURLToPath(new URL("../../../db/migrations/", import.meta.url)),
     gatewayPublicUrl: env.GATEWAY_PUBLIC_URL ?? null,

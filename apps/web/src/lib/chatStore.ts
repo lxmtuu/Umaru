@@ -20,14 +20,20 @@ import type {
 } from "@umaru/protocol";
 import { parsePermissions, serializePermissions, type ThreadSummary } from "@umaru/protocol";
 import { findRoleMentions } from "./markdown.js";
-import { ApiError, GatewayClient, type GatewayState } from "@umaru/sdk";
+import {
+  ApiError,
+  GatewayClient,
+  type GatewayState,
+  type OAuthProviderId,
+  type OAuthProviderSummary,
+} from "@umaru/sdk";
 import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
 import { clearAvatarCache, validateAvatar } from "./avatars.js";
 import { dmPeer, dmTitle } from "./dms.js";
 import { resolveGatewayUrl } from "./gatewayUrl.js";
 import { readChannelDeepLink } from "./deepLink.js";
-import { translate } from "./i18n.js";
+import { translate, type MessageKey } from "./i18n.js";
 import {
   PUSH_ENABLED_KEY,
   PushService,
@@ -65,6 +71,7 @@ import {
   type DisplaySettings,
 } from "./displayPrefs.js";
 import { readVerificationToken, withoutVerificationToken } from "./verification.js";
+import { readOAuthResult, withoutOAuthParams } from "./oauthQuery.js";
 import {
   api,
   authedApi,
@@ -257,9 +264,22 @@ interface ChatState {
    * `AuthScreen` dựa vào cờ này để đổi sang ô nhập mã thay vì báo lỗi.
    */
   totpRequired: boolean;
+  /** Provider OAuth đang bật trên server (rỗng = server chưa cấu hình cái nào). */
+  oauthProviders: OAuthProviderSummary[];
+  /**
+   * Mã đăng nhập OAuth đang chờ 2FA: callback đã trả mã, nhưng tài khoản có 2FA
+   * nên phải hỏi mã 6 số rồi mới đổi được. `null` = không có lượt nào đang chờ.
+   */
+  oauthPendingCode: string | null;
 
   boot(): Promise<void>;
   login(email: string, password: string, totpCode?: string): Promise<boolean>;
+  /** Nạp danh sách provider cho màn đăng nhập; lỗi mạng thì coi như không có. */
+  loadOAuthProviders(): Promise<void>;
+  /** Bắt đầu đăng nhập OAuth: xin URL đồng ý rồi để trình duyệt đi tiếp. */
+  startOAuth(provider: OAuthProviderId, acceptedTerms: boolean): Promise<void>;
+  /** Đổi mã một lần lấy token; `totpCode` cho tài khoản đã bật 2FA. */
+  exchangeOAuthCode(code: string, totpCode?: string): Promise<boolean>;
   register(input: {
     username: string;
     displayName: string;
@@ -881,6 +901,8 @@ const initialState = {
   banner: null,
   busy: false,
   totpRequired: false,
+  oauthProviders: [],
+  oauthPendingCode: null,
 };
 
 /** Trường hồ sơ có thể đổi; presence là ephemeral nên không nằm ở đây. */
@@ -1052,6 +1074,18 @@ export const useChat = create<ChatState>()((set, get) => ({
         window.history.replaceState({}, "", withoutVerificationToken(window.location.href));
         await get().verifyEmailToken(token);
       }
+
+      // Quay về từ trang đồng ý của provider. Cùng lý do: xoá mã khỏi URL trước
+      // khi làm bất cứ việc gì khác (mã dùng một lần, sống 2 phút).
+      const oauth = readOAuthResult(window.location.search);
+      if (oauth !== null) {
+        window.history.replaceState({}, "", withoutOAuthParams(window.location.href));
+        if (oauth.error !== null) {
+          set({ error: translate(oauthErrorKey(oauth.error)) });
+        } else if (oauth.code !== null && (await get().exchangeOAuthCode(oauth.code))) {
+          return;
+        }
+      }
     }
     if (getAccessToken() === null) {
       if (getRefreshToken() !== null && (await refreshSession())) {
@@ -1094,6 +1128,55 @@ export const useChat = create<ChatState>()((set, get) => ({
         return false;
       }
       set({ busy: false, error: describeError(error) });
+      return false;
+    }
+  },
+
+  async loadOAuthProviders() {
+    try {
+      const result = await api.oauthProviders();
+      set({ oauthProviders: result.providers });
+    } catch {
+      // Server cũ / chưa cấu hình / mất mạng: không có nút OAuth, form mật khẩu
+      // vẫn dùng được nên không đáng hiện lỗi.
+      set({ oauthProviders: [] });
+    }
+  },
+
+  async startOAuth(provider, acceptedTerms) {
+    set({ busy: true, error: null });
+    try {
+      const { url } = await api.oauthStart(provider, { acceptedTerms });
+      // Điều hướng cả trang sang provider; `busy` để nguyên vì tab sẽ rời đi.
+      window.location.assign(url);
+    } catch (error) {
+      set({ busy: false, error: describeError(error) });
+    }
+  },
+
+  async exchangeOAuthCode(code, totpCode) {
+    set({ busy: true, error: null });
+    try {
+      const trimmed = totpCode?.trim();
+      const result = await api.oauthExchange(
+        code,
+        trimmed === undefined || trimmed === "" ? {} : { code: trimmed },
+      );
+      storeTokens(result);
+      await get().startSession();
+      set({ busy: false, totpRequired: false, oauthPendingCode: null });
+      if (result.usedRecoveryCode === true) {
+        set({ banner: { kind: "success", text: translate("totpRecoveryUsed") } });
+      }
+      return true;
+    } catch (error) {
+      if (isTotpRequired(error)) {
+        // Mã đăng nhập **không** bị tiêu khi thiếu 2FA (server cố ý) nên giữ nó
+        // lại để người dùng nhập mã rồi gọi tiếp.
+        set({ busy: false, error: null, totpRequired: true, oauthPendingCode: code });
+        return false;
+      }
+      set({ busy: false, totpRequired: false, oauthPendingCode: null, error: describeError(error) });
       return false;
     }
   },
@@ -3272,6 +3355,26 @@ function upsertMessage(list: Message[], message: Message): Message[] {
 }
 
 /** Lỗi 401 `TOTP_REQUIRED` từ `/auth/login` — cần hỏi thêm mã 6 số. */
+/**
+ * `?oauth_error=` → khoá i18n. Server gắn mã lỗi ngắn (chữ thường); mã lạ thì
+ * dùng câu chung, **không** render giá trị từ URL ra màn hình.
+ */
+export function oauthErrorKey(reason: string): MessageKey {
+  switch (reason) {
+    case "access_denied":
+      return "oauthCancelled";
+    case "state":
+    case "code":
+      return "oauthExpired";
+    case "oauth_email_taken":
+      return "oauthEmailTaken";
+    case "account":
+      return "oauthAccountFailed";
+    default:
+      return "oauthProviderFailed";
+  }
+}
+
 export function isTotpRequired(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
   const body = error.body as { error?: { code?: string } } | undefined;

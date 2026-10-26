@@ -15,6 +15,7 @@ import type { Mailer } from "../mail.js";
 import { checkSecondFactor } from "./secondFactor.js";
 import { hashVerificationToken, issueVerificationToken } from "./verification.js";
 import { createAuthGuard, requireUserId } from "./guard.js";
+import { issueSessionTokens } from "./session.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { BucketStore, rateLimitedBody } from "../rateLimit.js";
 import type { TokenService } from "./tokens.js";
@@ -79,28 +80,13 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
     return null;
   }
 
-  const issueTokens = async (userId: string, request: FastifyRequest) => {
-    const accessToken = await tokens.signAccessToken(userId as Snowflake);
-    const refresh = tokens.createRefreshToken();
-    const expiresAt = new Date(Date.now() + config.refreshTokenTtlDays * 86_400_000);
-    await pool.query(
-      `INSERT INTO user_sessions (id, user_id, refresh_hash, user_agent, expires_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [
-        createSnowflake(config.workerId),
-        userId,
-        refresh.hash,
-        request.headers["user-agent"]?.slice(0, 255) ?? null,
-        expiresAt,
-      ],
+  /** Cấp token — dùng chung với luồng OAuth (xem `auth/session.ts`). */
+  const issueTokens = (userId: string, request: FastifyRequest) =>
+    issueSessionTokens(
+      { pool, config, tokens },
+      userId,
+      request.headers["user-agent"] ?? null,
     );
-    return {
-      accessToken,
-      refreshToken: refresh.token,
-      tokenType: "Bearer" as const,
-      expiresIn: tokens.accessTokenTtlSec,
-    };
-  };
 
   app.post("/auth/register", async (request, reply) => {
     const body = request.body as Record<string, unknown> | undefined;
@@ -171,7 +157,17 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
 
     const result = await pool.query<UserRow>("SELECT * FROM users WHERE email = $1", [email]);
     const user = result.rows[0];
-    const valid = user === undefined ? false : await verifyPassword(user.password_hash, password);
+    // Tài khoản tạo bằng OAuth không có mật khẩu: nói **đúng** lý do thay vì
+    // "sai mật khẩu" (người dùng sẽ đi đổi mật khẩu và không có gì để đổi).
+    if (user !== undefined && user.password_hash === null) {
+      throw new HttpError(
+        401,
+        "PASSWORD_NOT_SET",
+        "Tài khoản này đăng nhập bằng Google/GitHub — dùng nút đăng nhập tương ứng",
+      );
+    }
+    const valid =
+      user?.password_hash == null ? false : await verifyPassword(user.password_hash, password);
     if (user === undefined || !valid) {
       throw unauthorized("Email hoặc mật khẩu không đúng");
     }

@@ -14,7 +14,8 @@ export interface UserRow {
   username: string;
   display_name: string;
   email: string;
-  password_hash: string;
+  /** `null` với tài khoản tạo bằng OAuth (không có mật khẩu để băm). */
+  password_hash: string | null;
   avatar_url: string | null;
   email_verified_at: Date | null;
   terms_accepted_at: Date | null;

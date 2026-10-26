@@ -62,6 +62,32 @@ export interface AuthResult {
   usedRecoveryCode?: boolean;
 }
 
+/** Nhà cung cấp đăng nhập ngoài (OAuth2). */
+export type OAuthProviderId = "google" | "github";
+
+export interface OAuthProviderSummary {
+  id: OAuthProviderId;
+  label: string;
+}
+
+/** Tài khoản ngoài đang liên kết với user hiện tại. */
+export interface LinkedOAuthAccount {
+  provider: OAuthProviderId;
+  label: string;
+  linkedAt: string;
+}
+
+export interface OAuthAccountsResult {
+  accounts: LinkedOAuthAccount[];
+  /** Tài khoản đã có mật khẩu chưa — chưa có thì không gỡ được provider cuối. */
+  hasPassword: boolean;
+}
+
+/** Kết quả đổi mã đăng nhập OAuth — như `AuthResult`, kèm provider vừa dùng. */
+export interface OAuthExchangeResult extends AuthResult {
+  provider: OAuthProviderId | null;
+}
+
 /** Trạng thái xác thực hai lớp của tài khoản đang đăng nhập. */
 export interface SecurityStatus {
   totpEnabled: boolean;
@@ -183,6 +209,74 @@ export class UmaruApi {
         ...(totp.code === undefined ? {} : { totpCode: totp.code }),
         ...(totp.recoveryCode === undefined ? {} : { recoveryCode: totp.recoveryCode }),
       }),
+    });
+  }
+
+/**
+   * Provider đang bật trên server (thiếu id hoặc secret thì không xuất hiện).
+   * SPA dùng để biết vẽ nút nào — gọi được cả khi chưa đăng nhập.
+   */
+  oauthProviders(): Promise<{ providers: OAuthProviderSummary[] }> {
+    return this.request<{ providers: OAuthProviderSummary[] }>(
+      `${API_PREFIX}/auth/oauth/providers`,
+    );
+  }
+
+  /**
+   * Lấy URL đồng ý của provider. `acceptedTerms` phải là `true` khi đăng ký tài
+   * khoản mới qua OAuth — server giữ cờ này qua redirect và kiểm lại.
+   */
+  oauthStart(
+    provider: OAuthProviderId,
+    options: { acceptedTerms?: boolean; redirect?: string } = {},
+  ): Promise<{ url: string }> {
+    const params = new URLSearchParams();
+    if (options.acceptedTerms === true) params.set("acceptedTerms", "1");
+    if (options.redirect !== undefined) params.set("redirect", options.redirect);
+    const query = params.toString();
+    return this.request<{ url: string }>(
+      `${API_PREFIX}/auth/oauth/${provider}/start${query === "" ? "" : `?${query}`}`,
+    );
+  }
+
+  /** Đổi mã một lần (từ `?oauth_code=`) lấy token — 2FA được kiểm ở đây. */
+  oauthExchange(
+    code: string,
+    totp: { code?: string; recoveryCode?: string } = {},
+  ): Promise<OAuthExchangeResult> {
+    return this.request<OAuthExchangeResult>(`${API_PREFIX}/auth/oauth/exchange`, {
+      method: "POST",
+      body: JSON.stringify({
+        code,
+        ...(totp.code === undefined ? {} : { totpCode: totp.code }),
+        ...(totp.recoveryCode === undefined ? {} : { recoveryCode: totp.recoveryCode }),
+      }),
+    });
+  }
+
+  /** Các provider đang liên kết với tài khoản hiện tại. */
+  oauthAccounts(): Promise<OAuthAccountsResult> {
+    return this.request<OAuthAccountsResult>(`${API_PREFIX}/users/@me/oauth`);
+  }
+
+  /**
+   * Đặt/đổi mật khẩu. Tài khoản OAuth-only (`password_hash = NULL`) không cần
+   * `currentPassword`; tài khoản đã có mật khẩu thì **bắt buộc**.
+   */
+  setPassword(password: string, currentPassword?: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/password`, {
+      method: "POST",
+      body: JSON.stringify({
+        password,
+        ...(currentPassword === undefined ? {} : { currentPassword }),
+      }),
+    });
+  }
+
+  /** Gỡ liên kết provider khỏi chính mình (server chặn gỡ cách đăng nhập cuối). */
+  unlinkOAuth(provider: OAuthProviderId): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/oauth/${provider}`, {
+      method: "DELETE",
     });
   }
 

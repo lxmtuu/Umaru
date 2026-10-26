@@ -612,4 +612,52 @@ describe("UmaruApi", () => {
     expect(calls[1]!.init.method).toBe("DELETE");
     expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ endpoint: "https://push.test/1" });
   });
+
+  it("OAuth: start dựng query an toàn, exchange gửi mã + 2FA, unlink dùng DELETE", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = new UmaruApi({
+      baseUrl: "",
+      getToken: () => "tok",
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        const body = String(url).endsWith("/exchange")
+          ? { user: { id: "1" }, accessToken: "a", refreshToken: "r", provider: "github" }
+          : { url: "https://accounts.google.com/o/oauth2/v2/auth?x=1" };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    });
+
+    await client.oauthProviders();
+    expect(calls[0]!.url).toBe("/api/v1/auth/oauth/providers");
+    expect(calls[0]!.init.method ?? "GET").toBe("GET");
+
+    const started = await client.oauthStart("google", {
+      acceptedTerms: true,
+      redirect: "/channels/42",
+    });
+    expect(calls[1]!.url).toBe(
+      "/api/v1/auth/oauth/google/start?acceptedTerms=1&redirect=%2Fchannels%2F42",
+    );
+    expect(started.url).toContain("accounts.google.com");
+
+    // Không có 2FA: body chỉ có `code`, không gửi `totpCode` rỗng.
+    await client.oauthExchange("ma-mot-lan-ma-mot-lan");
+    expect(calls[2]!.url).toBe("/api/v1/auth/oauth/exchange");
+    expect(calls[2]!.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[2]!.init.body))).toEqual({ code: "ma-mot-lan-ma-mot-lan" });
+
+    const result = await client.oauthExchange("ma-mot-lan-ma-mot-lan", { code: "123456" });
+    expect(JSON.parse(String(calls[3]!.init.body))).toEqual({
+      code: "ma-mot-lan-ma-mot-lan",
+      totpCode: "123456",
+    });
+    expect(result.provider).toBe("github");
+
+    await client.unlinkOAuth("google");
+    expect(calls[4]!.url).toBe("/api/v1/users/@me/oauth/google");
+    expect(calls[4]!.init.method).toBe("DELETE");
+  });
 });

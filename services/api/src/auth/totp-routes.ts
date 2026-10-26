@@ -1,7 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
-import { badRequest, conflict, notFound, readString, tooManyRequests, unauthorized } from "../http.js";
+import {
+  HttpError,
+  badRequest,
+  conflict,
+  notFound,
+  readString,
+  tooManyRequests,
+  unauthorized,
+} from "../http.js";
 import { BucketStore, rateLimitedBody } from "../rateLimit.js";
 import { requireUserId, createAuthGuard } from "./guard.js";
 import { verifyPassword } from "./password.js";
@@ -143,12 +151,21 @@ export function registerTotpRoutes(app: FastifyInstance, deps: TotpRouteDeps): v
     const body = request.body as Record<string, unknown> | undefined;
     const password = readString(body, "password", { min: 1, max: 200, trim: false });
 
-    const user = await pool.query<{ password_hash: string }>(
+    const user = await pool.query<{ password_hash: string | null }>(
       "SELECT password_hash FROM users WHERE id = $1",
       [userId],
     );
     const hash = user.rows[0]?.password_hash;
     if (hash === undefined) throw notFound("Tài khoản không tồn tại");
+    // Tài khoản OAuth không có mật khẩu: không thể "xác nhận bằng mật khẩu", nên
+    // nói rõ thay vì báo sai mật khẩu (không có mật khẩu nào để gõ đúng).
+    if (hash === null) {
+      throw new HttpError(
+        400,
+        "PASSWORD_NOT_SET",
+        "Tài khoản này đăng nhập bằng Google/GitHub nên không có mật khẩu để xác nhận",
+      );
+    }
     if (!(await verifyPassword(hash, password))) throw unauthorized("Mật khẩu không đúng");
 
     await pool.query("DELETE FROM user_totp WHERE user_id = $1", [userId]);
@@ -171,12 +188,19 @@ export function registerTotpRoutes(app: FastifyInstance, deps: TotpRouteDeps): v
       if (!status.totpEnabled) throw badRequest("Xác thực hai lớp chưa bật");
       const body = request.body as Record<string, unknown> | undefined;
       const password = readString(body, "password", { min: 1, max: 200, trim: false });
-      const user = await pool.query<{ password_hash: string }>(
+      const user = await pool.query<{ password_hash: string | null }>(
         "SELECT password_hash FROM users WHERE id = $1",
         [userId],
       );
       const hash = user.rows[0]?.password_hash;
       if (hash === undefined) throw notFound("Tài khoản không tồn tại");
+      if (hash === null) {
+        throw new HttpError(
+          400,
+          "PASSWORD_NOT_SET",
+          "Tài khoản này đăng nhập bằng Google/GitHub nên không có mật khẩu để xác nhận",
+        );
+      }
       if (!(await verifyPassword(hash, password))) throw unauthorized("Mật khẩu không đúng");
 
       const codes = generateRecoveryCodes();
