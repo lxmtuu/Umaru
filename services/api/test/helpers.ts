@@ -9,6 +9,7 @@ import { loadConfig, type Config } from "../src/config.js";
 import { createPool, migrate, truncateAll, type Pool } from "../src/db.js";
 import { MemoryMailer } from "../src/mail.js";
 import type { ReportNotifier } from "../src/admin/notify.js";
+import type { PushSender, PushTransport } from "../src/push/sender.js";
 
 export const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? "postgres://umaru:umaru@127.0.0.1:55432/umaru_test";
@@ -24,11 +25,14 @@ export interface TestContext {
   mailer: MemoryMailer;
   /** Mail báo admin khi có báo cáo mới — `await whenIdle()` để chờ gửi xong. */
   reportNotifier: ReportNotifier;
+  /** Thông báo đẩy — `await whenIdle()` để chờ các lần gửi bất đồng bộ xong. */
+  pushSender: PushSender;
   close(): Promise<void>;
 }
 
 export async function createTestContext(
   envOverrides: NodeJS.ProcessEnv = {},
+  options: { pushTransport?: PushTransport | null } = {},
 ): Promise<TestContext> {
   const uploadsDir = await mkdtemp(path.join(tmpdir(), "umaru-uploads-"));
   const config: Config = {
@@ -57,7 +61,12 @@ export async function createTestContext(
   await migrate(pool, config.migrationsDir);
   await truncateAll(pool);
   const mailer = new MemoryMailer();
-  const { app, hub, reportNotifier } = await buildApp({ config, pool, mailer });
+  const { app, hub, reportNotifier, pushSender } = await buildApp({
+    config,
+    pool,
+    mailer,
+    pushTransport: options.pushTransport,
+  });
   return {
     app,
     hub,
@@ -66,6 +75,7 @@ export async function createTestContext(
     uploadsDir,
     mailer,
     reportNotifier,
+    pushSender,
     async close() {
       await app.close();
       await pool.end();

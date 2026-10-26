@@ -29,12 +29,15 @@ import {
 } from "../uploads/storage.js";
 import { HEADER_BYTES, isImageMime, readImageSize } from "../uploads/imageSize.js";
 import { readUploadHeader } from "../uploads/storage.js";
+import type { PushSender } from "../push/sender.js";
 
 export interface MessageDeps {
   pool: Pool;
   config: Config;
   tokens: TokenService;
   publisher: EventPublisher;
+  /** Thông báo đẩy khi người nhận đã đóng tab; bỏ trống = không đẩy. */
+  push?: PushSender;
 }
 
 /** Trần số tin ghim mỗi kênh — giống Discord; chặn phình danh sách ghim. */
@@ -45,7 +48,7 @@ const typingTimestamps = new Map<string, number>();
 const TYPING_COOLDOWN_MS = 8_000;
 
 export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): void {
-  const { pool, config, publisher } = deps;
+  const { pool, config, publisher, push } = deps;
   const guard = createAuthGuard(deps.tokens);
   const nextId = () => createSnowflake(config.workerId);
 
@@ -98,7 +101,12 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
     async (request, reply) => {
       const userId = requireUserId(request);
       const { channelId } = request.params;
-      await loadChannelContext(pool, userId as Snowflake, channelId, Permission.SEND_MESSAGES);
+      const context = await loadChannelContext(
+        pool,
+        userId as Snowflake,
+        channelId,
+        Permission.SEND_MESSAGES,
+      );
       if (await isDmBlocked(pool, channelId, userId)) {
         throw forbidden("Không thể nhắn tin với người này");
       }
@@ -194,6 +202,31 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       await syncMessageMentions(pool, message.id as string, channelId, payload.content);
 
       publisher.publishToChannel(channelId, "MESSAGE_CREATE", message);
+
+      /**
+       * Thông báo đẩy cho người **đã đóng tab**. Chỉ tra tên tác giả khi push
+       * được cấu hình — chưa cấu hình thì đường gửi tin không thêm truy vấn nào.
+       *
+       * Cố ý không `await`: một dịch vụ push chậm không được làm chậm việc gửi
+       * tin, và `notifyMessage` đã tự nuốt lỗi.
+       */
+      if (push?.enabled === true) {
+        const author = await pool.query<{ display_name: string }>(
+          "SELECT display_name FROM users WHERE id = $1",
+          [userId],
+        );
+        void push.notifyMessage({
+          messageId: message.id as string,
+          channelId,
+          authorId: userId,
+          authorName: author.rows[0]?.display_name ?? "Ai đó",
+          // DM không có tên kênh có nghĩa với người nhận — tiêu đề chỉ là tên người gửi.
+          channelLabel: context.channel.guild_id === null ? null : context.channel.name,
+          content: payload.content,
+          attachmentCount: payload.files.length,
+          isDm: context.channel.guild_id === null,
+        });
+      }
       return reply.code(201).send(message);
     },
   );

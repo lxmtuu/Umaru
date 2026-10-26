@@ -18,6 +18,8 @@ import { registerGuildRoutes } from "./guilds/routes.js";
 import { badRequest, registerErrorHandler } from "./http.js";
 import { registerMessageRoutes } from "./messages/routes.js";
 import { registerOverwriteRoutes } from "./overwrites/routes.js";
+import { registerPushRoutes } from "./push/routes.js";
+import { PushSender } from "./push/sender.js";
 import { registerReadStateRoutes } from "./read-states/routes.js";
 import { registerSafetyRoutes } from "./safety/routes.js";
 import { registerSearchRoutes } from "./search/routes.js";
@@ -31,6 +33,11 @@ export interface AppDeps {
   pool: Pool;
   /** Thay bằng hộp thư trong bộ nhớ khi test; mặc định suy ra từ `config.smtpUrl`. */
   mailer?: Mailer;
+  /**
+   * Thay bằng transport giả khi test thông báo đẩy. `undefined` = dùng web-push
+   * thật (chỉ hoạt động khi đã cấu hình VAPID), `null` = tắt push.
+   */
+  pushTransport?: import("./push/sender.js").PushTransport | null;
 }
 
 export interface BuiltApp {
@@ -40,6 +47,8 @@ export interface BuiltApp {
   mailer: Mailer;
   /** Mail báo admin khi có báo cáo mới (test chờ `whenIdle()`). */
   reportNotifier: ReportNotifier;
+  /** Thông báo đẩy khi tab đóng (test chờ `whenIdle()`, hoặc bơm transport giả). */
+  pushSender: PushSender;
 }
 
 export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
@@ -68,6 +77,15 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   // Chưa có SMTP_URL → ghi mail ra log để dev tự bấm link (xem mail.ts).
   const mailer = deps.mailer ?? createMailer(config, (line) => app.log.info(line));
   const hub = new GatewayHub({ pool, config, tokens, log: (line) => app.log.warn(line) });
+  // Push: chỉ gửi khi đã cấu hình VAPID; `transport` bơm được từ `deps` để test
+  // kiểm nội dung gửi đi mà không cần mạng ra dịch vụ push.
+  const pushSender = new PushSender({
+    pool,
+    config,
+    hub,
+    transport: deps.pushTransport,
+    write: (line) => app.log.warn(line),
+  });
   const reportNotifier = new ReportNotifier({
     pool,
     config,
@@ -99,7 +117,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     async (api) => {
       registerAuthRoutes(api, { pool, tokens, config, mailer });
       registerGuildRoutes(api, { pool, config, tokens, publisher: hub });
-      registerMessageRoutes(api, { pool, config, tokens, publisher: hub });
+      registerMessageRoutes(api, { pool, config, tokens, publisher: hub, push: pushSender });
       registerOverwriteRoutes(api, { pool, config, tokens, publisher: hub });
       registerDmRoutes(api, { pool, config, tokens, publisher: hub });
       registerDmRequestRoutes(api, { pool, config, tokens, publisher: hub });
@@ -110,6 +128,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerUploadRoutes(api, { pool, config, tokens });
       registerUserRoutes(api, { pool, config, tokens, publisher: hub });
       registerVoiceRoutes(api, { pool, config, tokens, publisher: hub });
+      registerPushRoutes(api, { pool, config, tokens, sender: pushSender });
       registerFriendRoutes(api, { pool, tokens, publisher: hub });
       registerGatewayRoutes(api, hub, tokens, config);
     },
@@ -127,5 +146,5 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     );
   }
 
-  return { app, hub, tokens, mailer, reportNotifier };
+  return { app, hub, tokens, mailer, reportNotifier, pushSender };
 }

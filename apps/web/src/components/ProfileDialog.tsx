@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { useChat } from "../lib/chatStore.js";
 import { useT } from "../lib/i18n.js";
+import { pushHintKey } from "../lib/push.js";
 import { Avatar } from "./Avatar.js";
 
 /**
@@ -23,6 +24,12 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
   const permission = useChat((state) => state.notificationPermission);
   const setDesktop = useChat((state) => state.setDesktopNotifications);
   const setTabTitle = useChat((state) => state.setTabTitleNotifications);
+  const pushStatus = useChat((state) => state.pushStatus);
+  const pushBusy = useChat((state) => state.pushBusy);
+  const pushNotice = useChat((state) => state.pushNotice);
+  const enablePush = useChat((state) => state.enablePush);
+  const disablePush = useChat((state) => state.disablePush);
+  const testPush = useChat((state) => state.testPush);
 
   const handleFile = async (file: File | undefined): Promise<void> => {
     if (file === undefined) return;
@@ -108,6 +115,45 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
             />
             <span className="flex-1">{t("notificationsTabTitle")}</span>
           </label>
+        </div>
+
+        {/*
+          Thông báo đẩy khi đã đóng tab — cần service worker + VAPID ở server.
+          Hộp kiểm **không** bị vô hiệu hoá chỉ vì trình duyệt chặn: người dùng
+          vẫn cần thấy lý do và đường sửa (bấm vào sẽ hiện gợi ý tương ứng).
+        */}
+        <div className="mb-4 rounded-lg border border-white/10 p-2.5">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            {t("pushTitle")}
+          </p>
+          <label className="flex items-start gap-2 text-xs text-slate-200">
+            <input
+              type="checkbox"
+              checked={pushStatus === "on"}
+              disabled={pushBusy || pushStatus === "unsupported" || pushStatus === "unavailable"}
+              onChange={(event) => void (event.target.checked ? enablePush() : disablePush())}
+              className="mt-0.5 accent-emerald-400"
+            />
+            <span className="flex-1">
+              {pushStatus === "on" ? t("pushDisable") : t("pushEnable")}
+              <span className="block text-[11px] text-slate-500">
+                {t(pushHintKey(pushStatus))}
+              </span>
+            </span>
+          </label>
+          {pushStatus === "on" && (
+            <button
+              type="button"
+              disabled={pushBusy}
+              onClick={() => void testPush()}
+              className="mt-2 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-slate-300 hover:bg-white/5 disabled:opacity-50"
+            >
+              {pushBusy ? t("pushBusy") : t("pushSendTest")}
+            </button>
+          )}
+          {pushNotice !== null && (
+            <p className="mt-1.5 text-[11px] text-slate-400">{pushNotice}</p>
+          )}
         </div>
 
         <div className="flex flex-col gap-2">

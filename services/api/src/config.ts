@@ -82,6 +82,14 @@ export interface Config {
   livekit: { url: string; apiKey: string; apiSecret: string } | null;
   /** Hạn của token phòng thoại (giây) — client xin token mới trước khi hết hạn. */
   livekitTokenTtlSec: number;
+  /**
+   * Web Push (VAPID) — thông báo khi **đã đóng tab**. `null` = chưa cấu hình:
+   * `POST /push/subscriptions` trả 503 và không có push nào được gửi. Client
+   * không được coi đó là lỗi của mình (khác hẳn "quyền thông báo bị chặn").
+   */
+  push: { publicKey: string; privateKey: string; subject: string } | null;
+  /** Giãn cách tối thiểu giữa hai push cho cùng một người (giây), chống dội. */
+  pushCooldownSec: number;
   logger: boolean;
 }
 
@@ -127,6 +135,19 @@ function readLiveKit(env: NodeJS.ProcessEnv): Config["livekit"] {
   const apiSecret = env.LIVEKIT_API_SECRET?.trim();
   if (!url || !apiKey || !apiSecret) return null;
   return { url, apiKey, apiSecret };
+}
+
+/**
+ * Ba biến VAPID. Khoá công khai/riêng tư phải có **đủ cả hai**; subject lấy mặc
+ * định nhưng production nên đặt thành `mailto:` của mình — dịch vụ push dùng nó
+ * để liên hệ khi bạn gửi rác.
+ */
+function readPush(env: NodeJS.ProcessEnv): Config["push"] {
+  const publicKey = env.VAPID_PUBLIC_KEY?.trim();
+  const privateKey = env.VAPID_PRIVATE_KEY?.trim();
+  if (!publicKey || !privateKey) return null;
+  const subject = env.VAPID_SUBJECT?.trim() || "mailto:admin@example.com";
+  return { publicKey, privateKey, subject };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -193,6 +214,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     rateLimitVoiceMutations: readPositiveInt(env.RATE_LIMIT_VOICE_MUTATIONS, 10, 1, 1_000),
     livekit: readLiveKit(env),
     livekitTokenTtlSec: readPositiveInt(env.LIVEKIT_TOKEN_TTL_SEC, 3600, 60, 86_400),
+    push: readPush(env),
+    pushCooldownSec: readPositiveInt(env.PUSH_COOLDOWN_SEC, 10, 0, 3600),
     emailVerificationEcho: env.EMAIL_VERIFICATION_ECHO
       ? env.EMAIL_VERIFICATION_ECHO !== "0"
       : !isProduction,

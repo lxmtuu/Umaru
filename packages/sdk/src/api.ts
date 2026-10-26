@@ -669,6 +669,40 @@ export class UmaruApi {
     return this.request<VoiceToken>(`${API_PREFIX}/channels/${channelId}/voice/token`);
   }
 
+  // ---------- thông báo đẩy (Web Push) ----------
+
+  /** Khoá công khai VAPID để trình duyệt tạo subscription. 503 = server chưa bật. */
+  getPushPublicKey(): Promise<{ publicKey: string }> {
+    return this.request<{ publicKey: string }>(`${API_PREFIX}/push/public-key`);
+  }
+
+  /** Đăng ký một subscription của trình duyệt (idempotent theo endpoint). */
+  savePushSubscription(input: {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+  }): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/push/subscriptions`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Huỷ subscription (idempotent — không có cũng không lỗi). */
+  deletePushSubscription(endpoint: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/push/subscriptions`, {
+      method: "DELETE",
+      body: JSON.stringify({ endpoint }),
+    });
+  }
+
+  /** Gửi một thông báo thử tới chính mình; trả số subscription đã gửi được. */
+  sendTestPush(channelId?: string): Promise<{ delivered: number; failed: number }> {
+    return this.request<{ delivered: number; failed: number }>(`${API_PREFIX}/push/test`, {
+      method: "POST",
+      body: JSON.stringify(channelId === undefined ? {} : { channelId }),
+    });
+  }
+
   /** Huỷ kết bạn / từ chối lời mời / huỷ lời mời đã gửi (idempotent). */
   removeFriend(userId: string): Promise<void> {
     return this.request<void>(`${API_PREFIX}/users/@me/friends/${userId}`, { method: "DELETE" });

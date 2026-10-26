@@ -275,6 +275,19 @@ const en = {
   voiceErrorMicDenied: "Microphone access was blocked — allow it in your browser settings",
   voiceErrorConnect: "Could not connect to the audio room",
   voiceErrorUnknown: "Unknown audio error",
+  pushTitle: "Push notifications (tab closed)",
+  pushEnable: "Turn on push notifications",
+  pushDisable: "Turn off",
+  pushSendTest: "Send a test",
+  pushBusy: "Working…",
+  pushHintOn: "On — you will be notified even after closing the tab.",
+  pushHintOff: "Off — you only get notifications while Umaru is open.",
+  pushHintBlocked: "Your browser blocks notifications — allow them in site settings.",
+  pushHintUnsupported: "This browser does not support push notifications.",
+  pushHintUnavailable: "This server has not enabled push notifications.",
+  pushHintError: "Could not set up push notifications — try again.",
+  pushTestSent: "Test sent — it should arrive in a few seconds.",
+  pushTestNothing: "Nothing was sent: this device has no push subscription.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -550,6 +563,19 @@ const vi: Record<MessageKey, string> = {
   voiceErrorMicDenied: "Trình duyệt chặn micro — mở cài đặt trang để cho phép",
   voiceErrorConnect: "Không kết nối được phòng âm thanh",
   voiceErrorUnknown: "Lỗi âm thanh không xác định",
+  pushTitle: "Thông báo đẩy (khi đã đóng tab)",
+  pushEnable: "Bật thông báo đẩy",
+  pushDisable: "Tắt",
+  pushSendTest: "Gửi thử",
+  pushBusy: "Đang xử lý…",
+  pushHintOn: "Đang bật — nhận thông báo cả khi đã đóng tab.",
+  pushHintOff: "Đang tắt — chỉ nhận thông báo khi Umaru còn mở.",
+  pushHintBlocked: "Trình duyệt đang chặn thông báo — mở cài đặt trang để cho phép.",
+  pushHintUnsupported: "Trình duyệt này không hỗ trợ thông báo đẩy.",
+  pushHintUnavailable: "Server chưa bật thông báo đẩy.",
+  pushHintError: "Không bật được thông báo đẩy — thử lại giúp mình.",
+  pushTestSent: "Đã gửi thử — vài giây nữa sẽ tới.",
+  pushTestNothing: "Chưa gửi được: máy này chưa có đăng ký thông báo đẩy.",
 };
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, vi };

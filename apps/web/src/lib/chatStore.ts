@@ -24,7 +24,16 @@ import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
 import { clearAvatarCache, validateAvatar } from "./avatars.js";
 import { dmPeer, dmTitle } from "./dms.js";
+import { readChannelDeepLink } from "./deepLink.js";
 import { translate } from "./i18n.js";
+import {
+  PUSH_ENABLED_KEY,
+  PushService,
+  classifyPushError,
+  pushHintKey,
+  pushStatusFrom,
+  type PushStatus,
+} from "./push.js";
 import {
   VoiceAudioSession,
   beginVoiceAudio,
@@ -198,6 +207,14 @@ interface ChatState {
   voiceSpeakers: string[];
   error: string | null;
   notice: string | null;
+  /**
+   * Trạng thái thông báo đẩy khi **đã đóng tab**. Tách khỏi `notificationSettings`
+   * (thông báo của trình duyệt khi tab mở): hai thứ hỏng theo hai cách khác nhau.
+   */
+  pushStatus: PushStatus;
+  pushBusy: boolean;
+  /** Kết quả "Gửi thử" — biến mất sau vài giây. */
+  pushNotice: string | null;
   /** Thông báo một dòng (xác thực email, gửi lại mail...) — tự tắt được. */
   banner: Banner | null;
   busy: boolean;
@@ -381,6 +398,13 @@ interface ChatState {
   setDesktopNotifications(enabled: boolean): Promise<void>;
   /** Bật/tắt số chưa đọc trên tiêu đề tab. */
   setTabTitleNotifications(enabled: boolean): void;
+  /** Bật thông báo đẩy khi đóng tab (phải gọi từ thao tác người dùng). */
+  enablePush(): Promise<void>;
+  disablePush(): Promise<void>;
+  /** Đồng bộ subscription hiện có với server (gọi sau khi đăng nhập). */
+  syncPush(): Promise<void>;
+  /** Gửi một thông báo thử tới chính mình. */
+  testPush(): Promise<void>;
   notifyTyping(): void;
   clearNotice(): void;
   clearError(): void;
@@ -416,6 +440,54 @@ function ackChannel(channelId: string, messageId?: string, force = false): void 
   if (!force && now - last < ACK_THROTTLE_MS) return;
   ackedAt.set(channelId, now);
   void authedApi.ackRead(channelId, messageId).catch(() => undefined);
+}
+
+/**
+ * Một `PushService` cho mỗi tab. Đăng ký service worker là thao tác nặng và
+ * idempotent, nhưng giữ lại thì bật/tắt/gửi thử không phải đăng ký lại.
+ */
+let pushService: PushService | null = null;
+
+/**
+ * Mở kênh từ `?channel=` (thông báo đẩy vừa được bấm) rồi **xoá tham số** khỏi
+ * URL. Gọi sau `READY` vì lúc đó mới biết kênh nào tồn tại — mở một kênh mình
+ * không còn quyền xem sẽ chỉ tạo ra một lần gọi API 404.
+ */
+function applyChannelDeepLink(
+  get: () => ChatState,
+  set: (patch: Partial<ChatState>) => void,
+): void {
+  if (typeof window === "undefined") return;
+  const { channelId, cleanedSearch } = readChannelDeepLink(window.location.search);
+  if (channelId === null) return;
+  window.history.replaceState(
+    {},
+    "",
+    `${window.location.pathname}${cleanedSearch}${window.location.hash}`,
+  );
+  const state = get();
+  if (state.dms.some((entry) => entry.channel.id === channelId)) {
+    void get().selectDm(channelId);
+    return;
+  }
+  const channel = Object.values(state.channels)
+    .flat()
+    .find((entry) => entry.id === channelId);
+  if (channel === undefined) return;
+  const guildId = Object.entries(state.channels).find(([, list]) =>
+    list.some((entry) => entry.id === channelId),
+  )?.[0];
+  if (guildId !== undefined && get().activeGuildId !== guildId) {
+    // `selectChannel` cần guild đang mở đúng kênh đó; đặt trước để không phải
+    // tải lại cả bootstrap chỉ vì bấm một thông báo.
+    set({ activeGuildId: guildId });
+  }
+  void get().selectChannel(channelId);
+}
+
+async function loadPushService(): Promise<PushService> {
+  if (pushService === null) pushService = await PushService.load(authedApi);
+  return pushService;
 }
 
 /** Một phiên âm thanh cho mỗi tab (một phòng tại một thời điểm mỗi server). */
@@ -705,6 +777,9 @@ const initialState = {
   voiceStates: [],
   voiceAudio: null,
   voiceSpeakers: [],
+  pushStatus: "off" as PushStatus,
+  pushBusy: false,
+  pushNotice: null,
   error: null,
   notice: null,
   banner: null,
@@ -908,6 +983,9 @@ export const useChat = create<ChatState>()((set, get) => ({
     const me = await authedApi.getCurrentUser();
     set({ screen: "chat", me, error: null });
     void get().checkAdmin();
+    // Không chặn luồng vào app vì đăng ký service worker (có thể chậm trên máy
+    // yếu) — nhưng phải chạy sau khi biết mình là ai để trỏ đúng tài khoản.
+    void get().syncPush();
     await get().connectGateway();
   },
 
@@ -982,6 +1060,8 @@ export const useChat = create<ChatState>()((set, get) => ({
         (messageRequests) => set({ messageRequests }),
         () => undefined,
       );
+      // Bấm thông báo đẩy → mở đúng kênh đó (có thể khác kênh vừa chọn ở trên).
+      applyChannelDeepLink(get, (patch) => set(patch));
       if (channelId !== null) {
         void get().loadMessages(channelId);
         // READY vừa trả badge cho kênh đang mở → coi như đã đọc.
@@ -2471,6 +2551,100 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
   setTabTitleNotifications(enabled) {
     applyNotificationSettings({ ...get().notificationSettings, tabTitle: enabled });
+  },
+  /**
+   * Bật thông báo đẩy. Phải chạy trong thao tác người dùng: xin quyền tự động
+   * lúc tải trang thì trình duyệt chặn và ta mất quyền vĩnh viễn.
+   *
+   * Không bao giờ ném — mọi hỏng hóc thành `pushStatus` + gợi ý để UI nói đúng
+   * thứ cần sửa (trình duyệt chặn ≠ server chưa bật).
+   */
+  async enablePush() {
+    set({ pushBusy: true, pushNotice: null });
+    try {
+      const service = await loadPushService();
+      const status = await service.enable();
+      if (status === "on") localStorage.setItem(PUSH_ENABLED_KEY, "1");
+      set({ pushStatus: status, pushNotice: status === "on" ? null : translate(pushHintKey(status)) });
+    } catch (error) {
+      const outcome = classifyPushError(error);
+      set({ pushStatus: outcome.status, pushNotice: translate(pushHintKey(outcome.status)) });
+    } finally {
+      set({ pushBusy: false });
+    }
+  },
+  async disablePush() {
+    set({ pushBusy: true, pushNotice: null });
+    try {
+      const service = await loadPushService();
+      const status = await service.disable();
+      localStorage.removeItem(PUSH_ENABLED_KEY);
+      set({ pushStatus: status });
+    } catch (error) {
+      const outcome = classifyPushError(error);
+      set({ pushStatus: outcome.status, pushNotice: translate(pushHintKey(outcome.status)) });
+    } finally {
+      set({ pushBusy: false });
+    }
+  },
+  /**
+   * Đồng bộ sau khi đăng nhập: endpoint của trình duyệt gắn với **tài khoản đang
+   * đăng nhập**, nên đổi tài khoản phải đăng ký lại — nếu không, người trước vẫn
+   * nhận thông báo của kênh riêng tư trên máy này.
+   *
+   * Không xin quyền, không bật gì thêm: chỉ đồng bộ khi người dùng đã bật trước
+   * đó. Chạy im lặng, lỗi chỉ đổi `pushStatus` (không làm phiền bằng banner).
+   */
+  async syncPush() {
+    if (!PushService.supported()) {
+      set({ pushStatus: "unsupported" });
+      return;
+    }
+    let serverEnabled = true;
+    try {
+      await authedApi.getPushPublicKey();
+    } catch (error) {
+      serverEnabled = !(error instanceof ApiError && error.status === 503);
+    }
+    const wanted = localStorage.getItem(PUSH_ENABLED_KEY) === "1";
+    if (!serverEnabled) {
+      set({ pushStatus: "unavailable", pushNotice: null });
+      return;
+    }
+    if (!wanted) {
+      set({ pushStatus: pushStatusFrom({
+        supported: true,
+        permission: Notification.permission,
+        subscribed: false,
+        serverEnabled,
+      }) });
+      return;
+    }
+    try {
+      const service = await loadPushService();
+      const status = await service.sync();
+      set({ pushStatus: status });
+    } catch (error) {
+      set({ pushStatus: classifyPushError(error).status });
+    }
+  },
+  async testPush() {
+    set({ pushBusy: true, pushNotice: null });
+    try {
+      const service = await loadPushService();
+      const result = await service.sendTest();
+      set({
+        pushNotice:
+          result.delivered > 0
+            ? translate("pushTestSent")
+            : translate("pushTestNothing"),
+      });
+    } catch (error) {
+      const outcome = classifyPushError(error);
+      set({ pushStatus: outcome.status, pushNotice: translate(pushHintKey(outcome.status)) });
+    } finally {
+      set({ pushBusy: false });
+    }
   },
   notifyTyping() {
     const channelId = get().activeChannelId;

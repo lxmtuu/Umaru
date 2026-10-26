@@ -564,4 +564,29 @@ describe("UmaruApi", () => {
     expect(calls[0]?.url).toBe("/api/v1/channels/42/voice/token");
     expect(result).toEqual(payload);
   });
+
+  it("thông báo đẩy: đăng ký POST, huỷ DELETE cùng endpoint, gửi thử POST rỗng", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = new UmaruApi({
+      baseUrl: "https://api.test",
+      getToken: () => "tok",
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return new Response(null, { status: 204 });
+      }) as unknown as typeof fetch,
+    });
+    await client.savePushSubscription({
+      endpoint: "https://push.test/1",
+      keys: { p256dh: "p", auth: "a" },
+    });
+    await client.deletePushSubscription("https://push.test/1");
+    expect(calls[0]!.url).toContain("/push/subscriptions");
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]!.init.body))).toMatchObject({
+      endpoint: "https://push.test/1",
+      keys: { p256dh: "p", auth: "a" },
+    });
+    expect(calls[1]!.init.method).toBe("DELETE");
+    expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ endpoint: "https://push.test/1" });
+  });
 });

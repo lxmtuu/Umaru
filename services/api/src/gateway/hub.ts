@@ -448,6 +448,25 @@ export class GatewayHub implements EventPublisher {
   }
 
   /**
+   * Người này có **socket đang mở** không.
+   *
+   * Dùng cho thông báo đẩy: đang online thì không đẩy — họ đã nhận tin qua
+   * WebSocket, và push qua dịch vụ của Google/Mozilla thường đến trễ, thành
+   * thông báo "tin cũ" nhảy ra sau khi người ta đã đọc xong.
+   *
+   * Cố ý kiểm `socket !== null` chứ không chỉ "có trong `sessions`": session
+   * được giữ lại sau khi socket đóng để client còn RESUME (`sessionTtlMs`).
+   * Nếu tính cả những session đó thì người vừa đóng tab sẽ **không nhận push
+   * của tin đầu tiên** — đúng lúc tính năng này cần nhất.
+   */
+  hasLiveSessionsFor(userId: string): boolean {
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId && session.socket !== null) return true;
+    }
+    return false;
+  }
+
+  /**
    * Đồng bộ lại guild + kênh mà session được thấy. Cần gọi sau khi user tạo
    * guild hoặc join invite: READY đã chạy trước đó nên session chưa biết guild mới.
    */
