@@ -64,8 +64,14 @@ async function main() {
   });
 
   await client.query("BEGIN");
-  // Dọn lần chạy trước (CASCADE lo phần còn lại).
+  // Dọn lần chạy trước. Xoá user CASCADE kéo theo server + kênh của server đó,
+  // nhưng **DM/group DM không thuộc user nào** nên phải xoá tay theo id.
   await client.query("DELETE FROM users WHERE email = ANY($1::text[])", [EMAILS]);
+  // Chú ý: tham số thứ hai của `query()` là **mảng các giá trị**, nên mảng id
+  // phải bọc thêm một lớp — nếu không pg hiểu mỗi id là một placeholder.
+  await client.query("DELETE FROM channels WHERE id = ANY($1::bigint[])", [
+    [ID.dm, ID.groupDm],
+  ]);
 
   const users = [
     [ID.demo, "demo_user", "Demo", "demo@example.com"],

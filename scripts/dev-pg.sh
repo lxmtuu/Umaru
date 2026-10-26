@@ -19,13 +19,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE="$ROOT/.cache/dev-pg"
-BIN="$CACHE/bin"
+# Binary của wheel có RPATH `$ORIGIN/../../../pgserver.libs`, nên phải giải nén
+# **giữ nguyên cây thư mục** (bin · lib · share · pgserver.libs nằm cạnh nhau);
+# chỉ copy riêng `bin/` sang chỗ khác là initdb chết vì thiếu libpq.
+EXTRACT="$CACHE/extract"
+BIN="$EXTRACT/pgserver/pginstall/bin"
 PGDATA="$CACHE/data"
 PORT="${UMARU_PG_PORT:-55432}"
 SOCK="/tmp/umaru-pg-sock"
 LOG="$CACHE/postgres.log"
 
-need_bin() { [ -x "$BIN/postgres" ] && [ -x "$BIN/initdb" ]; }
+need_bin() { [ -x "$BIN/postgres" ] && [ -x "$BIN/initdb" ] && [ -d "$EXTRACT/pgserver.libs" ]; }
 
 bootstrap() {
   need_bin && return 0
@@ -37,14 +41,11 @@ bootstrap() {
     --python-version "$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')" \
     -d "$whl_dir" >/dev/null
   local whl; whl="$(ls "$whl_dir"/*.whl | head -1)"
-  local ex="$CACHE/extract"
-  rm -rf "$ex"; mkdir -p "$ex"
-  python3 - "$whl" "$ex" <<'PY'
+  rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"
+  python3 - "$whl" "$EXTRACT" <<'PY'
 import sys, zipfile
 zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
 PY
-  rm -rf "$BIN"
-  cp -r "$ex"/pgserver/pginstall/bin "$BIN"
   chmod +x "$BIN"/*
   echo "→ xong: $("$BIN/postgres" --version)"
 }
