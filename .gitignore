@@ -10,3 +10,5 @@ coverage/
 .DS_Store
 # File tải lên khi chạy dev (services/api/.data/uploads)
 .data/
+# PostgreSQL nhúng của dev/QA (scripts/dev-pg.sh) — binary + dữ liệu, rất nặng
+.cache/
