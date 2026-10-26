@@ -129,5 +129,7 @@ export function mapMessage(row: MessageRow): Message {
     reactions: [],
     // Embed cũng nạp riêng theo lô — gửi tin xong mới có (tải trang là việc nền).
     embeds: [],
+    // Poll nạp riêng theo lô: cần `viewerId` cho cờ `me` và đếm phiếu.
+    poll: null,
   };
 }

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Message } from "@umaru/protocol";
 import { useLocale } from "./i18n.js";
 
 /**
@@ -70,6 +71,11 @@ vi.mock("@umaru/sdk", async (importOriginal) => {
 
 const session = vi.hoisted(() => ({
   gatewayUrl: "ws://localhost:4173/api/v1/gateway/ws",
+  /** Kết quả `listMessages` cho lần gọi kế tiếp (dùng cho test resume). */
+  messages: [] as unknown[],
+  readStates: [] as unknown[],
+  /** Bật để `listMessages` ném lỗi (mô phỏng mất mạng ngay sau resume). */
+  failMessages: false,
 }));
 
 vi.mock("./session.js", () => ({
@@ -78,7 +84,12 @@ vi.mock("./session.js", () => ({
   },
   authedApi: {
     listMessageRequests: async () => [],
-    listMessages: async () => [],
+    listMessages: async () => {
+      if (session.failMessages) throw new Error("mất mạng");
+      return session.messages;
+    },
+    listReadStates: async () => session.readStates,
+    listThreads: async () => [],
     ackRead: async () => undefined,
   },
   clearTokens: () => undefined,
@@ -125,6 +136,9 @@ function readyPayload() {
 beforeEach(() => {
   useLocale.setState({ locale: "vi" });
   fake.FakeGatewayClient.last = null;
+  session.messages = [];
+  session.readStates = [];
+  session.failMessages = false;
   useChat.setState({ guilds: [], channels: {}, activeGuildId: null, activeChannelId: null });
 });
 
@@ -218,5 +232,152 @@ describe("presence và quan hệ bạn bè", () => {
     expect(useChat.getState().selfStatus).toBe("dnd");
     expect(useChat.getState().presence["1"]).toBe("dnd");
     expect(fake.FakeGatewayClient.last?.presenceSent).toEqual(["dnd"]);
+  });
+});
+
+describe("RESUMED — đồng bộ lại thay vì tin replay", () => {
+  /** Tin tối thiểu: hàm ghép chỉ đọc `id`, phần còn lại để nguyên. */
+  function msg(id: string): Message {
+    return {
+      id,
+      channelId: "100",
+      authorId: "2",
+      content: `tin ${id}`,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      editedAt: null,
+      replyToId: null,
+      attachments: [],
+      reactions: [],
+      pinned: false,
+    } as unknown as Message;
+  }
+
+  it("tải lại kênh đang mở và xoá tin đã bị xoá trong lúc mất mạng", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    expect(useChat.getState().activeChannelId).toBe("100");
+
+    // Trong bộ nhớ có ba tin, nhưng server chỉ còn hai (tin 12 bị xoá lúc offline).
+    useChat.setState({ messages: { "100": [msg("11"), msg("12"), msg("13")] } });
+    session.messages = [msg("13"), msg("11")]; // server trả mới nhất trước
+    useChat.getState().resyncAfterResume();
+    await vi.waitFor(() => {
+      expect(useChat.getState().messages["100"]?.map((item) => item.id)).toEqual(["11", "13"]);
+    });
+  });
+
+  it("badge được tính lại từ server, kênh đang mở không bị vẽ badge", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    session.readStates = [
+      { channelId: "100", lastReadMessageId: "11", unread: 3, mentions: 1 },
+      { channelId: "200", lastReadMessageId: "9", unread: 2, mentions: 0 },
+    ];
+    useChat.getState().resyncAfterResume();
+    await vi.waitFor(() => {
+      expect(useChat.getState().unread).toEqual({ "200": 2 });
+      expect(useChat.getState().mentions).toEqual({});
+    });
+  });
+
+  it("lỗi mạng khi tải lại không làm mất tin đang có", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    // READY tự gọi `loadMessages` (không await) — chờ nó xong rồi mới đặt state,
+    // nếu không nó ghi đè đúng thứ test vừa đặt.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    useChat.setState({ messages: { "100": [msg("11")] } });
+    session.failMessages = true;
+    await useChat.getState().resyncAfterResume();
+    expect(useChat.getState().messages["100"]?.map((item) => item.id)).toEqual(["11"]);
+    expect(useChat.getState().error).toBeNull();
+  });
+});
+
+describe("POLL_VOTE_UPDATE — delta của bình chọn", () => {
+  function pollMessage() {
+    return {
+      id: "900",
+      channelId: "100",
+      authorId: "1",
+      content: "",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      editedAt: null,
+      replyToId: null,
+      attachments: [],
+      reactions: [],
+      pinned: false,
+      poll: {
+        question: "Q",
+        allowMultiple: false,
+        totalVotes: 0,
+        expiresAt: null,
+        ended: false,
+        options: [
+          { id: "901", label: "A", votes: 0, me: false },
+          { id: "902", label: "B", votes: 0, me: false },
+        ],
+      },
+    } as unknown as Message;
+  }
+
+  it("người khác bỏ phiếu: số phiếu đổi, `me` của mình KHÔNG đổi", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    useChat.setState({ messages: { "100": [pollMessage()] } });
+
+    fake.FakeGatewayClient.last?.emit("POLL_VOTE_UPDATE", {
+      messageId: "900",
+      channelId: "100",
+      optionId: "901",
+      userId: "2",
+      added: true,
+      votes: 1,
+      totalVotes: 1,
+    });
+
+    const poll = useChat.getState().messages["100"]![0]!.poll!;
+    expect(poll.options[0]).toMatchObject({ votes: 1, me: false });
+    expect(poll.totalVotes).toBe(1);
+  });
+
+  it("chính mình bỏ phiếu ở tab khác: `me` bật lên", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    useChat.setState({ messages: { "100": [pollMessage()] } });
+
+    fake.FakeGatewayClient.last?.emit("POLL_VOTE_UPDATE", {
+      messageId: "900",
+      channelId: "100",
+      optionId: "902",
+      userId: "1",
+      added: true,
+      votes: 2,
+      totalVotes: 3,
+    });
+
+    const poll = useChat.getState().messages["100"]![0]!.poll!;
+    expect(poll.options[1]).toMatchObject({ votes: 2, me: true });
+    expect(poll.options[0]).toMatchObject({ votes: 0, me: false });
+  });
+
+  it("tin không có poll thì bỏ qua, không crash", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    const plain = { ...pollMessage(), poll: null } as unknown as Message;
+    useChat.setState({ messages: { "100": [plain] } });
+
+    expect(() =>
+      fake.FakeGatewayClient.last?.emit("POLL_VOTE_UPDATE", {
+        messageId: "900",
+        channelId: "100",
+        optionId: "901",
+        userId: "2",
+        added: true,
+        votes: 1,
+        totalVotes: 1,
+      }),
+    ).not.toThrow();
+    expect(useChat.getState().messages["100"]![0]!.poll).toBeNull();
   });
 });

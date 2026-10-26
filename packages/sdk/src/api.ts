@@ -70,6 +70,17 @@ export interface OAuthProviderSummary {
   label: string;
 }
 
+/** Dữ liệu để tạo bình chọn khi gửi tin (server kiểm lại toàn bộ). */
+export interface PollInput {
+  question: string;
+  /** 2–10 lựa chọn, mỗi lựa chọn 1–55 ký tự, không trùng nhau. */
+  options: string[];
+  /** Cho chọn nhiều đáp án; mặc định một. */
+  allowMultiple?: boolean;
+  /** Tự kết thúc sau N giờ (1–168); bỏ trống = không hết hạn. */
+  durationHours?: number;
+}
+
 /** Tài khoản ngoài đang liên kết với user hiện tại. */
 export interface LinkedOAuthAccount {
   provider: OAuthProviderId;
@@ -649,7 +660,7 @@ export class UmaruApi {
   sendMessage(
     channelId: string,
     content: string,
-    options: string | { replyToId?: string; files?: File[] } = {},
+    options: string | { replyToId?: string; files?: File[]; poll?: PollInput } = {},
   ): Promise<Message> {
     const settings = typeof options === "string" ? { replyToId: options } : options;
     const path = `${API_PREFIX}/channels/${channelId}/messages`;
@@ -666,9 +677,26 @@ export class UmaruApi {
       return this.request<Message>(path, { method: "POST", body: form });
     }
 
+    // Poll chỉ đi đường JSON: tin có tệp thì không trộn poll (giống Discord), và
+    // multipart không mang được object lồng nhau.
     return this.request<Message>(path, {
       method: "POST",
-      body: JSON.stringify({ content, replyToId: settings.replyToId }),
+      body: JSON.stringify({
+        content,
+        replyToId: settings.replyToId,
+        ...(settings.poll === undefined ? {} : { poll: settings.poll }),
+      }),
+    });
+  }
+
+  /**
+   * Bỏ phiếu trong poll: gửi **toàn bộ** lựa chọn của mình (mảng rỗng = rút
+   * phiếu). Một lời gọi thay cả trạng thái nên không có lúc lửng lơ hai phiếu.
+   */
+  votePoll(messageId: string, optionIds: string[]): Promise<Message> {
+    return this.request<Message>(`${API_PREFIX}/messages/${messageId}/poll/votes`, {
+      method: "POST",
+      body: JSON.stringify({ optionIds }),
     });
   }
 

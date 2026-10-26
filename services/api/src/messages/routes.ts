@@ -37,6 +37,7 @@ import { HEADER_BYTES, isImageMime, readImageSize } from "../uploads/imageSize.j
 import type { PushSender } from "../push/sender.js";
 import type { LinkEmbedResolver } from "../embeds/resolver.js";
 import { decrementThreadMessages, isThreadArchived, touchThread } from "../threads/store.js";
+import { insertPoll, loadPoll, readPollInput, type PollInput } from "../polls.js";
 
 export interface MessageDeps {
   pool: Pool;
@@ -189,8 +190,12 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         ? await readMultipartMessage(request, config, storage.attachments)
         : readJsonMessage(request.body);
 
-      if (payload.content.trim().length === 0 && payload.files.length === 0) {
-        throw badRequest('Thiếu trường "content" (hoặc đính kèm tệp)');
+      if (
+        payload.content.trim().length === 0 &&
+        payload.files.length === 0 &&
+        payload.poll === null
+      ) {
+        throw badRequest('Thiếu trường "content" (hoặc đính kèm tệp, hoặc poll)');
       }
       if (payload.replyToId !== null) {
         const parent = await pool.query<{ channel_id: string }>(
@@ -240,6 +245,10 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         if (created === undefined) throw new Error("Không đọc được message vừa tạo");
         row = created;
 
+        if (payload.poll !== null) {
+          await insertPoll(client, id, payload.poll, config.workerId);
+        }
+
         for (const file of payload.files) {
           await client.query(
             `INSERT INTO attachments
@@ -277,6 +286,12 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         width: file.width,
         height: file.height,
       }));
+
+      if (payload.poll !== null) {
+        // Đọc lại từ DB thay vì dựng từ input: id lựa chọn do DB sinh, và `me`
+        // phải là `false` (chưa ai bỏ phiếu, kể cả tác giả).
+        message.poll = await loadPoll(pool, id, userId);
+      }
 
       // @mention ghi ngay lúc gửi để badge tính được bằng một câu SQL.
       // Nhắc `@everyone` (role mặc định) là ping cả server ⇒ chỉ người trực kênh.
@@ -519,6 +534,114 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
   );
 
   /**
+   * Bỏ phiếu trong poll gắn với tin.
+   *
+   * Body: `{ optionIds: string[] }` — mảng rỗng = **rút** phiếu (bấm lại lựa chọn
+   * đang chọn). Một lời gọi thay toàn bộ phiếu của mình, không phải ba lời gọi
+   * thêm/bớt: poll "chọn một" cần xoá phiếu cũ khi chọn cái mới, làm nguyên tử
+   * trong một transaction để không có lúc người dùng có hai phiếu.
+   *
+   * Trả cả message đã cập nhật và phát `MESSAGE_UPDATE` cho kênh — kết quả poll
+   * phải đổi với **mọi** người đang mở, không chỉ người bấm.
+   */
+  app.post<{ Params: { messageId: string } }>(
+    "/messages/:messageId/poll/votes",
+    { preHandler: guard },
+    async (request, reply) => {
+      const userId = requireUserId(request);
+      const message = await loadMessage(pool, request.params.messageId);
+      await loadChannelContext(pool, userId as Snowflake, message.channel_id);
+      if (await isDmBlocked(pool, message.channel_id, userId)) {
+        throw forbidden("Không thể bỏ phiếu trong cuộc trò chuyện này");
+      }
+
+      const poll = await loadPoll(pool, message.id, userId);
+      if (poll === null) throw notFound("Tin nhắn này không có bình chọn");
+      if (poll.ended) {
+        throw new HttpError(400, "POLL_ENDED", "Bình chọn đã kết thúc");
+      }
+
+      const body = request.body as Record<string, unknown> | undefined;
+      const raw = body?.optionIds;
+      if (!Array.isArray(raw)) throw badRequest('"optionIds" phải là mảng');
+      const wanted = raw.map((item) => {
+        if (typeof item !== "string" || !/^\d{1,20}$/.test(item)) {
+          throw badRequest("Mỗi optionId phải là snowflake (chuỗi số)");
+        }
+        return item;
+      });
+      if (!poll.allowMultiple && wanted.length > 1) {
+        throw badRequest("Bình chọn này chỉ cho chọn một đáp án");
+      }
+      const known = new Set(poll.options.map((option) => option.id as string));
+      for (const id of wanted) {
+        if (!known.has(id)) throw badRequest("Lựa chọn không thuộc bình chọn này");
+      }
+
+      const before = new Set(
+        poll.options.filter((option) => option.me).map((option) => option.id as string),
+      );
+      const after = new Set([...new Set(wanted)]);
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        // Thay toàn bộ phiếu của mình trong **một** câu: không có khoảng thời gian
+        // mà người dùng có hai phiếu (poll chọn một) hoặc mất hết phiếu cũ khi
+        // lời gọi sau lỗi.
+        await client.query("DELETE FROM poll_votes WHERE message_id = $1 AND user_id = $2", [
+          message.id,
+          userId,
+        ]);
+        for (const optionId of after) {
+          await client.query(
+            `INSERT INTO poll_votes (option_id, user_id, message_id)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [optionId, userId, message.id],
+          );
+        }
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      // Phát **delta** cho từng lựa chọn đổi trạng thái, không phát cả message:
+      // `me` phải tính theo người xem, mà broadcast chỉ có một payload cho cả
+      // kênh — gửi nguyên message của người vừa bấm là người khác thấy `me: true`
+      // ở lựa chọn họ chưa hề chọn (đúng lỗi mà test realtime bắt được).
+      const changed = [...before]
+        .filter((id) => !after.has(id))
+        .map((id) => ({ optionId: id, added: false }))
+        .concat([...after].filter((id) => !before.has(id)).map((id) => ({ optionId: id, added: true })));
+      if (changed.length > 0) {
+        const fresh = await loadPoll(pool, message.id, userId);
+        const totalVotes = fresh?.totalVotes ?? 0;
+        const counts = new Map(
+          (fresh?.options ?? []).map((option) => [option.id as string, option.votes]),
+        );
+        for (const change of changed) {
+          publisher.publishToChannel(message.channel_id, "POLL_VOTE_UPDATE", {
+            messageId: message.id as Snowflake,
+            channelId: message.channel_id as Snowflake,
+            optionId: change.optionId as Snowflake,
+            userId: userId as Snowflake,
+            added: change.added,
+            votes: counts.get(change.optionId) ?? 0,
+            totalVotes,
+          });
+        }
+      }
+
+      const [updated] = await mapMessagesWithAttachments(pool, [message], userId);
+      if (updated === undefined) throw notFound("Tin nhắn không tồn tại");
+      return reply.send(updated);
+    },
+  );
+
+  /**
    * Thả / bỏ reaction trên một tin.
    *
    * Một cặp `PUT`/`DELETE` với emoji nằm trong đường dẫn (client
@@ -646,15 +769,25 @@ interface MessagePayload {
   content: string;
   replyToId: string | null;
   files: PendingFile[];
+  /** Chỉ đường JSON mới nhận poll (multipart = tin có tệp, không trộn poll). */
+  poll: PollInput | null;
 }
 
 /** Thân JSON cũ: chỉ text (+ reply), không kèm file. */
 function readJsonMessage(body: unknown): MessagePayload {
   const record = body as Record<string, unknown> | undefined;
+  const poll = readPollInput(body);
+  // Tin chỉ có poll là hợp lệ (giống Discord): nội dung để trống được, nhưng phải
+  // có poll. Không có poll thì vẫn bắt buộc có chữ như trước.
+  const content =
+    poll !== null && record?.content === undefined
+      ? ""
+      : readString(record, "content", { min: poll === null ? 1 : 0, max: 2000, trim: false });
   return {
-    content: readString(record, "content", { min: 1, max: 2000, trim: false }),
+    content,
     replyToId: readId(record, "replyToId"),
     files: [],
+    poll,
   };
 }
 
@@ -667,7 +800,7 @@ async function readMultipartMessage(
   config: Config,
   store: FileStore,
 ): Promise<MessagePayload> {
-  const payload: MessagePayload = { content: "", replyToId: null, files: [] };
+  const payload: MessagePayload = { content: "", replyToId: null, files: [], poll: null };
 
   try {
     for await (const part of request.parts()) {

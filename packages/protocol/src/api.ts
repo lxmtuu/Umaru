@@ -210,6 +210,36 @@ export interface Embed {
   imageUrl: string | null;
 }
 
+/**
+ * Một lựa chọn trong bình chọn.
+ *
+ * `votes` là **số người** đã chọn lựa chọn này (mỗi người một phiếu/lựa chọn),
+ * `me` tính theo người xem — hai client nhận cùng tin nhưng `me` khác nhau, nên
+ * không có "bản chung" đúng cho mọi người.
+ */
+export interface PollOption {
+  id: Snowflake;
+  label: string;
+  votes: number;
+  me: boolean;
+}
+
+/**
+ * Bình chọn gắn vào một tin nhắn.
+ *
+ * `ended` do server tính (hết hạn theo `expiresAt`) — client hiển thị theo cờ này
+ * chứ không tự so đồng hồ, vì đồng hồ máy người dùng có thể lệch vài phút.
+ */
+export interface Poll {
+  question: string;
+  options: PollOption[];
+  allowMultiple: boolean;
+  /** Số người đã bỏ phiếu (không phải tổng số phiếu khi `allowMultiple`). */
+  totalVotes: number;
+  expiresAt: string | null;
+  ended: boolean;
+}
+
 export interface Message {
   id: Snowflake;
   channelId: Snowflake;
@@ -228,6 +258,11 @@ export interface Message {
    * không có trường này.
    */
   embeds?: Embed[];
+  /**
+   * Bình chọn gắn với tin. `null`/thiếu = tin thường. Server trả kèm cả khi poll
+   * đã hết hạn để client hiện kết quả cuối cùng.
+   */
+  poll?: Poll | null;
 }
 
 /** Thông tin tối thiểu để render tên/avatar người gửi trong danh sách mention. */

@@ -307,6 +307,25 @@ export interface GatewayEventMap {
     userId: Snowflake;
     added: boolean;
   };
+  /**
+   * Một lựa chọn của poll vừa đổi số phiếu.
+   *
+   * Cũng là **delta** vì cùng lý do với reaction: `me` của poll phải tính theo
+   * người xem, mà broadcast chỉ có một payload cho cả kênh. `votes` và
+   * `totalVotes` là số tuyệt đối (giống nhau với mọi người), `me` thì client tự
+   * suy ra bằng cách so `userId` với chính mình.
+   */
+  POLL_VOTE_UPDATE: {
+    messageId: Snowflake;
+    channelId: Snowflake;
+    optionId: Snowflake;
+    userId: Snowflake;
+    added: boolean;
+    /** Số phiếu của **lựa chọn này** sau thay đổi. */
+    votes: number;
+    /** Số **người** đã bỏ phiếu trong poll sau thay đổi (không phải tổng phiếu). */
+    totalVotes: number;
+  };
   TYPING_START: { channelId: Snowflake; userId: Snowflake; timestamp: number };
   PRESENCE_UPDATE: { userId: Snowflake; status: PresenceStatus };
   CHANNEL_CREATE: Channel;

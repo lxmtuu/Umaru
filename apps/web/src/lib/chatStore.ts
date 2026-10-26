@@ -26,6 +26,7 @@ import {
   type GatewayState,
   type OAuthProviderId,
   type OAuthProviderSummary,
+  type PollInput,
 } from "@umaru/sdk";
 import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
@@ -72,6 +73,7 @@ import {
 } from "./displayPrefs.js";
 import { readVerificationToken, withoutVerificationToken } from "./verification.js";
 import { readOAuthResult, withoutOAuthParams } from "./oauthQuery.js";
+import { mergeAfterResync } from "./resync.js";
 import {
   api,
   authedApi,
@@ -272,6 +274,14 @@ interface ChatState {
    */
   oauthPendingCode: string | null;
 
+  /** Id tin đang gửi phiếu poll (chặn bấm liên tiếp trên cùng một tin). */
+  pollBusy: string | null;
+  /**
+   * Đồng bộ lại sau khi socket **resume**: replay chỉ phát lại frame còn trong
+   * log, nên frame bị mất (node chết) có thể là `MESSAGE_DELETE` — phải tải lại
+   * kênh đang mở chứ không tin replay.
+   */
+  resyncAfterResume(): Promise<void>;
   boot(): Promise<void>;
   login(email: string, password: string, totpCode?: string): Promise<boolean>;
   /** Nạp danh sách provider cho màn đăng nhập; lỗi mạng thì coi như không có. */
@@ -318,11 +328,16 @@ interface ChatState {
   /** Xoá badge của kênh + báo server mốc đã đọc mới nhất. */
   markRead(channelId: string): void;
   loadMessages(channelId: string): Promise<void>;
-  /** Gửi tin; `files` đi kèm bằng multipart, `replyToId` để trả lời một tin. */
+  /**
+   * Gửi tin; `files` đi kèm bằng multipart, `replyToId` để trả lời một tin,
+   * `poll` để kèm bình chọn (nội dung được phép rỗng khi có poll).
+   */
   sendMessage(
     content: string,
-    options?: { files?: File[]; replyToId?: string },
+    options?: { files?: File[]; replyToId?: string; poll?: PollInput },
   ): Promise<boolean>;
+  /** Bỏ/rút phiếu trong poll — gửi **toàn bộ** lựa chọn của mình. */
+  votePoll(messageId: string, optionIds: string[]): Promise<boolean>;
   /** Sửa nội dung tin của mình; server đã đẩy `MESSAGE_UPDATE` cho mọi client. */
   editMessage(messageId: string, content: string): Promise<boolean>;
   /** Xoá tin của mình (hoặc bất kỳ tin nào nếu có `MANAGE_MESSAGES`). */
@@ -903,6 +918,7 @@ const initialState = {
   totpRequired: false,
   oauthProviders: [],
   oauthPendingCode: null,
+  pollBusy: null,
 };
 
 /** Trường hồ sơ có thể đổi; presence là ephemeral nên không nằm ở đây. */
@@ -1063,6 +1079,59 @@ function dropThread(get: StoreGet, set: StoreSet, threadId: string): void {
 
 export const useChat = create<ChatState>()((set, get) => ({
   ...initialState,
+
+  async resyncAfterResume() {
+    const current = get();
+    const channelId = current.activeChannelId;
+    if (channelId !== null) {
+      try {
+        const newestFirst = await authedApi.listMessages(channelId, { limit: 50 });
+        // Người dùng đổi kênh trong lúc chờ → kết quả này không còn dùng.
+        if (get().activeChannelId !== channelId) return;
+        const fresh = [...newestFirst].reverse();
+        set({
+          messages: {
+            ...get().messages,
+            [channelId]: mergeAfterResync(get().messages[channelId] ?? [], fresh),
+          },
+        });
+      } catch {
+        // Mất mạng ngay sau resume: giữ nguyên thứ đang có, lần resume sau thử lại.
+      }
+    }
+
+    // Badge: READ_STATE_UPDATE nằm trong log replay, nhưng đúng cái bị mất có thể
+    // là nó (đọc trên điện thoại trong lúc tab này mất mạng).
+    try {
+      const readStates = await authedApi.listReadStates();
+      const unread: Record<string, number> = {};
+      const mentions: Record<string, number> = {};
+      for (const readState of readStates) {
+        if (readState.unread > 0) unread[readState.channelId] = readState.unread;
+        if (readState.mentions > 0) mentions[readState.channelId] = readState.mentions;
+      }
+      const active = get().activeChannelId;
+      // Kênh đang mở thì coi như đã đọc — đừng vẽ badge cho chính nó.
+      if (active !== null) {
+        delete unread[active];
+        delete mentions[active];
+      }
+      set({ unread, mentions });
+    } catch {
+      // Bỏ qua: badge cũ còn hơn xoá sạch badge vì một lần gọi lỗi.
+    }
+
+    // Panel thread đang mở cũng có thể thiếu thread mới / còn thread vừa xoá.
+    const panelChannel = get().threadsChannelId;
+    if (get().threadsOpen && panelChannel !== null) {
+      try {
+        const threads = await authedApi.listThreads(panelChannel);
+        if (get().threadsChannelId === panelChannel) set({ threads });
+      } catch {
+        // Giữ danh sách cũ.
+      }
+    }
+  },
 
   async boot() {
     // Link xác thực email có thể mở ở tab chưa đăng nhập → xử lý trước khi
@@ -1326,6 +1395,37 @@ export const useChat = create<ChatState>()((set, get) => ({
           ackChannel(channelId, undefined, true);
         }
       }
+    });
+
+    // Poll: server phát **delta** cho từng lựa chọn (không phát cả message) vì
+    // `me` phải tính theo người xem. Số phiếu là tuyệt đối nên gán thẳng; `me`
+    // chỉ đổi khi chính mình là người vừa bấm.
+    client.on("POLL_VOTE_UPDATE", (data) => {
+      const current = get();
+      const list = current.messages[data.channelId];
+      if (list === undefined) return;
+      const index = list.findIndex((message) => message.id === data.messageId);
+      const message = list[index];
+      if (message === undefined || message.poll === undefined || message.poll === null) return;
+      const mine = data.userId === current.me?.id;
+      const poll = {
+        ...message.poll,
+        totalVotes: data.totalVotes,
+        options: message.poll.options.map((option) =>
+          (option.id as string) === (data.optionId as string)
+            ? { ...option, votes: data.votes, me: mine ? data.added : option.me }
+            : option,
+        ),
+      };
+      const next = [...list];
+      next[index] = { ...message, poll };
+      set({ messages: { ...current.messages, [data.channelId]: next } });
+    });
+
+    // Resume xong: replay có thể đã bỏ sót frame (node chết, log hết hạn) ⇒ tải
+    // lại kênh đang mở + badge thay vì tin là đã đủ.
+    client.on("RESUMED", () => {
+      void get().resyncAfterResume();
     });
 
     // Đọc trên thiết bị khác: badge của tab này tắt ngay, không đợi mở lại kênh.
@@ -2037,13 +2137,15 @@ export const useChat = create<ChatState>()((set, get) => ({
   async sendMessage(content, options = {}) {
     const channelId = get().activeChannelId;
     const files = options.files ?? [];
-    // Tin chỉ có tệp (không text) vẫn hợp lệ.
+    const poll = options.poll;
+    // Tin chỉ có tệp hoặc chỉ có poll (không text) vẫn hợp lệ.
     if (channelId === null) return false;
-    if (content.trim().length === 0 && files.length === 0) return false;
+    if (content.trim().length === 0 && files.length === 0 && poll === undefined) return false;
     try {
       const message = await authedApi.sendMessage(channelId, content, {
         files,
         replyToId: options.replyToId,
+        ...(poll === undefined ? {} : { poll }),
       });
       const list = get().messages[channelId] ?? [];
       set({ messages: { ...get().messages, [channelId]: upsertMessage(list, message) } });
@@ -2053,6 +2155,22 @@ export const useChat = create<ChatState>()((set, get) => ({
     } catch (error) {
       set({ error: describeError(error) });
       return false;
+    }
+  },
+
+  async votePoll(messageId, optionIds) {
+    if (get().pollBusy !== null) return false;
+    set({ pollBusy: messageId });
+    try {
+      const updated = await authedApi.votePoll(messageId, optionIds);
+      const list = get().messages[updated.channelId] ?? [];
+      set({ messages: { ...get().messages, [updated.channelId]: upsertMessage(list, updated) } });
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    } finally {
+      set({ pollBusy: null });
     }
   },
 
@@ -3354,7 +3472,6 @@ function upsertMessage(list: Message[], message: Message): Message[] {
   return [...list, message].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
 }
 
-/** Lỗi 401 `TOTP_REQUIRED` từ `/auth/login` — cần hỏi thêm mã 6 số. */
 /**
  * `?oauth_error=` → khoá i18n. Server gắn mã lỗi ngắn (chữ thường); mã lạ thì
  * dùng câu chung, **không** render giá trị từ URL ra màn hình.

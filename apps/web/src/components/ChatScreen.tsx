@@ -27,6 +27,8 @@ import { translate, useLocale, useT, type MessageKey } from "../lib/i18n.js";
 import { ChannelSettings } from "./ChannelSettings.js";
 import { MessageAttachments } from "./MessageAttachments.js";
 import { MessageEmbeds } from "./MessageEmbed.js";
+import { PollCard } from "./PollCard.js";
+import { PollComposer } from "./PollComposer.js";
 import { MemberList } from "./MemberList.js";
 import { MessageContent } from "./MessageContent.js";
 import { legalPath } from "../lib/legalRoute.js";
@@ -118,6 +120,9 @@ export function ChatScreen() {
   const [caret, setCaret] = useState(0);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  /** Hộp tạo bình chọn — mở bằng 📊 cạnh nút emoji. */
+  const [pollOpen, setPollOpen] = useState(false);
+  const [pollBusy, setPollBusy] = useState(false);
   /** Tin đang mở bảng emoji **để thả reaction** (khác bảng emoji của ô soạn). */
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1874,6 +1879,9 @@ export function ChatScreen() {
                               ))}
                             <MessageAttachments attachments={message.attachments} />
                             <MessageEmbeds embeds={message.embeds} />
+                            {message.poll !== undefined && message.poll !== null && (
+                              <PollCard message={message} poll={message.poll} />
+                            )}
                             {((message.reactions ?? []).length > 0 || reactionPickerFor === message.id) && (
                               <div className="mt-1 flex flex-wrap items-center gap-1">
                                 {(message.reactions ?? []).map((reaction) => (
@@ -2059,6 +2067,15 @@ export function ChatScreen() {
                 >
                   😊
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setPollOpen(true)}
+                  title={t("pollCreate")}
+                  aria-label={t("pollCreate")}
+                  className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:border-emerald-400/40 hover:text-emerald-200"
+                >
+                  📊
+                </button>
                 <textarea
                   ref={textareaRef}
                   value={draft}
@@ -2194,6 +2211,21 @@ export function ChatScreen() {
             event.preventDefault();
             if (member.userId === state.me?.id) return;
             setSidebarMenu({ kind: "member", member, x: event.clientX, y: event.clientY });
+          }}
+        />
+      )}
+
+      {pollOpen && (
+        <PollComposer
+          busy={pollBusy}
+          onClose={() => setPollOpen(false)}
+          onSend={(poll) => {
+            // Giữ nguyên chữ đang gõ: gửi poll không được nuốt bản nháp.
+            setPollBusy(true);
+            void state.sendMessage("", { poll }).then((sent) => {
+              setPollBusy(false);
+              if (sent) setPollOpen(false);
+            });
           }}
         />
       )}
