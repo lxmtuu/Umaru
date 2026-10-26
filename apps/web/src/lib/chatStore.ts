@@ -25,6 +25,16 @@ import { clearAttachmentCache } from "./attachments.js";
 import { clearAvatarCache, validateAvatar } from "./avatars.js";
 import { dmPeer, dmTitle } from "./dms.js";
 import { translate } from "./i18n.js";
+import {
+  NOTIFICATION_SETTINGS_KEY,
+  decideNotify,
+  notificationPermission,
+  notificationText,
+  parseNotificationSettings,
+  requestNotificationPermission,
+  showDesktopNotification,
+  type NotificationSettings,
+} from "./notifications.js";
 import { readVerificationToken, withoutVerificationToken } from "./verification.js";
 import {
   api,
@@ -153,6 +163,10 @@ interface ChatState {
   /** Yêu cầu nhắn tin đang chờ mình duyệt (người lạ mở DM khi mình đặt "chỉ bạn bè"). */
   messageRequests: MessageRequestSummary[];
   messageRequestsLoading: boolean;
+  /** Bật/tắt thông báo (lưu trong localStorage, không cần server). */
+  notificationSettings: NotificationSettings;
+  /** Quyền thông báo của trình duyệt; `unsupported` = không có Notification API. */
+  notificationPermission: NotificationPermission | "unsupported";
   /**
    * Ai đang ở phòng thoại nào (danh sách phẳng, mỗi người một phòng mỗi server).
    * Server là nguồn sự thật: mọi thay đổi đến qua `VOICE_STATE_UPDATE`.
@@ -337,6 +351,10 @@ interface ChatState {
   acceptMessageRequest(channelId: string): Promise<boolean>;
   /** Từ chối → cuộc trò chuyện bị xoá với cả hai. */
   declineMessageRequest(channelId: string): Promise<boolean>;
+  /** Bật/tắt thông báo máy (bật thì xin quyền trình duyệt ngay trong thao tác này). */
+  setDesktopNotifications(enabled: boolean): Promise<void>;
+  /** Bật/tắt số chưa đọc trên tiêu đề tab. */
+  setTabTitleNotifications(enabled: boolean): void;
   notifyTyping(): void;
   clearNotice(): void;
   clearError(): void;
@@ -372,6 +390,79 @@ function ackChannel(channelId: string, messageId?: string, force = false): void 
   if (!force && now - last < ACK_THROTTLE_MS) return;
   ackedAt.set(channelId, now);
   void authedApi.ackRead(channelId, messageId).catch(() => undefined);
+}
+
+/**
+ * Báo tin mới. Toàn bộ quyết định nằm ở `notifications.ts` (hàm thuần, có test);
+ * ở đây chỉ lo phần "lấy dữ liệu từ state" và gọi API trình duyệt.
+ *
+ * Có cooldown theo kênh để một cuộc trò chuyện sôi nổi không thành 20 popup, và
+ * bỏ qua khi cửa sổ đang focus đúng kênh đó (đang đọc thì không cần báo).
+ */
+const notifiedAt = new Map<string, number>();
+
+function maybeNotify(message: Message, state: ChatState): void {
+  const dm = state.dms.find((entry) => entry.channel.id === message.channelId);
+  const important = dm !== undefined || isMention(message.content, state.me?.username);
+  const verdict = decideNotify({
+    authorId: message.authorId as string,
+    meId: state.me?.id ?? null,
+    channelId: message.channelId as string,
+    activeChannelId: state.activeChannelId,
+    windowFocused: typeof document === "undefined" ? true : document.hasFocus(),
+    desktopEnabled: state.notificationSettings.desktop,
+    important,
+    lastNotifiedAt: notifiedAt.get(message.channelId as string) ?? null,
+    now: Date.now(),
+  });
+  if (!verdict.notify) return;
+  notifiedAt.set(message.channelId as string, Date.now());
+
+  const authorName = displayNameOf(message.authorId as string, state);
+  const channelLabel =
+    dm !== undefined
+      ? dmTitle(dm)
+      : `#${channelNameOf(message.channelId as string, state) ?? "?"}`;
+  showDesktopNotification(
+    notificationText({ authorName, channelLabel, content: message.content, important }),
+  );
+}
+
+/**
+ * Tên hiển thị của một người, tra theo thứ tự rẻ → đắt: chính mình, thành viên
+ * các guild đang cache, rồi người trong DM. Không gọi API: thông báo phải hiện
+ * ngay, và người gửi tin trong kênh mình đọc gần như luôn có trong cache.
+ */
+function displayNameOf(userId: string, state: ChatState): string {
+  if (state.me?.id === userId) return state.me.displayName;
+  for (const list of Object.values(state.members)) {
+    const found = list.find((member) => (member.userId as string) === userId);
+    if (found !== undefined) return found.displayName;
+  }
+  for (const dm of state.dms) {
+    const found = dm.recipients.find((entry) => (entry.userId as string) === userId);
+    if (found !== undefined) return found.displayName;
+  }
+  return translate("unknownUser");
+}
+
+function channelNameOf(channelId: string, state: ChatState): string | null {
+  for (const list of Object.values(state.channels)) {
+    const found = list.find((channel) => (channel.id as string) === channelId);
+    if (found?.name != null) return found.name;
+  }
+  return null;
+}
+
+/** Ghi cài đặt xuống localStorage; lỗi (chế độ riêng tư, quota) không được làm hỏng UI. */
+function applyNotificationSettings(settings: NotificationSettings): void {
+  useChat.setState({ notificationSettings: settings });
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(NOTIFICATION_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // Trình duyệt chặn storage: giữ cài đặt trong bộ nhớ cho phiên này.
+  }
 }
 
 const initialState = {
@@ -431,6 +522,10 @@ const initialState = {
   friendsOpen: false,
   messageRequests: [],
   messageRequestsLoading: false,
+  notificationSettings: parseNotificationSettings(
+    typeof localStorage === "undefined" ? null : localStorage.getItem(NOTIFICATION_SETTINGS_KEY),
+  ),
+  notificationPermission: notificationPermission(),
   voiceStates: [],
   error: null,
   notice: null,
@@ -778,6 +873,7 @@ export const useChat = create<ChatState>()((set, get) => ({
             };
           }
         }
+        maybeNotify(message, current);
       }
       set(patch);
     });
@@ -2141,6 +2237,19 @@ export const useChat = create<ChatState>()((set, get) => ({
       set({ error: describeError(error) });
       return false;
     }
+  },
+  async setDesktopNotifications(enabled) {
+    if (!enabled) {
+      applyNotificationSettings({ ...get().notificationSettings, desktop: false });
+      return;
+    }
+    const permission = await requestNotificationPermission();
+    const granted = permission === "granted";
+    applyNotificationSettings({ ...get().notificationSettings, desktop: granted });
+    set({ notificationPermission: permission });
+  },
+  setTabTitleNotifications(enabled) {
+    applyNotificationSettings({ ...get().notificationSettings, tabTitle: enabled });
   },
   notifyTyping() {
     const channelId = get().activeChannelId;

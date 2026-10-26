@@ -65,6 +65,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 | Cuộc gọi thoại/video trong DM | Dùng chung hạ tầng voice | P1 (sau khi có voice channels) |
 | "Bạn chung", "Server chung" | Mutuals | P2 |
 | Tin nhắn yêu cầu (Message Requests) từ người lạ | An toàn cho người dùng nữ/bị làm phiền — ✅ đã có (kênh chờ duyệt không lộ vào danh sách/không đẩy tin, đồng ý/từ chối, tự duyệt khi kết bạn) | P1 |
+| Thông báo desktop + badge tiêu đề tab | ✅ đã có (Notification API, cooldown theo kênh, mention/DM bỏ qua cooldown) | P1 |
 | DM folders, ghim tin nhắn DM | Organization | P3 |
 
 ### 1.3 Server (Guild)

@@ -19,6 +19,10 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
   const removeAvatar = useChat((state) => state.removeAvatar);
   const clearError = useChat((state) => state.clearAvatarError);
   const inputRef = useRef<HTMLInputElement>(null);
+  const notifications = useChat((state) => state.notificationSettings);
+  const permission = useChat((state) => state.notificationPermission);
+  const setDesktop = useChat((state) => state.setDesktopNotifications);
+  const setTabTitle = useChat((state) => state.setTabTitleNotifications);
 
   const handleFile = async (file: File | undefined): Promise<void> => {
     if (file === undefined) return;
@@ -70,6 +74,41 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
             {error}
           </p>
         )}
+
+        {/* Thông báo: lưu ở máy (localStorage), không có API server nào liên quan. */}
+        <div className="mb-4 rounded-lg border border-white/10 p-2.5">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            {t("notifications")}
+          </p>
+          <label className="flex items-start gap-2 text-xs text-slate-200">
+            <input
+              type="checkbox"
+              checked={notifications.desktop}
+              disabled={permission === "denied" || permission === "unsupported"}
+              onChange={(event) => void setDesktop(event.target.checked)}
+              className="mt-0.5 accent-emerald-400"
+            />
+            <span className="flex-1">
+              {t("notificationsDesktop")}
+              <span className="block text-[11px] text-slate-500">
+                {permission === "denied"
+                  ? t("notificationsBlocked")
+                  : permission === "unsupported"
+                    ? t("notificationsUnsupported")
+                    : t("notificationsDesktopHint")}
+              </span>
+            </span>
+          </label>
+          <label className="mt-2 flex items-start gap-2 text-xs text-slate-200">
+            <input
+              type="checkbox"
+              checked={notifications.tabTitle}
+              onChange={(event) => setTabTitle(event.target.checked)}
+              className="mt-0.5 accent-emerald-400"
+            />
+            <span className="flex-1">{t("notificationsTabTitle")}</span>
+          </label>
+        </div>
 
         <div className="flex flex-col gap-2">
           <button

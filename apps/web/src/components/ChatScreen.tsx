@@ -27,6 +27,7 @@ import { ProfileDialog } from "./ProfileDialog.js";
 import { RoleSettings } from "./RoleSettings.js";
 import { type DropTarget, resolveDrop } from "../lib/channelDrop.js";
 import { FriendsPanel } from "./FriendsPanel.js";
+import { formatTabTitle } from "../lib/notifications.js";
 import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
 
 export function ChatScreen() {
@@ -114,6 +115,23 @@ export function ChatScreen() {
     () => Object.values(state.mentions).reduce((total, count) => total + count, 0),
     [state.mentions],
   );
+  /** Tổng tin chưa đọc (mọi kênh + DM) — hiện trên tiêu đề tab. */
+  const totalUnread = useMemo(
+    () => Object.values(state.unread).reduce((total, count) => total + count, 0),
+    [state.unread],
+  );
+  /**
+   * Tiêu đề tab: `(3) Umaru` / `(2@) Umaru`. Không dùng `<title>` trong index.html
+   * vì số này đổi liên tục; đặt ở một effect duy nhất để không đua giữa các chỗ.
+   */
+  useEffect(() => {
+    document.title = formatTabTitle(
+      t("appName"),
+      { unread: totalUnread, mentions: totalMentions },
+      state.notificationSettings.tabTitle,
+    );
+  }, [totalUnread, totalMentions, state.notificationSettings.tabTitle, t]);
+
   /** guildId → có kênh nào đang có tin chưa đọc (để chấm xanh trên rail). */
   const guildsWithUnread = useMemo(() => {
     const set = new Set<string>();

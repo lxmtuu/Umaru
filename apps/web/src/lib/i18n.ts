@@ -253,6 +253,16 @@ const en = {
   messageRequestPending: "Waiting for them to accept",
   permConnect: "Join voice channels",
   permSpeak: "Speak in voice channels",
+  notifyMentionTitle: "{name} mentioned you",
+  notifyTitle: "{name} in {channel}",
+  notifyEmptyBody: "Sent an attachment",
+  notifications: "Notifications",
+  notificationsDesktop: "Desktop notifications",
+  notificationsDesktopHint: "Show a system notification for new messages",
+  notificationsTabTitle: "Unread count on tab title",
+  notificationsBlocked: "Notifications are blocked in your browser settings",
+  notificationsUnsupported: "This browser does not support notifications",
+  unknownUser: "Someone",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -506,6 +516,16 @@ const vi: Record<MessageKey, string> = {
   messageRequestPending: "Đang chờ họ đồng ý",
   permConnect: "Vào kênh thoại",
   permSpeak: "Nói trong kênh thoại",
+  notifyMentionTitle: "{name} đã nhắc bạn",
+  notifyTitle: "{name} trong {channel}",
+  notifyEmptyBody: "Đã gửi một tệp đính kèm",
+  notifications: "Thông báo",
+  notificationsDesktop: "Thông báo trên máy",
+  notificationsDesktopHint: "Hiện thông báo hệ thống khi có tin mới",
+  notificationsTabTitle: "Hiện số chưa đọc trên tiêu đề tab",
+  notificationsBlocked: "Trình duyệt đang chặn thông báo — mở cài đặt trang để bật lại",
+  notificationsUnsupported: "Trình duyệt này không hỗ trợ thông báo",
+  unknownUser: "Ai đó",
 };
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, vi };
