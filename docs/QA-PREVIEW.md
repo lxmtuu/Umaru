@@ -100,6 +100,19 @@ mở ở **hai cửa sổ riêng tư khác nhau** để kiểm realtime.
 - [ ] Đổi ngôn ngữ EN ⇄ VI ở hồ sơ → không còn chuỗi tiếng Việt sót lại.
 - [ ] Đăng xuất rồi F5 → vẫn ở màn đăng nhập (không tự vào lại).
 
+
+## Gặp lỗi này rồi (đã sửa, giữ lại để nhận biết)
+
+**Không thấy server nào + tạo server xong cũng không thấy gì.** Nguyên nhân
+không phải dữ liệu: API trả `ws://…` cho gateway trong khi trang mở bằng
+`https://`, trình duyệt chặn WebSocket đó vì mixed content và **không báo lỗi**
+→ không có `READY` → sidebar trống, còn `POST /guilds` thì vẫn 201 (server có
+tạo thật). Giờ client tự nâng scheme lên `wss` khi trang là https
+(`apps/web/src/lib/gatewayUrl.ts`).
+
+Cách nhận biết nhanh khi nghi gateway chết: chấm trạng thái ở góc giao diện
+đỏ = `offline`; mở DevTools → Console sẽ thấy cảnh báo mixed content.
+
 ## Cái gì **chưa** kiểm được ở đây
 
 - Âm thanh thật, chia sẻ màn hình giữa hai máy khác nhau, chất lượng mạng thật.

@@ -24,6 +24,7 @@ import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
 import { clearAvatarCache, validateAvatar } from "./avatars.js";
 import { dmPeer, dmTitle } from "./dms.js";
+import { resolveGatewayUrl } from "./gatewayUrl.js";
 import { readChannelDeepLink } from "./deepLink.js";
 import { translate } from "./i18n.js";
 import {
@@ -1017,8 +1018,10 @@ export const useChat = create<ChatState>()((set, get) => ({
     gateway?.close();
 
     const { url } = await api.getGatewayUrl();
+    // Server có thể trả `ws://` khi nó không biết mình nằm sau proxy TLS (xem
+    // gatewayUrl.ts) — trang https thì trình duyệt chặn thẳng, không báo gì.
     const client = new GatewayClient({
-      url,
+      url: resolveGatewayUrl(url),
       token,
       // Access token sống 15 phút; socket có thể sống lâu hơn. Đọc token hiện tại
       // mỗi lần identify/resume thay vì giữ bản chụp lúc mở kết nối.
