@@ -10,16 +10,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * người, nếu gán thẳng vào danh sách thì cả phòng tắt đèn chỉ còn người vừa rời.
  */
 
-type Handler = (payload: unknown) => void;
+type Handler = (...args: unknown[]) => void;
 
 class FakeRoom {
   static last: FakeRoom | null = null;
   readonly handlers = new Map<string, Handler[]>();
   readonly connected: string[] = [];
   readonly micCalls: boolean[] = [];
+  readonly screenCalls: Array<{ enabled: boolean; options: unknown }> = [];
+  /** Ném khi người dùng đóng hộp chọn màn hình ("share bị huỷ"). */
+  failScreenShare = false;
   readonly localParticipant = {
     setMicrophoneEnabled: async (enabled: boolean) => {
       this.micCalls.push(enabled);
+    },
+    setScreenShareEnabled: async (enabled: boolean, options?: unknown) => {
+      if (this.failScreenShare) throw Object.assign(new Error("Permission denied"), { name: "NotAllowedError" });
+      this.screenCalls.push({ enabled, options });
     },
   };
   readonly remoteParticipants = new Map<string, unknown>();
@@ -32,8 +39,9 @@ class FakeRoom {
     this.handlers.set(event, [...(this.handlers.get(event) ?? []), handler]);
   }
 
-  emit(event: string, payload: unknown): void {
-    for (const handler of this.handlers.get(event) ?? []) handler(payload);
+  /** LiveKit truyền nhiều tham số cho một số sự kiện (track, publication, participant). */
+  emit(event: string, ...args: unknown[]): void {
+    for (const handler of this.handlers.get(event) ?? []) handler(...args);
   }
 
   async connect(url: string, token: string): Promise<void> {
@@ -46,20 +54,21 @@ class FakeRoom {
 }
 
 const ROOM_EVENTS = {
+  TrackSubscribed: "trackSubscribed",
+  LocalTrackUnpublished: "localTrackUnpublished",
   Reconnecting: "reconnecting",
   SignalReconnecting: "signalReconnecting",
   Reconnected: "reconnected",
   Disconnected: "disconnected",
   ActiveSpeakersChanged: "activeSpeakers",
   ParticipantDisconnected: "participantDisconnected",
-  TrackSubscribed: "trackSubscribed",
   TrackUnsubscribed: "trackUnsubscribed",
 };
 
 vi.mock("livekit-client", () => ({
   Room: FakeRoom,
   RoomEvent: ROOM_EVENTS,
-  Track: { Kind: { Audio: "audio" } },
+  Track: { Kind: { Audio: "audio", Video: "video" } },
 }));
 
 const { VoiceAudioSession } = await import("./voice.js");
@@ -180,5 +189,117 @@ describe("VoiceAudioSession — mất kết nối", () => {
     await t.session.disconnect();
     t.room().emit(ROOM_EVENTS.Disconnected, {});
     expect(events).toEqual([]);
+  });
+});
+
+/** Thẻ media giả — test không có DOM thật (môi trường vitest là node). */
+function fakeMediaElement(kind: "audio" | "video"): {
+  kind: "audio" | "video";
+  autoplay: boolean;
+  playsInline: boolean;
+  muted: boolean;
+  style: Record<string, string>;
+  removed: boolean;
+  play: () => Promise<void>;
+  remove: () => void;
+  detach: () => fakeElement[];
+} {
+  return {
+    kind,
+    autoplay: false,
+    playsInline: false,
+    muted: false,
+    style: {},
+    removed: false,
+    play: async () => undefined,
+    remove() {
+      this.removed = true;
+    },
+    detach: () => [],
+  };
+}
+type fakeElement = ReturnType<typeof fakeMediaElement>;
+
+function fakeTrack(kind: "audio" | "video"): {
+  kind: string;
+  element: fakeElement;
+  attach: () => fakeElement;
+  detach: () => fakeElement[];
+} {
+  const element = fakeMediaElement(kind);
+  return {
+    kind,
+    element,
+    attach: () => element,
+    detach: () => [element],
+  };
+}
+
+describe("VoiceAudioSession — chia sẻ màn hình", () => {
+  beforeEach(() => {
+    FakeRoom.last = null;
+  });
+
+  it("nhận chia sẻ màn hình của người khác kèm tên hiển thị", async () => {
+    const screens: Array<Array<{ id: string; userId: string; label: string }>> = [];
+    const t = session();
+    await t.session.connect({ ...base, onScreens: (list) => screens.push(list) });
+    const track = fakeTrack("video");
+    t.room().emit(ROOM_EVENTS.TrackSubscribed, track, { source: "screen_share", trackSid: "TR_1" }, { identity: "u1", name: "An" });
+    expect(screens.at(-1)).toEqual([{ id: "u1:TR_1", userId: "u1", label: "An", element: track.element }]);
+  });
+
+  it("bỏ qua video không phải chia sẻ màn hình (camera không được cấp trong token)", async () => {
+    const screens: unknown[] = [];
+    const t = session();
+    await t.session.connect({ ...base, onScreens: (list) => screens.push(...list) });
+    t.room().emit(ROOM_EVENTS.TrackSubscribed, fakeTrack("video"), { source: "camera" }, { identity: "u1" });
+    expect(screens).toHaveLength(0);
+  });
+
+  it("người chia sẻ dừng → khung xem biến mất", async () => {
+    const screens: Array<Array<unknown>> = [];
+    const t = session();
+    await t.session.connect({ ...base, onScreens: (list) => screens.push(list) });
+    const track = fakeTrack("video");
+    t.room().emit(ROOM_EVENTS.TrackSubscribed, track, { source: "screen_share", trackSid: "TR_1" }, { identity: "u1" });
+    t.room().emit(ROOM_EVENTS.TrackUnsubscribed, track);
+    expect(screens.at(-1)).toEqual([]);
+  });
+
+  it("bật chia sẻ gửi lựa chọn an toàn (có tiếng tab, không chia sẻ chính tab Umaru)", async () => {
+    const t = session();
+    await t.session.connect({ ...base });
+    expect(await t.session.setScreenShare(true)).toBe(true);
+    const call = t.room().screenCalls.at(-1);
+    expect(call?.enabled).toBe(true);
+    expect(call?.options).toMatchObject({ audio: true, selfBrowserSurface: "exclude" });
+  });
+
+  it("người dùng đóng hộp chọn màn hình → trả false, không ném", async () => {
+    const t = session();
+    await t.session.connect({ ...base });
+    t.room().failScreenShare = true;
+    expect(await t.session.setScreenShare(true)).toBe(false);
+  });
+
+  it("dừng bằng thanh nổi của trình duyệt vẫn báo về để nút bấm trở lại", async () => {
+    let ended = 0;
+    const t = session();
+    await t.session.connect({ ...base, onScreenShareEnded: () => (ended += 1) });
+    t.room().emit(ROOM_EVENTS.LocalTrackUnpublished, { source: "screen_share" });
+    expect(ended).toBe(1);
+    // Track khác (micro) không được làm nút chia sẻ nhảy trạng thái.
+    t.room().emit(ROOM_EVENTS.LocalTrackUnpublished, { source: "microphone" });
+    expect(ended).toBe(1);
+  });
+
+  it("rời phòng là bỏ hết khung xem", async () => {
+    const screens: Array<Array<unknown>> = [];
+    const t = session();
+    await t.session.connect({ ...base, onScreens: (list) => screens.push(list) });
+    t.room().emit(ROOM_EVENTS.TrackSubscribed, fakeTrack("video"), { source: "screen_share", trackSid: "TR_1" }, { identity: "u1" });
+    await t.session.disconnect();
+    expect(screens.at(-1)).toEqual([]);
   });
 });

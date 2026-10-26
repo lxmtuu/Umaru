@@ -26,7 +26,8 @@ import { GroupDmPanel } from "./GroupDmPanel.js";
 import { ProfileDialog } from "./ProfileDialog.js";
 import { RoleSettings } from "./RoleSettings.js";
 import { type DropTarget, resolveDrop } from "../lib/channelDrop.js";
-import { isSpeaking } from "../lib/voice.js";
+import { canShareScreen, isSpeaking } from "../lib/voice.js";
+import { VoiceScreens } from "./VoiceScreens.js";
 import { FriendsPanel } from "./FriendsPanel.js";
 import { formatTabTitle } from "../lib/notifications.js";
 import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
@@ -383,6 +384,11 @@ export function ChatScreen() {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {/*
+        Khung xem chia sẻ màn hình — `fixed` nên nằm ngoài luồng layout, không
+        làm nhảy khung chat khi có người bật/tắt chia sẻ.
+      */}
+      <VoiceScreens screens={state.voiceScreens} />
       {/* Server rail */}
       <nav aria-label={t("servers")} className="flex w-16 shrink-0 flex-col items-center gap-2 border-r border-white/5 bg-slate-950 py-3">
         <button
@@ -700,6 +706,30 @@ export function ChatScreen() {
                 }`}
               >
                 🎧
+              </button>
+              <button
+                type="button"
+                onClick={() => void state.toggleScreenShare()}
+                aria-pressed={state.screenSharing}
+                disabled={
+                  !canShareScreen({
+                    canPublish: state.voiceAudio?.canPublish ?? false,
+                    status: state.voiceAudio?.status ?? "idle",
+                  })
+                }
+                title={
+                  state.screenSharing
+                    ? t("voiceStopShare")
+                    : state.voiceAudio?.canPublish === true
+                      ? t("voiceShareScreen")
+                      : t("voiceShareBlocked")
+                }
+                aria-label={state.screenSharing ? t("voiceStopShare") : t("voiceShareScreen")}
+                className={`rounded px-2 py-0.5 text-xs hover:bg-white/5 disabled:opacity-40 ${
+                  state.screenSharing ? "bg-emerald-400/20 text-emerald-200" : "text-slate-300"
+                }`}
+              >
+                {state.screenSharing ? "⏹" : "🖥"}
               </button>
               {/* Trạng thái âm thanh: nói rõ "đang thông / chưa bật / lỗi gì" thay
                   vì im lặng — người dùng phải phân biệt được "phòng câm" với

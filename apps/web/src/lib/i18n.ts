@@ -288,6 +288,11 @@ const en = {
   pushHintError: "Could not set up push notifications — try again.",
   pushTestSent: "Test sent — it should arrive in a few seconds.",
   pushTestNothing: "Nothing was sent: this device has no push subscription.",
+  voiceShareScreen: "Share screen",
+  voiceStopShare: "Stop sharing",
+  voiceSharing: "You are sharing your screen",
+  voiceShareBlocked: "You can only listen here, so you cannot share",
+  voiceScreenSharing: "is sharing a screen",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -576,6 +581,11 @@ const vi: Record<MessageKey, string> = {
   pushHintError: "Không bật được thông báo đẩy — thử lại giúp mình.",
   pushTestSent: "Đã gửi thử — vài giây nữa sẽ tới.",
   pushTestNothing: "Chưa gửi được: máy này chưa có đăng ký thông báo đẩy.",
+  voiceShareScreen: "Chia sẻ màn hình",
+  voiceStopShare: "Dừng chia sẻ",
+  voiceSharing: "Bạn đang chia sẻ màn hình",
+  voiceShareBlocked: "Bạn chỉ nghe được ở kênh này nên không chia sẻ được",
+  voiceScreenSharing: "đang chia sẻ màn hình",
 };
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, vi };

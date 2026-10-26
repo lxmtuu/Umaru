@@ -135,6 +135,9 @@ describe("GET /channels/:id/voice/token", () => {
       roomJoin: true,
       canPublish: true,
       canSubscribe: true,
+      // Nguồn được publish: nói + chia sẻ màn hình (kèm tiếng tab). Không có
+      // `camera` vì app chưa hỗ trợ bật camera.
+      canPublishSources: ["microphone", "screen_share", "screen_share_audio"],
     });
     // Hạn 1 giờ (mặc định) và không lệch quá vài giây.
     expect(Math.abs(payload.exp - Date.now() / 1000 - 3600)).toBeLessThan(10);
@@ -217,7 +220,11 @@ describe("createLiveKitToken", () => {
       exp: number;
       nbf: number;
       iat: number;
-      video: { canPublish: boolean; canPublishData: boolean };
+      video: {
+        canPublish: boolean;
+        canPublishData: boolean;
+        canPublishSources?: string[];
+      };
     };
     expect(payload.exp).toBe(Math.floor(now / 1000) + 120);
     expect(payload.iat).toBe(Math.floor(now / 1000));
@@ -225,6 +232,9 @@ describe("createLiveKitToken", () => {
     // Chat đi qua gateway, không qua data packet của SFU.
     expect(payload.video.canPublishData).toBe(false);
     expect(result.canPublish).toBe(false);
+    // Không có quyền nói thì cũng **không** được publish nguồn nào: token này
+    // không kèm `canPublishSources`, để SFU tự chặn mọi publish.
+    expect(payload.video.canPublishSources).toBeUndefined();
   });
 });
 

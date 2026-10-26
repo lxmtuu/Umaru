@@ -205,6 +205,58 @@ export function isSpeaking(speakers: readonly string[], userId: string | null | 
 }
 
 /**
+ * Một luồng chia sẻ màn hình đang xem được.
+ *
+ * `element` là thẻ `<video>` do LiveKit tạo và gắn luồng media vào. React không
+ * sở hữu nó — component chỉ đưa nó vào DOM (xem `VoiceScreens`). Giữ nguyên thẻ
+ * thay vì tạo mới mỗi lần render để không phải subscribe lại track.
+ */
+export interface VoiceScreenShare {
+  /** Khoá ổn định cho React: `identity:trackSid`. */
+  id: string;
+  userId: string;
+  label: string;
+  element: HTMLVideoElement;
+}
+
+/**
+ * Có được bật chia sẻ màn hình không: cần **quyền publish** (tức `SPEAK`) và
+ * phiên đã kết nối. Deafen **không** chặn: người không nghe vẫn có thể đang
+ * thuyết trình cho người khác xem.
+ */
+export function canShareScreen(input: {
+  canPublish: boolean;
+  status: string;
+}): boolean {
+  return input.canPublish && (input.status === "connected" || input.status === "reconnecting");
+}
+
+/**
+ * Chia sẻ màn hình có tiếng tab hay không — mặc định **có**, vì im lặng khi
+ * đang chiếu video là điều người dùng không mong đợi. Trình duyệt không hỗ trợ
+ * thì `getDisplayMedia` tự bỏ qua phần âm thanh.
+ */
+export function screenShareOptions(): {
+  audio: boolean;
+  selfBrowserSurface: "exclude";
+  surfaceSwitching: "include";
+  systemAudio: "include";
+  video: { width: { max: number }; height: { max: number }; frameRate: { max: number } };
+} {
+  return {
+    audio: true,
+    // Chặn chia sẻ chính tab Umaru: người xem sẽ thấy một màn hình lồng chính nó
+    // (hiệu ứng "gương vô hạn") và tốn băng thông vô ích.
+    selfBrowserSurface: "exclude",
+    surfaceSwitching: "include",
+    systemAudio: "include",
+    // Trần 1080p30: chia sẻ màn hình 4K làm nghẽn đường lên của người chia sẻ
+    // mà chữ trên slide cũng không nét hơn ở cỡ hiển thị này.
+    video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 30 } },
+  };
+}
+
+/**
  * Một phiên âm thanh sống. Chỉ tạo được sau khi đã `PUT /channels/:id/voice`
  * thành công và đã có token từ server.
  *
@@ -215,7 +267,10 @@ export class VoiceAudioSession {
   private room: {
     connect: (url: string, token: string) => Promise<void>;
     disconnect: () => Promise<void> | void;
-    localParticipant: { setMicrophoneEnabled: (enabled: boolean) => Promise<unknown> };
+    localParticipant: {
+      setMicrophoneEnabled: (enabled: boolean) => Promise<unknown>;
+      setScreenShareEnabled: (enabled: boolean, options?: unknown) => Promise<unknown>;
+    };
     remoteParticipants: Map<
       string,
       { audioTrackPublications: Map<string, { track?: { attach: () => HTMLMediaElement | undefined } }> }
@@ -231,6 +286,13 @@ export class VoiceAudioSession {
   private closing = false;
   private connectionState: VoiceConnectionEvent | "connected" = "connected";
   private speakersListener: ((userIds: string[]) => void) | null = null;
+  /** Chia sẻ màn hình đang xem được, theo thứ tự ổn định để UI không nhảy. */
+  private screens: VoiceScreenShare[] = [];
+  private screensListener: ((screens: VoiceScreenShare[]) => void) | null = null;
+
+  private emitScreens(): void {
+    this.screensListener?.([...this.screens]);
+  }
 
   /** Chỉ báo khi danh sách **thực sự** đổi, tránh React re-render mỗi 100ms. */
   private emitSpeakers(next: string[]): void {
@@ -258,27 +320,79 @@ export class VoiceAudioSession {
      * là kiểu hỏng tệ nhất: UI vẫn ghi "Đang thông" trong khi mic đã chết.
      */
     onConnection?: (event: VoiceConnectionEvent) => void;
+    /** Ai đang chia sẻ màn hình (kèm thẻ `<video>` đã gắn luồng media). */
+    onScreens?: (screens: VoiceScreenShare[]) => void;
+    /** Chia sẻ của **chính mình** đã dừng (kể cả khi dừng bằng trình duyệt). */
+    onScreenShareEnded?: () => void;
   }): Promise<void> {
     const { Room, RoomEvent, Track } = await import("livekit-client");
     const room = new Room({ adaptiveStream: true, dynacast: true });
     this.room = room as unknown as VoiceAudioSession["room"];
 
-    // Người khác vào/ra: gắn hoặc bỏ thẻ audio ngay, không đợi gateway.
-    room.on(RoomEvent.TrackSubscribed, (track, _publication, _participant) => {
-      if (track.kind !== Track.Kind.Audio) return;
-      const element = track.attach();
-      // Không đưa vào layout: chỉ để phát tiếng. `playsInline` cho iOS.
-      element.style.display = "none";
-      document.body.append(element);
-      this.elements.add(element);
-      void element.play().catch(() => undefined);
-      element.muted = !shouldPlayRemote(input.selfDeaf);
+    this.screensListener = input.onScreens ?? null;
+    this.screens = [];
+    this.emitScreens();
+
+    // Người khác vào/ra: gắn hoặc bỏ track ngay, không đợi gateway.
+    room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+      if (track.kind === Track.Kind.Audio) {
+        const element = track.attach();
+        // Không đưa vào layout: chỉ để phát tiếng. `playsInline` cho iOS.
+        element.style.display = "none";
+        document.body.append(element);
+        this.elements.add(element);
+        void element.play().catch(() => undefined);
+        element.muted = !shouldPlayRemote(input.selfDeaf);
+        return;
+      }
+      if (track.kind !== Track.Kind.Video) return;
+      // Chỉ nhận **chia sẻ màn hình**: camera không được cấp trong token, nhưng
+      // kiểm ở đây để một client tự viết không chen được video vào khung của ta.
+      const source = (publication as { source?: unknown } | undefined)?.source;
+      if (typeof source === "string" && source !== "screen_share" && source !== "screen_share_audio") {
+        return;
+      }
+      const element = track.attach() as HTMLVideoElement;
+      element.autoplay = true;
+      element.playsInline = true;
+      element.muted = true; // tiếng tab đi qua track audio riêng ở trên
+      element.style.maxWidth = "100%";
+      element.style.maxHeight = "100%";
+      element.style.objectFit = "contain";
+      element.style.background = "#000";
+      const identity = String((participant as { identity?: unknown } | undefined)?.identity ?? "");
+      const sid = String((publication as { trackSid?: unknown } | undefined)?.trackSid ?? identity);
+      const name = (participant as { name?: unknown } | undefined)?.name;
+      this.screens = [
+        ...this.screens.filter((entry) => entry.id !== `${identity}:${sid}`),
+        {
+          id: `${identity}:${sid}`,
+          userId: identity,
+          label: typeof name === "string" && name.length > 0 ? name : identity,
+          element,
+        },
+      ];
+      this.emitScreens();
     });
     room.on(RoomEvent.TrackUnsubscribed, (track) => {
-      for (const element of track.detach()) {
+      const detached = track.detach();
+      const removed = new Set<HTMLMediaElement>(detached);
+      for (const element of detached) {
         element.remove();
         this.elements.delete(element);
       }
+      const next = this.screens.filter((entry) => !removed.has(entry.element));
+      if (next.length !== this.screens.length) {
+        this.screens = next;
+        this.emitScreens();
+      }
+    });
+    // Người dùng bấm "Stop sharing" của chính trình duyệt (thanh nổi của Chrome/
+    // Firefox) — không phải qua nút của app. Không nghe sự kiện này thì nút 🖥
+    // vẫn hiện "đang chia sẻ" trong khi luồng đã tắt.
+    room.on(RoomEvent.LocalTrackUnpublished, (publication) => {
+      const source = (publication as { source?: unknown } | undefined)?.source;
+      if (source === "screen_share") input.onScreenShareEnded?.();
     });
 
     // Ai đang nói: lấy từ SFU, không phải từ mic của mình — nên người deafen
@@ -334,10 +448,32 @@ export class VoiceAudioSession {
     for (const element of this.elements) element.muted = !shouldPlayRemote(deafened);
   }
 
+  /**
+   * Bật/tắt chia sẻ màn hình. Trả `false` khi trình duyệt từ chối hoặc người
+   * dùng đóng hộp chọn màn hình — đó **không** phải lỗi mạng, nên không được
+   * hiện "không kết nối được phòng".
+   *
+   * Tắt chia sẻ khi chính người dùng bấm "Stop sharing" của trình duyệt: LiveKit
+   * phát `LocalTrackUnpublished`, store nghe để đồng bộ nút bấm.
+   */
+  async setScreenShare(enabled: boolean): Promise<boolean> {
+    if (this.room === null) return false;
+    try {
+      await this.room.localParticipant.setScreenShareEnabled(enabled, screenShareOptions());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async disconnect(): Promise<void> {
     this.closing = true;
     for (const element of this.elements) element.remove();
     this.elements.clear();
+    for (const screen of this.screens) screen.element.remove();
+    this.screens = [];
+    this.emitScreens();
+    this.screensListener = null;
     this.emitSpeakers([]);
     this.speakersListener = null;
     const room = this.room;

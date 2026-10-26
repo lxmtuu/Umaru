@@ -38,12 +38,14 @@ import {
   VoiceAudioSession,
   beginVoiceAudio,
   classifyVoiceError,
+  canShareScreen,
   decideVoiceDrop,
   shouldPublishMicrophone,
   voiceAudioError,
   voiceStatusAfterConnectionEvent,
   type VoiceAudioErrorKey,
   type VoiceAudioState,
+  type VoiceScreenShare,
 } from "./voice.js";
 import {
   NOTIFICATION_SETTINGS_KEY,
@@ -205,6 +207,13 @@ interface ChatState {
    * theo độ trễ mạng. Rỗng khi không có âm thanh — trạng thái phòng vẫn đúng.
    */
   voiceSpeakers: string[];
+  /**
+   * Ai đang chia sẻ màn hình trong phòng mình đang ngồi. `element` là thẻ
+   * `<video>` LiveKit đã gắn luồng — component chỉ đưa nó vào DOM.
+   */
+  voiceScreens: VoiceScreenShare[];
+  /** Mình có đang chia sẻ màn hình không (để nút bấm hiện đúng trạng thái). */
+  screenSharing: boolean;
   error: string | null;
   notice: string | null;
   /**
@@ -405,6 +414,8 @@ interface ChatState {
   syncPush(): Promise<void>;
   /** Gửi một thông báo thử tới chính mình. */
   testPush(): Promise<void>;
+  /** Bật/tắt chia sẻ màn hình trong phòng thoại đang ở. */
+  toggleScreenShare(): Promise<void>;
   notifyTyping(): void;
   clearNotice(): void;
   clearError(): void;
@@ -580,7 +591,7 @@ async function startVoiceAudio(
   set: (patch: Partial<ChatState>) => void,
 ): Promise<void> {
   await stopVoiceAudio();
-  set({ voiceAudio: beginVoiceAudio(channelId), voiceSpeakers: [] });
+  set({ voiceAudio: beginVoiceAudio(channelId), voiceSpeakers: [], voiceScreens: [], screenSharing: false });
   try {
     const token = await authedApi.getVoiceToken(channelId);
     const session = new VoiceAudioSession();
@@ -598,6 +609,15 @@ async function startVoiceAudio(
       onSpeakers: (speakers) => {
         if (voiceSession !== session) return;
         set({ voiceSpeakers: speakers });
+      },
+      onScreens: (screens) => {
+        if (voiceSession !== session) return;
+        set({ voiceScreens: screens });
+      },
+      onScreenShareEnded: () => {
+        if (voiceSession !== session) return;
+        // Dừng bằng thanh nổi của trình duyệt: nút phải trở lại "chưa chia sẻ".
+        set({ screenSharing: false });
       },
       onConnection: (event) => {
         if (voiceSession !== session) return;
@@ -777,6 +797,8 @@ const initialState = {
   voiceStates: [],
   voiceAudio: null,
   voiceSpeakers: [],
+  voiceScreens: [],
+  screenSharing: false,
   pushStatus: "off" as PushStatus,
   pushBusy: false,
   pushNotice: null,
@@ -961,7 +983,7 @@ export const useChat = create<ChatState>()((set, get) => ({
     // `gateway.close()` không giúp gì — kết nối tới SFU là kết nối riêng.
     await stopVoiceAudio();
     voiceReconnectAttempt = 0;
-    set({ voiceAudio: null, voiceSpeakers: [] });
+    set({ voiceAudio: null, voiceSpeakers: [], voiceScreens: [], screenSharing: false });
     const refreshToken = getRefreshToken();
     if (refreshToken !== null) {
       try {
@@ -1238,7 +1260,7 @@ export const useChat = create<ChatState>()((set, get) => ({
         // đúng loại lỗi mà lớp quyền phía server đang cố ngăn.
         if (audio !== null) {
           void stopVoiceAudio();
-          set({ voiceAudio: null, voiceSpeakers: [] });
+          set({ voiceAudio: null, voiceSpeakers: [], voiceScreens: [], screenSharing: false });
         }
         return;
       }
@@ -2398,7 +2420,7 @@ export const useChat = create<ChatState>()((set, get) => ({
         // Cắt tiếng **trước** khi báo rời: rời chậm một nhịp cũng không được để
         // mic còn mở trong phòng mình đã rời.
         await stopVoiceAudio();
-        set({ voiceAudio: null, voiceSpeakers: [] });
+        set({ voiceAudio: null, voiceSpeakers: [], voiceScreens: [], screenSharing: false });
         await authedApi.leaveVoice(channelId);
       } else {
         voiceReconnectAttempt = 0;
@@ -2418,6 +2440,17 @@ export const useChat = create<ChatState>()((set, get) => ({
     // một lần sau khi hết lượt tự động mà vẫn bị chặn.
     voiceReconnectAttempt = 0;
     await startVoiceAudio(mine.channelId as string, get, (patch) => set(patch));
+  },
+  async toggleScreenShare() {
+    const audio = get().voiceAudio;
+    if (audio === null || voiceSession === null) return;
+    if (!canShareScreen({ canPublish: audio.canPublish, status: audio.status })) return;
+    const wanted = !get().screenSharing;
+    // Đặt trạng thái **sau** khi trình duyệt trả lời: `getDisplayMedia` có thể bị
+    // người dùng đóng hộp chọn màn hình, và lúc đó nút phải ở nguyên "chưa chia
+    // sẻ" thay vì nhảy sang "đang chia sẻ" rồi tự quay lại.
+    const ok = await voiceSession.setScreenShare(wanted);
+    if (ok) set({ screenSharing: wanted });
   },
   async toggleVoiceMute() {
     const me = get().me;

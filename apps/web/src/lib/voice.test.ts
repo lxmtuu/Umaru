@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_SPEAKERS,
   MAX_VOICE_RECONNECT_ATTEMPTS,
+  canShareScreen,
   decideVoiceDrop,
+  screenShareOptions,
   shouldRetryVoiceConnection,
   voiceReconnectDelayMs,
   voiceStatusAfterConnectionEvent,
@@ -202,5 +204,32 @@ describe("decideVoiceDrop", () => {
     });
     // Vẫn giữ nguyên tắc: đã rời phòng thì dọn, kể cả khi hết lượt.
     expect(decideVoiceDrop({ inChannel: false, attempt: 99 })).toEqual({ kind: "cleanup" });
+  });
+});
+
+describe("chia sẻ màn hình", () => {
+  it("chỉ bật được khi có quyền nói và phiên đã kết nối (hoặc đang nối lại)", () => {
+    expect(canShareScreen({ canPublish: true, status: "connected" })).toBe(true);
+    // Đang nối lại thì vẫn cho bấm: phiên chưa chết, chỉ là mạng đang chập.
+    expect(canShareScreen({ canPublish: true, status: "reconnecting" })).toBe(true);
+  });
+
+  it("thiếu SPEAK hoặc phiên chưa sẵn sàng thì không cho bật", () => {
+    expect(canShareScreen({ canPublish: false, status: "connected" })).toBe(false);
+    expect(canShareScreen({ canPublish: true, status: "connecting" })).toBe(false);
+    expect(canShareScreen({ canPublish: true, status: "error" })).toBe(false);
+    expect(canShareScreen({ canPublish: true, status: "unavailable" })).toBe(false);
+  });
+
+  it("lựa chọn chia sẻ: có tiếng tab, chặn chia sẻ chính tab Umaru, trần 1080p30", () => {
+    const options = screenShareOptions();
+    expect(options.audio).toBe(true);
+    // Chia sẻ chính tab Umaru = màn hình lồng chính nó, chỉ tốn băng thông.
+    expect(options.selfBrowserSurface).toBe("exclude");
+    expect(options.video).toEqual({
+      width: { max: 1920 },
+      height: { max: 1080 },
+      frameRate: { max: 30 },
+    });
   });
 });

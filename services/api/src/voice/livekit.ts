@@ -74,6 +74,13 @@ export function createLiveKitToken(input: VoiceTokenInput): VoiceToken {
       room: input.room,
       roomJoin: true,
       canPublish: input.canPublish,
+      // Liệt kê **nguồn** được publish thay vì để mở: `camera` cố ý không có mặt
+      // vì app chưa hỗ trợ bật camera — một client tự viết có thể publish nhưng
+      // cũng chẳng ảnh hưởng ai; điều quan trọng là danh sách này khớp với thứ
+      // UI thật sự làm được (`microphone`, chia sẻ màn hình kèm tiếng tab).
+      ...(input.canPublish
+        ? { canPublishSources: ["microphone", "screen_share", "screen_share_audio"] }
+        : {}),
       canSubscribe: input.canSubscribe,
       // Chỉ giữ luồng media: không cho publish data packet (chat đi qua gateway).
       canPublishData: false,
