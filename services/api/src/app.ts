@@ -56,6 +56,9 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   const app = Fastify({
     logger: config.logger ? { level: "info" } : false,
     bodyLimit: 1024 * 1024,
+    // Chỉ tin `X-Forwarded-*` khi có proxy thật (`TRUST_PROXY=1`): rate limit
+    // và log địa chỉ đều dựa vào `request.ip`, sai nguồn là sai hết.
+    trustProxy: config.trustProxy,
   });
 
   await app.register(websocket, {

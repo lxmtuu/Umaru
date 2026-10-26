@@ -14,6 +14,7 @@ import type { Mailer } from "../mail.js";
 import { hashVerificationToken, issueVerificationToken } from "./verification.js";
 import { createAuthGuard, requireUserId } from "./guard.js";
 import { hashPassword, verifyPassword } from "./password.js";
+import { BucketStore, rateLimitedBody } from "../rateLimit.js";
 import type { TokenService } from "./tokens.js";
 
 export interface AuthDeps {
@@ -28,6 +29,53 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
   const { pool, tokens, config, mailer } = deps;
+
+  /**
+   * Chống dò mật khẩu. Đếm theo **hai khoá**: IP và email.
+   *
+   * Chỉ đếm lần **thất bại** — người dùng đăng nhập đúng 50 lần một ngày không
+   * được coi là tấn công, còn kẻ dò mật khẩu thì mọi lần thử đều sai. Bộ đếm
+   * xoá khi đăng nhập thành công (đổi lại là mật khẩu đúng thì không còn gì để
+   * dò nữa).
+   */
+  // Cửa sổ 15 phút: đủ dài để dò mật khẩu không có lợi, đủ ngắn để người gõ
+  // nhầm vài lần vẫn đăng nhập lại được trong cùng buổi.
+  const AUTH_WINDOW_MS = 15 * 60 * 1000;
+  const authByIp = new BucketStore(config.rateLimitAuthPerIp, AUTH_WINDOW_MS);
+  const authByEmail = new BucketStore(config.rateLimitAuthPerEmail, AUTH_WINDOW_MS);
+
+  /**
+   * Trả về số giây phải chờ khi bị chặn, `null` khi được đi tiếp. Cố ý **không**
+   * ném `HttpError`: mọi rate limit khác của API trả body `RATE_LIMITED` kèm
+   * `retry_after` (client hiện được "thử lại sau N giây"), nếu chỗ này ném thì
+   * body khác hình dạng và client phải có nhánh riêng.
+   */
+  function authAttemptBlocked(
+    request: FastifyRequest,
+    email: string | null,
+  ): { retryAfter: number; message: string } | null {
+    if (!config.rateLimitsEnabled) return null;
+    // `request.ip` là IP thật chỉ khi `TRUST_PROXY` khớp với hạ tầng; sai cấu
+    // hình thì hoặc chặn oan cả proxy, hoặc client tự khai IP — cả hai đều tệ,
+    // nên ghi rõ trong DEPLOY.md thay vì đoán.
+    const byIp = authByIp.take(request.ip);
+    if (byIp !== null) {
+      return {
+        retryAfter: byIp,
+        message: `Quá nhiều lần đăng nhập từ địa chỉ này, thử lại sau ${byIp} giây`,
+      };
+    }
+    if (email !== null) {
+      const byEmail = authByEmail.take(`login:${email}`);
+      if (byEmail !== null) {
+        return {
+          retryAfter: byEmail,
+          message: `Tài khoản này vừa có quá nhiều lần đăng nhập sai, thử lại sau ${byEmail} giây`,
+        };
+      }
+    }
+    return null;
+  }
 
   const issueTokens = async (userId: string, request: FastifyRequest) => {
     const accessToken = await tokens.signAccessToken(userId as Snowflake);
@@ -112,12 +160,21 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
     const email = readString(body, "email", { max: 254 }).toLowerCase();
     const password = readString(body, "password", { min: 1, max: 200, trim: false });
 
+    // Kiểm **trước** khi băm: argon2id cố tình đắt, nên một vòng lặp thử mật
+    // khẩu không chỉ là dò bảo mật mà còn là đốt CPU của server.
+    const blocked = authAttemptBlocked(request, email);
+    if (blocked !== null) {
+      return reply.code(429).send(rateLimitedBody(blocked.retryAfter, blocked.message));
+    }
+
     const result = await pool.query<UserRow>("SELECT * FROM users WHERE email = $1", [email]);
     const user = result.rows[0];
     const valid = user === undefined ? false : await verifyPassword(user.password_hash, password);
     if (user === undefined || !valid) {
       throw unauthorized("Email hoặc mật khẩu không đúng");
     }
+    // Mật khẩu đúng → hết lý do để giữ bộ đếm (người dùng vừa gõ đúng).
+    authByEmail.clear(`login:${email}`);
     const tokensPayload = await issueTokens(user.id, request);
     return reply.send({ user: mapUser(user), ...tokensPayload });
   });

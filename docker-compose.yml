@@ -1,0 +1,105 @@
+# Umaru — chạy bằng Docker Compose.
+#
+#   cp .env.example .env    # rồi điền các giá trị bắt buộc (xem DEPLOY.md)
+#   docker compose up -d --build
+#
+# Bốn service: db (Postgres), api (Fastify), web (nginx + SPA + proxy), và
+# `migrate` là **one-shot** — chạy trước api để schema sẵn sàng. API cũng tự áp
+# migration lúc khởi động (có advisory lock nên nhiều bản chạy song song vẫn an
+# toàn), `migrate` chỉ để thấy log lỗi rõ ràng và để `api` không phải chờ.
+
+name: umaru
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-umaru}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD phải đặt trong .env}
+      POSTGRES_DB: ${POSTGRES_DB:-umaru}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-umaru} -d ${POSTGRES_DB:-umaru}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Không mở cổng ra ngoài: chỉ api trong cùng network nói chuyện với DB.
+    networks: [internal]
+
+  migrate:
+    build:
+      context: .
+      target: api
+    command: ["node", "dist/scripts/migrate.js"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-umaru}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-umaru}
+      MIGRATIONS_DIR: /app/db/migrations
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET phải đặt trong .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    networks: [internal]
+
+  api:
+    build:
+      context: .
+      target: api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      HOST: 0.0.0.0
+      DATABASE_URL: postgres://${POSTGRES_USER:-umaru}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-umaru}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET phải đặt trong .env}
+      # Có nginx đứng trước ⇒ bật để `request.ip` là IP người dùng, không phải IP
+      # của container web. Tắt cái này thì rate limit theo IP gộp cả thế giới.
+      TRUST_PROXY: "1"
+      # URL công khai để client biết phải mở WebSocket ở đâu (wss:// khi có TLS).
+      GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:-}
+      UPLOADS_DIR: /data/uploads
+      # Mail: chưa đặt SMTP_URL thì mail ghi ra log (dev). Production nên đặt.
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-Umaru <no-reply@umaru.local>}
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://localhost:8080}
+      ADMIN_USERNAMES: ${ADMIN_USERNAMES:-}
+      ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
+      # Âm thanh + chia sẻ màn hình. Thiếu ba biến LIVEKIT_* là tắt hẳn (503).
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      # Thông báo đẩy. Thiếu VAPID_* là tắt hẳn (503).
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    volumes:
+      # Tệp đính kèm + avatar nằm ở đây; mất volume là mất file của người dùng.
+      - uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [internal]
+
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    ports:
+      # Chỉ web mở ra ngoài. API và DB nằm trong network nội bộ.
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+    networks: [internal]
+
+volumes:
+  db-data:
+  uploads:
+
+networks:
+  internal:

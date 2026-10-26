@@ -74,6 +74,28 @@ export interface Config {
   /** Số lần join/leave/mute kênh thoại mỗi 10 giây của một user. */
   rateLimitVoiceMutations: number;
   /**
+   * Số lần **đăng nhập sai** mỗi 15 phút cho một IP, và cho một email.
+   *
+   * Hai bộ đếm độc lập vì hai kiểu tấn công khác nhau: một IP thử nhiều email
+   * (dò tài khoản) và nhiều IP thử một email (dò mật khẩu). Chỉ giới hạn theo
+   * email thì kẻ tấn công đổi email mỗi lần; chỉ theo IP thì botnet đi qua.
+   *
+   * Riêng băm mật khẩu (argon2id) đã đủ đắt để một luồng request vô hạn thành
+   * DoS CPU, nên đây cũng là hàng rào tài nguyên chứ không chỉ bảo mật.
+   */
+  rateLimitAuthPerIp: number;
+  rateLimitAuthPerEmail: number;
+  /**
+   * Tin `X-Forwarded-For`/`X-Forwarded-Proto` từ proxy đứng trước (mặc định
+   * **tắt**).
+   *
+   * Bật khi chạy sau nginx/Caddy/ALB. Tắt thì `request.ip` là IP của proxy nên
+   * rate limit theo IP gộp cả thế giới vào một bộ đếm — người dùng thật bị chặn
+   * oan. Bật mà **không** có proxy thì client tự khai IP của mình → vô hiệu hoá
+   * rate limit. Vì vậy đây là cấu hình tường minh, không phải "tự đoán".
+   */
+  trustProxy: boolean;
+  /**
    * LiveKit (SFU cho âm thanh kênh thoại). `null` = **chưa cấu hình** →
    * `GET /channels/:id/voice/token` trả 503 và client chỉ hiện trạng thái
    * (vẫn join/leave phòng được, chỉ không có tiếng). Không có giá trị mặc định
@@ -212,6 +234,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     rateLimitSessionsPerUser: readPositiveInt(env.RATE_LIMIT_SESSIONS_PER_USER, 5, 1, 100),
     rateLimitVoiceMutations: readPositiveInt(env.RATE_LIMIT_VOICE_MUTATIONS, 10, 1, 1_000),
+    rateLimitAuthPerIp: readPositiveInt(env.RATE_LIMIT_AUTH_PER_IP, 20, 1, 10_000),
+    rateLimitAuthPerEmail: readPositiveInt(env.RATE_LIMIT_AUTH_PER_EMAIL, 10, 1, 10_000),
+    // Chỉ bật khi có proxy thật; xem ghi chú ở interface.
+    trustProxy: env.TRUST_PROXY === "1" || env.TRUST_PROXY === "true",
     livekit: readLiveKit(env),
     livekitTokenTtlSec: readPositiveInt(env.LIVEKIT_TOKEN_TTL_SEC, 3600, 60, 86_400),
     push: readPush(env),

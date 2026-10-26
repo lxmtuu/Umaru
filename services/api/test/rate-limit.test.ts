@@ -194,3 +194,81 @@ describe("rate limit theo kênh (nhiều người spam)", () => {
     await tight.close();
   });
 });
+
+describe("chống dò mật khẩu ở /auth/login", () => {
+  let ctx: TestContext;
+  let victim: RegisteredUser;
+
+  beforeAll(async () => {
+    // Cửa sổ 15 phút nên trong một lần chạy test không thể chờ nguội; đặt trần
+    // thấp để kiểm hành vi chặn. Trần theo email = 3, theo IP = 50 để test được
+    // riêng từng bộ đếm.
+    ctx = await createTestContext({
+      RATE_LIMIT_AUTH_PER_IP: "50",
+      RATE_LIMIT_AUTH_PER_EMAIL: "3",
+    });
+    victim = await registerUser(ctx, "brute_target");
+  });
+
+  afterAll(async () => {
+    await ctx.close();
+  });
+
+  async function login(email: string, password: string): Promise<number> {
+    const response = await ctx.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email, password },
+    });
+    return response.statusCode;
+  }
+
+  it("sai mật khẩu vài lần → 401, quá trần thì 429 kèm retry_after", async () => {
+    expect(await login("brute_target@example.com", "sai-1")).toBe(401);
+    expect(await login("brute_target@example.com", "sai-2")).toBe(401);
+    expect(await login("brute_target@example.com", "sai-3")).toBe(401);
+
+    const blocked = await ctx.app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { email: "brute_target@example.com", password: "sai-4" },
+    });
+    expect(blocked.statusCode).toBe(429);
+    const body = blocked.json<{ error: { code: string }; retry_after: number }>();
+    expect(body.error.code).toBe("RATE_LIMITED");
+    expect(body.retry_after).toBeGreaterThan(0);
+  });
+
+  it("đang bị chặn thì mật khẩu ĐÚNG cũng không vào được (nếu không, giới hạn vô nghĩa)", async () => {
+    expect(await login("brute_target@example.com", "mat-khau-123")).toBe(429);
+  });
+
+  it("trần theo email không ảnh hưởng tài khoản khác (không chặn oan cả server)", async () => {
+    const other = await registerUser(ctx, "brute_bystander");
+    expect(await login(`${other.username}@example.com`, "mat-khau-123")).toBe(200);
+  });
+
+  it("trần theo IP chặn được kẻ đổi email liên tục khi cùng một IP", async () => {
+    const ipCtx = await createTestContext({
+      RATE_LIMIT_AUTH_PER_IP: "2",
+      RATE_LIMIT_AUTH_PER_EMAIL: "100",
+    });
+    try {
+      const user = await registerUser(ipCtx, "ip_target");
+      const attempt = async (email: string): Promise<number> =>
+        (
+          await ipCtx.app.inject({
+            method: "POST",
+            url: "/api/v1/auth/login",
+            payload: { email, password: "sai" },
+          })
+        ).statusCode;
+      expect(await attempt(`${user.username}@example.com`)).toBe(401);
+      expect(await attempt("khong-ton-tai@example.com")).toBe(401);
+      // Đổi email mỗi lần vẫn bị chặn vì bộ đếm theo IP đã cạn.
+      expect(await attempt("email-thu-ba@example.com")).toBe(429);
+    } finally {
+      await ipCtx.close();
+    }
+  });
+});

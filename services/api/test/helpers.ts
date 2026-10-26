@@ -53,6 +53,9 @@ export async function createTestContext(
       RATE_LIMIT_GATEWAY_FRAMES_PER_MINUTE: "100000",
       RATE_LIMIT_SESSIONS_PER_USER: "100",
       RATE_LIMIT_VOICE_MUTATIONS: "1000",
+      // Đăng nhập sai: nới rộng cho test nghiệp vụ (test riêng tự đặt trần thấp).
+      RATE_LIMIT_AUTH_PER_IP: "1000",
+      RATE_LIMIT_AUTH_PER_EMAIL: "1000",
       ...envOverrides,
     }),
     logger: false,
