@@ -42,6 +42,9 @@ mở ở **hai cửa sổ riêng tư khác nhau** để kiểm realtime.
       không treo.
 - [ ] Ô tìm kiếm: gõ `markdown` → ra tin cũ; bấm kết quả → nhảy tới đúng tin.
 - [ ] Ghim một tin → hiện trong danh sách ghim; bỏ ghim → mất khỏi danh sách.
+- [ ] Thả emoji vào tin (nút 😊+ hoặc chip có sẵn) → chip hiện số người; cửa sổ
+      kia thấy chip ngay không cần F5; bấm lại chip của mình → bỏ, chip biến mất khi
+      còn 0 người.
 
 ### Realtime (hai cửa sổ)
 
