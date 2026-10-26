@@ -205,7 +205,9 @@ export async function listGuildChannelsForUser(
 
   const channelResult = await pool.query<ChannelRow>(
     `SELECT id, guild_id, type, name, topic, parent_id, position
-       FROM channels WHERE guild_id = $1 ORDER BY position, id`,
+       FROM channels
+      WHERE guild_id = $1 AND type <> 'guild_thread'
+      ORDER BY position, id`,
     [guildId],
   );
   const overwriteResult = await pool.query<{

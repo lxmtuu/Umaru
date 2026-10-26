@@ -98,7 +98,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 | Ghim tin nhắn (pin limit 250 trên Discord 2025) | P1 |
 | Tải file lên (10MB free / 50MB Nitro Basic / 1GB Nitro; preview ảnh, AV1 2025) | P0 (→10MB), P1 (giới hạn theo gói) |
 | Embed link preview (OG metadata) | ✅ đã có: `og:*`/`twitter:*` + `<title>`, ảnh tương đối, chặn SSRF, `MESSAGE_UPDATE` sau khi tải xong | P1 |
-| **Threads** (tin nhắn thành luồng, tự archive) | P1 |
+| **Threads** (tin nhắn thành luồng, tự archive) | ✅ đã có: thread là kênh `guild_thread` (không vào sidebar, kế thừa overwrite kênh cha), 1 thread mở/tin gốc, lưu trữ = chỉ đọc, tự lưu trữ theo `THREAD_ARCHIVE_MINUTES`; `THREAD_CREATE/UPDATE/DELETE` + `READY.threads` | P1 |
 | **Polls** (10 đáp án, chọn nhiều, tối đa 1 tuần, không ẩn danh) | P2 |
 | **Voice message** (tối đa 20 phút, chỉ ghi trên mobile) | P2 |
 | **Forum channel** (channel kiểu diễn đàn, có tag, layout list/gallery) | P2 |

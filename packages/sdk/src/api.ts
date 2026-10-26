@@ -23,6 +23,7 @@ import type {
   FriendRequestSummary,
   MessageRequestSummary,
   UserSettings,
+  ThreadSummary,
 } from "@umaru/protocol";
 
 function buildSearchParams(query: string, options: { before?: string; limit?: number }): string {
@@ -653,6 +654,42 @@ export class UmaruApi {
   }
 
   /** Danh sách tin đã ghim của kênh, mới ghim trước (tối đa 50). */
+  /** Thread đang mở của kênh (`archived` để xem kho lưu trữ). */
+  listThreads(channelId: string, options: { archived?: boolean } = {}): Promise<ThreadSummary[]> {
+    const query = options.archived === true ? "?archived=1" : "";
+    return this.request<ThreadSummary[]>(`${API_PREFIX}/channels/${channelId}/threads${query}`);
+  }
+
+  /**
+   * Tạo thread trong kênh. `messageId` = tạo từ tin gốc (một tin chỉ một thread
+   * đang mở); bỏ trống = thread rỗng, đặt tên bằng `name`.
+   */
+  createThread(
+    channelId: string,
+    input: { messageId?: string; name?: string } = {},
+  ): Promise<ThreadSummary> {
+    return this.request<ThreadSummary>(`${API_PREFIX}/channels/${channelId}/threads`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Đổi tên / lưu trữ / mở lại thread (chủ thread hoặc `MANAGE_CHANNELS`). */
+  updateThread(
+    threadId: string,
+    input: { name?: string; archived?: boolean },
+  ): Promise<ThreadSummary> {
+    return this.request<ThreadSummary>(`${API_PREFIX}/channels/${threadId}/thread`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Xoá hẳn thread cùng tin nhắn của nó. */
+  deleteThread(threadId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/channels/${threadId}/thread`, { method: "DELETE" });
+  }
+
   listPinnedMessages(channelId: string, limit?: number): Promise<Message[]> {
     const query = limit === undefined ? "" : `?limit=${limit}`;
     return this.request<Message[]>(`${API_PREFIX}/channels/${channelId}/pins${query}`);

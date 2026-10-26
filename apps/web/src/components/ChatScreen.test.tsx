@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message, Snowflake } from "@umaru/protocol";
 
@@ -24,6 +24,30 @@ vi.mock("../lib/session.js", () => ({
     sendTyping: async () => undefined,
     listMessageRequests: async () => [],
     listPins: async () => [],
+    listThreads: async () => [],
+    createThread: async (channelId: string, input: { name?: string }) => ({
+      id: "7001",
+      parentChannelId: channelId,
+      rootMessageId: null,
+      name: input.name ?? "Thread",
+      ownerId: "1000",
+      messageCount: 0,
+      createdAt: "2026-10-26T04:00:00.000Z",
+      lastActivityAt: "2026-10-26T04:00:00.000Z",
+      archived: false,
+    }),
+    updateThread: async (threadId: string, input: { archived?: boolean }) => ({
+      id: threadId,
+      parentChannelId: "3000",
+      rootMessageId: null,
+      name: "Bàn kế hoạch",
+      ownerId: "1000",
+      messageCount: 3,
+      createdAt: "2026-10-26T04:00:00.000Z",
+      lastActivityAt: "2026-10-26T04:00:00.000Z",
+      archived: input.archived ?? false,
+    }),
+    deleteThread: async () => undefined,
     searchMessages: async () => ({ hits: [], hasMore: false }),
     addReaction: async (messageId: string, emoji: string) => {
       reactionCalls.added.push(`${messageId}:${emoji}`);
@@ -66,7 +90,7 @@ vi.mock("@umaru/sdk", async (importOriginal) => {
   return { ...actual, GatewayClient: gatewayMock.Client };
 });
 
-const { ChatScreen } = await import("./ChatScreen.js");
+const { ChatScreen, threadNameFrom } = await import("./ChatScreen.js");
 const { useChat } = await import("../lib/chatStore.js");
 const { useLocale } = await import("../lib/i18n.js");
 
@@ -181,6 +205,11 @@ function seedChat() {
     gatewayStatus: "ready",
     searchOpen: false,
     pinsOpen: false,
+    threadsOpen: false,
+    threads: null,
+    threadsChannelId: null,
+    activeThreadId: null,
+    activeThreadName: null,
     friendsOpen: false,
     blocksOpen: false,
     mentionsOpen: false,
@@ -623,5 +652,95 @@ describe("ChatScreen — chế độ thu gọn (compact)", () => {
     expect(JSON.parse(localStorage.getItem("umaru.display") ?? "{}")).toEqual({ compact: true });
     useChat.getState().setCompactMode(false);
     expect(JSON.parse(localStorage.getItem("umaru.display") ?? "{}")).toEqual({ compact: false });
+  });
+});
+
+const THREAD = {
+  id: "7001",
+  parentChannelId: CHANNEL.id as Snowflake,
+  rootMessageId: null,
+  name: "Bàn kế hoạch",
+  ownerId: "1000" as Snowflake,
+  messageCount: 3,
+  createdAt: "2026-10-26T04:00:00.000Z",
+  lastActivityAt: "2026-10-26T04:05:00.000Z",
+  archived: false,
+};
+
+describe("ChatScreen — thread", () => {
+  it("nút 🧵 mở panel, chưa có thread thì nói rõ trạng thái", async () => {
+    render(<ChatScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Thread" }));
+    // `openThreads` gọi API rồi mới đổ danh sách vào state.
+    await waitFor(() =>
+      expect(screen.getByText("Kênh này chưa có thread nào đang mở.")).toBeTruthy(),
+    );
+  });
+
+  it("panel liệt kê thread; bấm vào thì mở như kênh con", () => {
+    useChat.setState({
+      threadsOpen: true,
+      threadsChannelId: CHANNEL.id,
+      threads: [THREAD],
+    } as never);
+    render(<ChatScreen />);
+    expect(screen.getByText("Bàn kế hoạch")).toBeTruthy();
+    expect(screen.getByText("3 tin nhắn")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Mở thread: Bàn kế hoạch/ }));
+    expect(useChat.getState().activeChannelId).toBe("7001");
+  });
+
+  it("thread đã lưu trữ: có nhãn, dải nhắc chỉ đọc và ô soạn bị khoá", () => {
+    useChat.setState({
+      activeChannelId: "7001",
+      activeThreadId: "7001",
+      activeThreadName: "Bàn kế hoạch",
+      threads: [{ ...THREAD, archived: true }],
+      messages: { "7001": [message("7101", "1001", "Chốt luôn nhé", "2026-10-26T04:10:00.000Z")] },
+    } as never);
+    render(<ChatScreen />);
+    expect(screen.getByText("Bàn kế hoạch")).toBeTruthy();
+    expect(screen.getByText("Đã lưu trữ")).toBeTruthy();
+    expect(screen.getByText("Thread đã lưu trữ chỉ đọc.")).toBeTruthy();
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).disabled).toBe(true);
+  });
+
+  it("menu chuột phải tin nhắn trong kênh chữ có Tạo thread", () => {
+    render(<ChatScreen />);
+    const article = screen.getByText("Tin đầu tiên trong ngày").closest("article");
+    fireEvent.contextMenu(article as HTMLElement, { clientX: 100, clientY: 60 });
+    const menu = screen.getByRole("menu", { name: "Hành động với tin nhắn" });
+    const labels = within(menu)
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent ?? "");
+    expect(labels.some((label) => label.includes("Tạo thread"))).toBe(true);
+  });
+});
+
+describe("threadNameFrom — tên thread gợi ý từ tin gốc", () => {
+  it("lấy nội dung tin, gộp khoảng trắng và cắt 40 ký tự", () => {
+    expect(threadNameFrom(message("1", "1", "  Bàn   kế hoạch tuần này ", "2026-10-26T04:00:00.000Z"))).toBe(
+      "Bàn kế hoạch tuần này",
+    );
+    const long = threadNameFrom(message("1", "1", "x".repeat(100), "2026-10-26T04:00:00.000Z"));
+    expect(long).toHaveLength(40);
+  });
+
+  it("tin chỉ có tệp thì lấy tên tệp, không để tên rỗng", () => {
+    const file = {
+      ...message("1", "1", "", "2026-10-26T04:00:00.000Z"),
+      attachments: [
+        {
+          id: "9" as Snowflake,
+          filename: "bien-ban.pdf",
+          mimeType: "application/pdf",
+          size: 10,
+          url: "https://example.test/bien-ban.pdf",
+          width: null,
+          height: null,
+        },
+      ],
+    };
+    expect(threadNameFrom(file)).toBe("bien-ban.pdf");
   });
 });

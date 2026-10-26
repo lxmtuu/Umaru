@@ -36,6 +36,7 @@ import {
 import { HEADER_BYTES, isImageMime, readImageSize } from "../uploads/imageSize.js";
 import type { PushSender } from "../push/sender.js";
 import type { LinkEmbedResolver } from "../embeds/resolver.js";
+import { decrementThreadMessages, isThreadArchived, touchThread } from "../threads/store.js";
 
 export interface MessageDeps {
   pool: Pool;
@@ -155,6 +156,12 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         }
       }
 
+      // Thread đã lưu trữ chỉ đọc: phải mở lại trước khi viết, nếu không
+      // "lưu trữ" chỉ là nhãn trang trí.
+      if ((await isThreadArchived(pool, channelId)) === true) {
+        throw new HttpError(403, "THREAD_ARCHIVED", "Thread đã lưu trữ — mở lại để gửi tin");
+      }
+
       const id = nextId();
       const client = await pool.connect();
       let row: MessageRow;
@@ -210,6 +217,9 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
 
       // @mention ghi ngay lúc gửi để badge tính được bằng một câu SQL.
       await syncMessageMentions(pool, message.id as string, channelId, payload.content);
+      // Có tin mới trong thread ⇒ đếm tin + dời mốc hoạt động (no-op với kênh
+      // thường, chỉ là một lần tra PK).
+      await touchThread(pool, channelId);
 
       publisher.publishToChannel(channelId, "MESSAGE_CREATE", message);
 
@@ -310,6 +320,7 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         [message.id],
       );
       await pool.query("DELETE FROM messages WHERE id = $1", [message.id]);
+      await decrementThreadMessages(pool, message.channel_id);
       await Promise.all(attachments.rows.map((row) => storage.attachments.remove(row.id)));
       publisher.publishToChannel(message.channel_id, "MESSAGE_DELETE", {
         id: message.id as Snowflake,

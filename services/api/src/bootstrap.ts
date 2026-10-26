@@ -12,10 +12,12 @@ import {
   type ReadState,
   type Role,
   type Snowflake,
+  type ThreadSummary,
   type VoiceState,
 } from "@umaru/protocol";
 import type { Pool } from "./db.js";
 import { mapChannel, mapGuild, mapRole, type ChannelRow, type GuildRow } from "./mappers.js";
+import { listActiveThreadsForGuilds } from "./threads/store.js";
 
 export interface GuildBootstrap {
   guild: Guild;
@@ -38,6 +40,11 @@ export interface Bootstrap {
   channelPermissions: Record<string, string>;
   /** Ai đang ở phòng thoại nào, **chỉ** trong các kênh user xem được. */
   voiceStates: VoiceState[];
+  /**
+   * Thread **đang mở** trong các server user là thành viên. Thread đã lưu trữ
+   * không gửi kèm (tải khi mở kho lưu trữ) để READY không phình theo thời gian.
+   */
+  threads: ThreadSummary[];
 }
 
 /** DM không có role/overwrite: hai người trong cuộc đều có đúng ba quyền này. */
@@ -235,6 +242,7 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
       guildIds: new Set(),
       channelPermissions,
       voiceStates: [],
+      threads: [],
     };
   }
 
@@ -345,7 +353,10 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
       });
       if (!hasPermission(permissions, Permission.VIEW_CHANNEL)) continue;
       channelPermissions[channel.id] = serializePermissions(permissions);
-      channels.push(mapChannel(channel));
+      // Thread **không** thuộc sidebar: client nhận qua `threads` + `THREAD_CREATE`.
+      // Nhưng vẫn vào `visibleChannels` thì tin trong thread mới fan-out tới
+      // người đang mở kênh cha — đúng lý do thread dùng chung `channels`.
+      if (channel.type !== "guild_thread") channels.push(mapChannel(channel));
       // Category không nhận message nên không cần nằm trong tập fan-out.
       if (channel.type !== "category") visibleChannels.add(channel.id);
     }
@@ -377,6 +388,7 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
     // phòng thoại không được biết ai đang ở trong đó (cùng tiêu chí §8 với tin
     // nhắn). Lọc ở tầng này nên không có đường nào lọt qua READY.
     voiceStates: await loadVoiceStates(pool, [...visibleChannels]),
+    threads: await listActiveThreadsForGuilds(pool, guildIds),
   };
 }
 

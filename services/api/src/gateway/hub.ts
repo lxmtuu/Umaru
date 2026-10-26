@@ -449,6 +449,8 @@ export class GatewayHub implements EventPublisher {
       readStates: bootstrap.readStates,
       channelPermissions: bootstrap.channelPermissions,
       voiceStates: bootstrap.voiceStates,
+      // Thread đang mở (không nằm ở sidebar nên không đi kèm `guilds[].channels`).
+      threads: bootstrap.threads,
       // Người đã online **trước khi mình vào** sẽ không có event PRESENCE_UPDATE
       // nào tới mình, nên snapshot này là thứ duy nhất cho biết ai đang ở đây.
       presences: this.presenceSnapshotFor(session),

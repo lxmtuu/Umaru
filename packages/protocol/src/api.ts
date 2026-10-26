@@ -63,7 +63,35 @@ export interface FriendList {
   outgoing: FriendRequestSummary[];
 }
 
-export type ChannelType = "guild_text" | "guild_voice" | "category" | "dm" | "group_dm";
+export type ChannelType =
+  | "guild_text"
+  | "guild_voice"
+  | "category"
+  | "dm"
+  | "group_dm"
+  /** Luồng con của một kênh text — **không** hiện trên sidebar. */
+  | "guild_thread";
+
+/**
+ * Thread (luồng thảo luận) của một kênh text.
+ *
+ * `id` **là** một channel id: mọi API tin nhắn/reaction/ghim/tìm kiếm dùng thẳng
+ * nó. Client chỉ cần thêm một dòng vào bảng kênh khi mở panel thread.
+ */
+export interface ThreadSummary {
+  id: Snowflake;
+  parentChannelId: Snowflake;
+  /** Tin gốc sinh ra thread; null khi thread tạo tay. */
+  rootMessageId: Snowflake | null;
+  name: string;
+  ownerId: Snowflake | null;
+  /** Số tin trong thread (không tính tin gốc ở kênh cha). */
+  messageCount: number;
+  createdAt: string;
+  /** Lần cuối có tin mới — dùng để sắp xếp và tự lưu trữ. */
+  lastActivityAt: string;
+  archived: boolean;
+}
 
 export interface Guild {
   id: Snowflake;

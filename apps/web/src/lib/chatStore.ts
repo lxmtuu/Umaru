@@ -18,7 +18,7 @@ import type {
   Snowflake,
   User,
 } from "@umaru/protocol";
-import { parsePermissions, serializePermissions } from "@umaru/protocol";
+import { parsePermissions, serializePermissions, type ThreadSummary } from "@umaru/protocol";
 import { ApiError, GatewayClient, type GatewayState } from "@umaru/sdk";
 import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
@@ -158,6 +158,16 @@ interface ChatState {
   pinsLoading: boolean;
   /** Kênh sở hữu danh sách `pins` — đổi kênh là bỏ dữ liệu cũ. */
   pinsChannelId: string | null;
+  /** Panel thread bên phải đang mở (danh sách thread của `threadsChannelId`). */
+  threadsOpen: boolean;
+  /** Thread **đang mở** của kênh `threadsChannelId`; null = chưa tải. */
+  threads: ThreadSummary[] | null;
+  threadsLoading: boolean;
+  threadsChannelId: string | null;
+  /** Thread đang mở trong panel — mở ra là chuyển sang xem như kênh con. */
+  activeThreadId: string | null;
+  /** Tiêu đề thread đang mở (để hiện ở thanh trên cùng thay tên kênh). */
+  activeThreadName: string | null;
   /** Panel "Người đã chặn" đang mở. */
   blocksOpen: boolean;
   /** Danh sách người đã chặn; null = chưa tải lần nào. */
@@ -365,6 +375,15 @@ interface ChatState {
   /** Mở/đóng panel tin ghim của kênh đang mở (mở là tải lại). */
   openPins(): Promise<void>;
   closePins(): void;
+  openThreads(): Promise<void>;
+  closeThreads(): void;
+  /** Tạo thread từ tin gốc (hoặc thread rỗng nếu không truyền) rồi mở nó. */
+  createThread(messageId?: string, name?: string): Promise<void>;
+  openThread(threadId: string): Promise<void>;
+  /** Tham gia / rời thread đang mở — chỉ đổi trạng thái theo dõi ở client. */
+  leaveThread(): void;
+  archiveThread(threadId: string, archived: boolean): Promise<void>;
+  deleteThread(threadId: string): Promise<void>;
   /** Ghim hoặc bỏ ghim một tin; danh sách ghim cập nhật tại chỗ. */
   togglePin(messageId: string): Promise<boolean>;
   /** Nhảy tới một tin ghim trong kênh đang mở (tải thêm trang cũ nếu cần). */
@@ -470,6 +489,11 @@ const CLOSED_PINS = {
   pins: null,
   pinsChannelId: null,
   groupPanelOpen: false,
+  threadsOpen: false,
+  threads: null,
+  threadsChannelId: null,
+  activeThreadId: null,
+  activeThreadName: null,
 } as const;
 const ackedAt = new Map<string, number>();
 const ACK_THROTTLE_MS = 3_000;
@@ -808,6 +832,12 @@ const initialState = {
   pins: null,
   pinsLoading: false,
   pinsChannelId: null,
+  threadsOpen: false,
+  threads: null,
+  threadsLoading: false,
+  threadsChannelId: null,
+  activeThreadId: null,
+  activeThreadName: null,
   blocksOpen: false,
   blocks: null,
   blocksLoading: false,
@@ -957,6 +987,53 @@ export function patchMessage(
   }
 
   return { messages, pins };
+}
+
+type StoreGet = () => ChatState;
+type StoreSet = (partial: Partial<ChatState>) => void;
+
+/** Cập nhật một thread trong panel + đồng bộ trạng thái "đang mở" nếu cần. */
+function settleThread(
+  get: StoreGet,
+  set: StoreSet,
+  thread: ThreadSummary,
+  archived?: boolean,
+): void {
+  const current = get();
+  const list = (current.threads ?? []).map((item) => (item.id === thread.id ? thread : item));
+  const isOpen = current.activeThreadId === thread.id;
+  set({
+    threads: list,
+    ...(isOpen && archived === true
+      ? {
+          // Lưu trữ thread đang mở → quay về kênh cha, giống Discord.
+          activeThreadId: null,
+          activeThreadName: null,
+          activeChannelId: thread.parentChannelId,
+        }
+      : {}),
+    ...(isOpen && archived === false ? { activeThreadName: thread.name } : {}),
+  });
+}
+
+/** Bỏ thread khỏi panel; đang mở thì quay về kênh cha. */
+function dropThread(get: StoreGet, set: StoreSet, threadId: string): void {
+  const current = get();
+  const target = (current.threads ?? []).find((item) => item.id === threadId);
+  const isOpen = current.activeThreadId === threadId;
+  set({
+    threads: (current.threads ?? []).filter((item) => item.id !== threadId),
+    messages: Object.fromEntries(
+      Object.entries(current.messages).filter(([id]) => id !== threadId),
+    ),
+    ...(isOpen
+      ? {
+          activeThreadId: null,
+          activeThreadName: null,
+          activeChannelId: target?.parentChannelId ?? null,
+        }
+      : {}),
+  });
 }
 
 export const useChat = create<ChatState>()((set, get) => ({
@@ -1140,6 +1217,9 @@ export const useChat = create<ChatState>()((set, get) => ({
         presence,
         activeGuildId: guildId,
         activeChannelId: channelId,
+        // Thread đang mở đi kèm READY (không nằm trong `channels` vì không thuộc sidebar).
+        threads: data.threads ?? [],
+        threadsChannelId: channelId,
       });
       // Badge "yêu cầu nhắn tin" phải có ngay khi mở app, không đợi mở panel.
       // Lỗi mạng ở đây không được làm hỏng READY nên chỉ nuốt và bỏ qua.
@@ -1200,6 +1280,25 @@ export const useChat = create<ChatState>()((set, get) => ({
             }
           : {}),
       });
+    });
+
+    // Thread mới: chỉ thêm vào panel nếu là thread của kênh đang xem.
+    client.on("THREAD_CREATE", (data) => {
+      const current = get();
+      if (current.threadsChannelId !== null && data.parentChannelId === current.threadsChannelId) {
+        const list = (current.threads ?? []).filter((item) => item.id !== data.id);
+        set({ threads: [data, ...list] });
+      }
+    });
+
+    client.on("THREAD_UPDATE", (data) => {
+      const current = get();
+      if (!(current.threads ?? []).some((item) => item.id === data.id)) return;
+      settleThread(get, (patch) => set(patch), data, data.archived);
+    });
+
+    client.on("THREAD_DELETE", (data) => {
+      dropThread(get, (patch) => set(patch), data.id);
     });
 
     client.on("MESSAGE_CREATE", (message) => {
@@ -2260,6 +2359,121 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
   closePins() {
     set({ pinsOpen: false });
+  },
+
+  async openThreads() {
+    const channelId = get().activeChannelId;
+    if (channelId === null) return;
+    set({
+      threadsOpen: true,
+      threadsChannelId: channelId,
+      threads: null,
+      threadsLoading: true,
+      // Mỗi lúc chỉ một panel chiếm khung chính.
+      pinsOpen: false,
+      mentionsOpen: false,
+      searchOpen: false,
+      settingsOpen: false,
+      blocksOpen: false,
+      channelSettingsChannelId: null,
+    });
+    try {
+      const threads = await authedApi.listThreads(channelId);
+      // Người dùng đổi kênh trong lúc chờ → bỏ kết quả cũ.
+      if (get().threadsChannelId !== channelId) return;
+      set({ threads, threadsLoading: false });
+    } catch (error) {
+      set({ threadsLoading: false, error: describeError(error) });
+    }
+  },
+
+  closeThreads() {
+    set({ threadsOpen: false, activeThreadId: null, activeThreadName: null });
+  },
+
+  async createThread(messageId, name) {
+    const channelId = get().activeChannelId;
+    if (channelId === null) return;
+    try {
+      const thread = await authedApi.createThread(channelId, {
+        ...(messageId === undefined ? {} : { messageId }),
+        ...(name === undefined ? {} : { name }),
+      });
+      const current = get();
+      set({
+        threadsOpen: true,
+        threadsChannelId: current.threadsChannelId === channelId ? current.threadsChannelId : channelId,
+        threads:
+          current.threadsChannelId === channelId && current.threads !== null
+            ? [thread, ...current.threads.filter((item) => item.id !== thread.id)]
+            : [thread],
+        // Thread là kênh con: mở luôn sau khi tạo, giống Discord.
+        activeChannelId: thread.id,
+        activeThreadId: thread.id,
+        activeThreadName: thread.name,
+      });
+      if (get().messages[thread.id] === undefined) {
+        void get().loadMessages(thread.id);
+      }
+    } catch (error) {
+      // 409 = tin đã có thread đang mở → mở luôn thread đó thay vì báo lỗi.
+      if (error instanceof ApiError && error.status === 409) {
+        await get().openThreads();
+        const existing = (get().threads ?? []).find(
+          (item) => item.rootMessageId !== null && item.rootMessageId === messageId,
+        );
+        if (existing !== undefined) {
+          await get().openThread(existing.id);
+          return;
+        }
+      }
+      set({ error: describeError(error) });
+    }
+  },
+
+  async openThread(threadId) {
+    const current = get();
+    const known = (current.threads ?? []).find((item) => item.id === threadId);
+    set({
+      activeChannelId: threadId,
+      activeThreadId: threadId,
+      activeThreadName: known?.name ?? current.activeThreadName,
+    });
+    get().markRead(threadId);
+    if (current.messages[threadId] === undefined) await get().loadMessages(threadId);
+  },
+
+  leaveThread() {
+    const current = get();
+    const guildId = current.activeGuildId;
+    const parentId = current.activeThreadId === null
+      ? null
+      : ((current.threads ?? []).find((item) => item.id === current.activeThreadId)?.parentChannelId ??
+        null);
+    set({
+      activeThreadId: null,
+      activeThreadName: null,
+      activeChannelId:
+        parentId ?? (guildId === null ? null : pickChannel(current.channels[guildId] ?? [], undefined)),
+    });
+  },
+
+  async archiveThread(threadId, archived) {
+    try {
+      const thread = await authedApi.updateThread(threadId, { archived });
+      settleThread(get, set, thread, archived);
+    } catch (error) {
+      set({ error: describeError(error) });
+    }
+  },
+
+  async deleteThread(threadId) {
+    try {
+      await authedApi.deleteThread(threadId);
+      dropThread(get, set, threadId);
+    } catch (error) {
+      set({ error: describeError(error) });
+    }
   },
   async togglePin(messageId) {
     const channelId = get().activeChannelId;

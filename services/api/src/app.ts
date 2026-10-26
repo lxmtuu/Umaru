@@ -7,6 +7,7 @@ import { ReportNotifier } from "./admin/notify.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import { registerTotpRoutes } from "./auth/totp-routes.js";
+import { registerThreadRoutes } from "./threads/routes.js";
 import { createMailer, type Mailer } from "./mail.js";
 import { createTokenService, type TokenService } from "./auth/tokens.js";
 import type { Config } from "./config.js";
@@ -233,6 +234,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
         storage,
         embeds: embeds ?? undefined,
       });
+      registerThreadRoutes(api, { pool, config, tokens, publisher });
       registerOverwriteRoutes(api, { pool, config, tokens, publisher });
       registerDmRoutes(api, { pool, config, tokens, publisher, storage });
       registerDmRequestRoutes(api, { pool, config, tokens, publisher, storage });

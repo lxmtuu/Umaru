@@ -235,6 +235,13 @@ export interface GatewayEventMap {
      */
     voiceStates: VoiceState[];
     /**
+     * Thread **đang mở** trong các server user là thành viên.
+     *
+     * Không nằm trong `guilds[].channels` vì thread không thuộc sidebar; client
+     * tự gắn vào kênh cha khi hiện chỉ báo.
+     */
+    threads: import("./api.js").ThreadSummary[];
+    /**
      * Trạng thái hiện tại của những người **có chung guild** với mình.
      *
      * Không có trong danh sách = chưa từng kết nối (offline). Chỉ gửi người có
@@ -267,6 +274,15 @@ export interface GatewayEventMap {
     embeds?: import("./api.js").Embed[];
   };
   MESSAGE_DELETE: { id: Snowflake; channelId: Snowflake };
+  /**
+   * Thread vừa được tạo. Client nào đang mở kênh cha thì hiện chỉ báo; client
+   * nào chưa biết thread này thì **được phép** bỏ qua (không phải lỗi).
+   */
+  THREAD_CREATE: import("./api.js").ThreadSummary;
+  /** Đổi tên / lưu trữ / bỏ lưu trữ / có tin mới (đếm + hoạt động). */
+  THREAD_UPDATE: import("./api.js").ThreadSummary;
+  /** Thread bị xoá hẳn (kèm tin nhắn của nó). */
+  THREAD_DELETE: { id: Snowflake; parentChannelId: Snowflake };
   /**
    * Ghim/bỏ ghim. Tách khỏi `MESSAGE_UPDATE` vì sửa nội dung và ghim là hai
    * thao tác khác quyền nhau (sửa: tác giả; ghim: `MANAGE_MESSAGES`), và client

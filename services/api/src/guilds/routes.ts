@@ -383,6 +383,11 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
         throw forbidden("Cần quyền MANAGE_CHANNELS");
       }
 
+      // Thread có route riêng (`PATCH /channels/:id/thread`): sửa bằng route kênh
+      // sẽ phát `CHANNEL_UPDATE` mà client không dùng để cập nhật danh sách thread.
+      if (context.channel.type === "guild_thread") {
+        throw badRequest("Đây là thread — dùng PATCH /channels/:id/thread");
+      }
       const body = request.body as Record<string, unknown> | undefined;
       const name = body?.name === undefined ? null : readString(body, "name", { min: 1, max: 100 });
       const topic = body?.topic === undefined ? undefined : readString(body, "topic", { min: 0, max: 1024 });
@@ -498,6 +503,9 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       if (context.guild === null) throw notFound("Kênh không tồn tại");
       if (!canManageChannels(context.permissions | context.guild.permissions)) {
         throw forbidden("Cần quyền MANAGE_CHANNELS");
+      }
+      if (context.channel.type === "guild_thread") {
+        throw badRequest("Đây là thread — dùng DELETE /channels/:id/thread");
       }
       await pool.query("DELETE FROM channels WHERE id = $1", [request.params.channelId]);
       const guildId = context.channel.guild_id ?? "";

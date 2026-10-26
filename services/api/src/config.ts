@@ -30,6 +30,11 @@ export interface Config {
    */
   nodeId: string;
   maxReplayEvents: number;
+  /**
+   * Thread không có tin mới trong bao nhiêu phút thì tự lưu trữ (Discord cho
+   * chọn 1 giờ / 1 ngày / 3 ngày / 1 tuần). Quét lười khi mở danh sách thread.
+   */
+  threadArchiveMinutes: number;
   migrationsDir: string;
   /** Bỏ trống = suy ra từ request (tiện dev). Production nên đặt tường minh. */
   gatewayPublicUrl: string | null;
@@ -316,6 +321,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         ? `${hostname()}:${process.pid}`
         : (env.GATEWAY_NODE_ID ?? "").trim(),
     maxReplayEvents: Number(env.MAX_REPLAY_EVENTS ?? "2000"),
+    threadArchiveMinutes: readPositiveInt(env.THREAD_ARCHIVE_MINUTES, 1440, 60, 20_160),
     migrationsDir:
       env.MIGRATIONS_DIR ?? fileURLToPath(new URL("../../../db/migrations/", import.meta.url)),
     gatewayPublicUrl: env.GATEWAY_PUBLIC_URL ?? null,

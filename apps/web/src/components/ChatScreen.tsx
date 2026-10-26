@@ -4,6 +4,7 @@ import type {
   Message,
   MessageMention,
   MessageSearchHit,
+  ThreadSummary,
   VoiceState,
 } from "@umaru/protocol";
 import { Permission, hasPermission } from "@umaru/protocol";
@@ -248,11 +249,18 @@ export function ChatScreen() {
   const messages = channelId === null ? [] : (state.messages[channelId] ?? []);
   const activeChannel = channels.find((channel) => channel.id === channelId) ?? null;
   const activeDm = home ? (state.dms.find((dm) => dm.channel.id === channelId) ?? null) : null;
+  /** Thread đang mở (thread không nằm trong `channels` vì không thuộc sidebar). */
+  const activeThread =
+    channelId === null
+      ? null
+      : ((state.threads ?? []).find((item) => item.id === channelId) ?? null);
   /** Tên hiển thị của kênh hiện tại: tên kênh guild hoặc người ở đầu DM. */
   const activeTitle =
-    activeDm !== null
-      ? dmTitle(activeDm)
-      : (activeChannel?.name ?? (home ? t("directMessages") : t("servers")));
+    activeThread !== null
+      ? activeThread.name
+      : activeDm !== null
+        ? dmTitle(activeDm)
+        : (activeChannel?.name ?? (home ? t("directMessages") : t("servers")));
   const typingNames = (channelId === null ? [] : (state.typing[channelId] ?? []))
     .filter((entry) => entry.expiresAt > now && entry.userId !== state.me?.id)
     .map((entry) => memberById.get(entry.userId)?.displayName ?? entry.userId)
@@ -651,6 +659,15 @@ export function ChatScreen() {
         label: t("editMessage"),
         icon: "✎",
         onSelect: () => startEdit(message),
+      });
+    }
+    // Thread chỉ có trong kênh chữ của server, và không tạo thread từ trong thread.
+    if (!home && activeChannel?.type === "guild_text") {
+      items.push({
+        id: "thread",
+        label: t("createThread"),
+        icon: "🧵",
+        onSelect: () => void state.createThread(message.id as string, threadNameFrom(message)),
       });
     }
     items.push({
@@ -1187,6 +1204,8 @@ export function ChatScreen() {
               ? `👥 ${t("friends")}`
               : state.blocksOpen
               ? `🛡 ${t("blockedUsers")}`
+              : state.threadsOpen
+              ? `🧵 ${t("threads")}`
               : state.pinsOpen
               ? `📌 ${t("pinnedMessages")}`
               : state.searchOpen
@@ -1197,11 +1216,13 @@ export function ChatScreen() {
                 ? `⚙ ${t("serverSettings")}`
                 : state.mentionsOpen
                   ? `@ ${t("mentions")}`
-                  : activeDm !== null
-                    ? `@ ${activeTitle}`
-                    : activeChannel?.name != null
-                      ? `# ${activeTitle}`
-                      : activeTitle}
+                  : activeThread !== null
+                    ? `🧵 ${activeTitle}`
+                    : activeDm !== null
+                      ? `@ ${activeTitle}`
+                      : activeChannel?.name != null
+                        ? `# ${activeTitle}`
+                        : activeTitle}
           </h1>
           {activeChannel?.topic !== null && activeChannel?.topic !== undefined && activeChannel.topic.length > 0 && (
             <>
@@ -1229,6 +1250,19 @@ export function ChatScreen() {
                 }`}
               >
                 ⚙
+              </button>
+            )}
+            {channelId !== null && activeChannel?.type === "guild_text" && (
+              <button
+                onClick={() => void (state.threadsOpen ? state.closeThreads() : state.openThreads())}
+                title={t("threads")}
+                aria-label={t("threads")}
+                aria-pressed={state.threadsOpen}
+                className={`rounded px-1 hover:bg-white/5 hover:text-slate-100 ${
+                  state.threadsOpen ? "bg-white/10 text-slate-100" : ""
+                }`}
+              >
+                🧵
               </button>
             )}
             {channelId !== null && (
@@ -1332,6 +1366,31 @@ export function ChatScreen() {
           />
         ) : state.groupPanelOpen && activeDm !== null && isGroupDm(activeDm) ? (
           <GroupDmPanel dm={activeDm} />
+        ) : state.threadsOpen ? (
+          <ThreadsPanel
+            threads={state.threads}
+            loading={state.threadsLoading}
+            locale={locale}
+            emptyLabel={t("noThreads")}
+            loadingLabel={t("loading")}
+            hintLabel={t("threadPanelHint")}
+            createLabel={t("createThread")}
+            namePlaceholder={t("threadNamePlaceholder")}
+            openLabel={t("threadOpen")}
+            archiveLabel={t("threadArchive")}
+            unarchiveLabel={t("threadUnarchive")}
+            deleteLabel={t("threadDelete")}
+            archivedBadge={t("threadArchivedBadge")}
+            messageCountLabel={t("threadMessageCount")}
+            canCreate={activeChannel?.type === "guild_text"}
+            isOpen={(thread) => state.activeThreadId === thread.id}
+            onCreate={() => void state.createThread()}
+            onOpen={(thread) => void state.openThread(thread.id)}
+            onToggleArchive={(thread, archived) =>
+              void state.archiveThread(thread.id, archived)
+            }
+            onDelete={(thread) => void state.deleteThread(thread.id)}
+          />
         ) : state.pinsOpen ? (
           <PinsPanel
             pins={state.pins}
@@ -1409,6 +1468,27 @@ export function ChatScreen() {
                   {t("dropToAttach")}
                 </div>
               )}
+            {activeThread !== null && (
+              <div className="flex items-center gap-2 border-b border-white/5 bg-white/[0.03] px-4 py-1.5 text-xs text-slate-400">
+                <span aria-hidden>🧵</span>
+                <span className="truncate font-semibold text-slate-200">{activeThread.name}</span>
+                {activeThread.archived && (
+                  <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
+                    {t("threadArchivedBadge")}
+                  </span>
+                )}
+                {activeThread.archived && (
+                  <span className="ml-auto shrink-0">{t("threadArchivedHint")}</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => state.leaveThread()}
+                  className="shrink-0 rounded px-1 hover:bg-white/5 hover:text-slate-100"
+                >
+                  {t("threadLeave")}
+                </button>
+              </div>
+            )}
             <div className="h-full overflow-y-auto py-3">
               {messages.length === 0 ? (
                 // Khung chào giống Discord: người vào kênh trống phải biết mình
@@ -1969,6 +2049,7 @@ export function ChatScreen() {
                   }}
                   rows={1}
                   maxLength={2000}
+                  disabled={activeThread?.archived === true}
                   placeholder={
                     activeDm !== null
                       ? t("dmPlaceholder", { name: activeTitle })
@@ -2004,7 +2085,10 @@ export function ChatScreen() {
                 )}
                 <button
                   type="submit"
-                  disabled={draft.trim().length === 0 && pendingFiles.length === 0}
+                  disabled={
+                    (draft.trim().length === 0 && pendingFiles.length === 0) ||
+                    activeThread?.archived === true
+                  }
                   className="rounded-lg bg-emerald-400 px-3 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-300 disabled:opacity-40"
                 >
                   {t("send")}
@@ -2347,6 +2431,163 @@ function UnreadBadge({
  * Tên người gửi/avatar tra từ `useChat` (không truyền xuống như MentionsPanel)
  * vì mỗi dòng chỉ là `Message` — tránh phải nhân bản bảng tra member ở đây.
  */
+/** Tên thread gợi ý từ tin gốc (Discord cắt ~40 ký tự đầu). */
+export function threadNameFrom(message: Message): string {
+  const raw = message.content.trim().replace(/\s+/g, " ");
+  const base = raw.length > 0 ? raw : message.attachments[0]?.filename ?? "";
+  return base.slice(0, 40);
+}
+
+function ThreadsPanel({
+  threads,
+  loading,
+  locale,
+  emptyLabel,
+  loadingLabel,
+  hintLabel,
+  createLabel,
+  namePlaceholder,
+  openLabel,
+  archiveLabel,
+  unarchiveLabel,
+  deleteLabel,
+  archivedBadge,
+  messageCountLabel,
+  canCreate,
+  isOpen,
+  onCreate,
+  onOpen,
+  onToggleArchive,
+  onDelete,
+}: {
+  threads: ThreadSummary[] | null;
+  loading: boolean;
+  locale: string;
+  emptyLabel: string;
+  loadingLabel: string;
+  hintLabel: string;
+  createLabel: string;
+  namePlaceholder: string;
+  openLabel: string;
+  archiveLabel: string;
+  unarchiveLabel: string;
+  deleteLabel: string;
+  archivedBadge: string;
+  messageCountLabel: string;
+  canCreate: boolean;
+  isOpen: (thread: ThreadSummary) => boolean;
+  onCreate: () => void;
+  onOpen: (thread: ThreadSummary) => void;
+  onToggleArchive: (thread: ThreadSummary, archived: boolean) => void;
+  onDelete: (thread: ThreadSummary) => void;
+}) {
+  const [name, setName] = useState("");
+  const list = threads ?? [];
+  const open = list.filter((thread) => !thread.archived);
+  const archived = list.filter((thread) => thread.archived);
+
+  function submitCreate(event: React.FormEvent) {
+    event.preventDefault();
+    onCreate();
+    setName("");
+  }
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      {canCreate && (
+        <form onSubmit={submitCreate} className="flex gap-2 border-b border-white/5 px-4 py-3">
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder={namePlaceholder}
+            aria-label={namePlaceholder}
+            maxLength={80}
+            className="min-w-0 flex-1 rounded bg-black/30 px-3 py-1.5 text-sm text-slate-100 outline-none placeholder:text-slate-500"
+          />
+          <button
+            type="submit"
+            className="shrink-0 rounded bg-indigo-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-400"
+          >
+            {createLabel}
+          </button>
+        </form>
+      )}
+      {threads === null && loading ? (
+        <div className="grid flex-1 place-items-center text-sm text-slate-500">{loadingLabel}</div>
+      ) : list.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm text-slate-500">
+          <span>{emptyLabel}</span>
+          <span className="text-[11px] text-slate-600">{hintLabel}</span>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto py-2">
+          {[...open, ...archived].map((thread) => (
+            <div
+              key={thread.id}
+              className={`flex items-start gap-3 px-4 py-2 hover:bg-white/[0.03] ${
+                isOpen(thread) ? "bg-white/[0.06]" : ""
+              }`}
+            >
+              <span aria-hidden className="mt-0.5 text-slate-400">
+                🧵
+              </span>
+              <button
+                type="button"
+                onClick={() => onOpen(thread)}
+                title={openLabel}
+                aria-label={`${openLabel}: ${thread.name}`}
+                className="min-w-0 flex-1 text-left"
+              >
+                <div className="flex items-baseline gap-2">
+                  <span className="truncate text-sm font-semibold text-slate-100">
+                    {thread.name}
+                  </span>
+                  {thread.archived && (
+                    <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+                      {archivedBadge}
+                    </span>
+                  )}
+                  <time className="ml-auto shrink-0 text-[11px] text-slate-500">
+                    {new Date(thread.lastActivityAt).toLocaleString(locale, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </time>
+                </div>
+                <p className="text-xs text-slate-400">
+                  {messageCountLabel.replace("{count}", String(thread.messageCount))}
+                </p>
+              </button>
+              <button
+                type="button"
+                onClick={() => onToggleArchive(thread, !thread.archived)}
+                title={thread.archived ? unarchiveLabel : archiveLabel}
+                aria-label={thread.archived ? unarchiveLabel : archiveLabel}
+                className="rounded px-1 text-slate-400 hover:bg-white/5 hover:text-slate-100"
+              >
+                {thread.archived ? "📤" : "📥"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`${deleteLabel}: ${thread.name}?`)) onDelete(thread);
+                }}
+                title={deleteLabel}
+                aria-label={deleteLabel}
+                className="rounded px-1 text-slate-500 hover:bg-white/5 hover:text-rose-400"
+              >
+                🗑
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PinsPanel({
   pins,
   loading,
