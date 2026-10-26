@@ -132,7 +132,12 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerUserRoutes(api, { pool, config, tokens, publisher: hub });
       registerVoiceRoutes(api, { pool, config, tokens, publisher: hub });
       registerPushRoutes(api, { pool, config, tokens, sender: pushSender });
-      registerFriendRoutes(api, { pool, tokens, publisher: hub });
+      registerFriendRoutes(api, {
+        pool,
+        tokens,
+        publisher: hub,
+        refreshPresence: (userId) => hub.refreshFriendAudience(userId),
+      });
       registerGatewayRoutes(api, hub, tokens, config);
     },
     { prefix: "/api/v1" },

@@ -248,4 +248,48 @@ describe("ChatScreen — dựng giao diện thật", () => {
     expect(screen.queryByRole("heading", { name: /Thành viên —/ })).toBeNull();
     expect(screen.getByText(/Chưa có tin nhắn riêng/)).toBeTruthy();
   });
+
+  it("DM 1-1 có chấm trạng thái của người bên kia", () => {
+    useChat.setState({
+      activeGuildId: null,
+      activeChannelId: "6000",
+      presence: { "1001": "idle" },
+      dms: [
+        {
+          channel: {
+            id: "6000",
+            guildId: null,
+            type: "dm",
+            name: null,
+            topic: null,
+            categoryId: null,
+            position: 0,
+          },
+          recipient: {
+            userId: "1001",
+            username: "minh",
+            displayName: "Minh",
+            avatarUrl: null,
+            roleIds: [],
+          },
+          recipients: [
+            {
+              userId: "1001",
+              username: "minh",
+              displayName: "Minh",
+              avatarUrl: null,
+              roleIds: [],
+            },
+          ],
+          ownerId: null,
+          name: null,
+          requestPending: false,
+        },
+      ],
+    } as never);
+    const { container } = render(<ChatScreen />);
+    const dots = container.querySelectorAll("span.absolute.-bottom-0\\.5");
+    // Chấm trong sidebar DM: màu vàng vì Minh đang "Đang chờ".
+    expect([...dots].some((node) => node.className.includes("bg-amber-400"))).toBe(true);
+  });
 });

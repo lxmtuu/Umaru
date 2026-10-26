@@ -1321,15 +1321,28 @@ export const useChat = create<ChatState>()((set, get) => ({
       });
     });
     client.on("FRIEND_REMOVE", (data) => {
-      const current = get().friends;
-      if (current === null) return;
+      const current = get();
+      // Presence chỉ được chia sẻ với bạn bè **hoặc** người chung server. Huỷ kết
+      // bạn mà không chung server nào thì phải quên trạng thái của họ ngay, nếu
+      // không họ vẫn hiện chấm xanh (lộ trạng thái sau khi đã huỷ quan hệ).
+      const sharesGuild = Object.values(current.members).some((list) =>
+        list.some((member) => String(member.userId) === String(data.userId)),
+      );
+      const presence = { ...current.presence };
+      if (!sharesGuild) delete presence[String(data.userId)];
+      const friends = current.friends;
       set({
-        friends: {
-          ...current,
-          friends: current.friends.filter((f) => f.user.id !== data.userId),
-          incoming: current.incoming.filter((r) => r.user.id !== data.userId),
-          outgoing: current.outgoing.filter((r) => r.user.id !== data.userId),
-        },
+        presence,
+        ...(friends === null
+          ? {}
+          : {
+              friends: {
+                ...friends,
+                friends: friends.friends.filter((f) => f.user.id !== data.userId),
+                incoming: friends.incoming.filter((r) => r.user.id !== data.userId),
+                outgoing: friends.outgoing.filter((r) => r.user.id !== data.userId),
+              },
+            }),
       });
     });
     client.on("MESSAGE_REQUEST_CREATE", (request) => {

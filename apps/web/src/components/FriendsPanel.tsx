@@ -4,9 +4,11 @@ import type {
   FriendRequestSummary,
   FriendSummary,
   MessageRequestSummary,
+  PresenceStatus,
 } from "@umaru/protocol";
 import { useState } from "react";
 import { useT } from "../lib/i18n.js";
+import { PRESENCE_DOT, presenceOf, sortByPresence } from "../lib/presence.js";
 import { Avatar } from "./Avatar.js";
 
 /**
@@ -29,6 +31,7 @@ export function FriendsPanel({
   onDmPrivacy,
   onAcceptRequest,
   onDeclineRequest,
+  presence,
 }: {
   friends: FriendList | null;
   loading: boolean;
@@ -42,6 +45,8 @@ export function FriendsPanel({
   onDmPrivacy: (privacy: DmPrivacy) => void;
   onAcceptRequest: (channelId: string) => void;
   onDeclineRequest: (channelId: string) => void;
+  /** userId → trạng thái; thiếu = offline. Danh sách bạn sắp theo trạng thái. */
+  presence?: Record<string, PresenceStatus>;
 }) {
   const t = useT();
   const [tab, setTab] = useState<"friends" | "incoming" | "outgoing" | "requests">("friends");
@@ -161,10 +166,20 @@ export function FriendsPanel({
           )
         ) : tab === "friends" ? (
           <FriendRows
-            entries={friends?.friends ?? []}
+            // Trực tuyến trước, rồi Đang chờ / Không làm phiền / Ngoại tuyến —
+            // giống Discord: người đang online phải nằm trên cùng.
+            entries={sortByPresence(
+              (friends?.friends ?? []).map((entry) => ({
+                ...entry,
+                userId: entry.user.id as string,
+                displayName: entry.user.displayName,
+              })),
+              presence,
+            ).map(({ userId: _id, displayName: _name, ...entry }) => entry as FriendSummary)}
             empty={t("friendsEmpty")}
             actionLabel={t("unfriend")}
             onAction={onRemove}
+            presence={presence}
           />
         ) : tab === "incoming" ? (
           <RequestRows
@@ -193,11 +208,13 @@ function FriendRows({
   empty,
   actionLabel,
   onAction,
+  presence,
 }: {
   entries: FriendSummary[];
   empty: string;
   actionLabel: string;
   onAction: (userId: string) => void;
+  presence?: Record<string, PresenceStatus>;
 }) {
   if (entries.length === 0) return <EmptyRow text={empty} />;
   return (
@@ -206,6 +223,7 @@ function FriendRows({
         <PersonRow
           key={entry.user.id}
           user={entry.user}
+          status={presenceOf(presence, entry.user.id as string)}
           actions={
             <button
               onClick={() => onAction(entry.user.id)}
@@ -269,13 +287,24 @@ function RequestRows({
 function PersonRow({
   user,
   actions,
+  status,
 }: {
   user: FriendSummary["user"];
   actions: React.ReactNode;
+  /** Có thì hiện chấm trạng thái (tab bạn bè); lời mời thì không cần. */
+  status?: PresenceStatus;
 }) {
   return (
     <div className="flex items-center gap-3 px-4 py-2">
-      <Avatar avatarUrl={user.avatarUrl} name={user.displayName} size="size-8" textClass="text-xs" />
+      <span className="relative shrink-0">
+        <Avatar avatarUrl={user.avatarUrl} name={user.displayName} size="size-8" textClass="text-xs" />
+        {status !== undefined && (
+          <span
+            className={`absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-slate-900 ${PRESENCE_DOT[status]}`}
+            aria-hidden
+          />
+        )}
+      </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold text-slate-100">{user.displayName}</p>
         <p className="truncate text-[11px] text-slate-500">@{user.username}</p>

@@ -29,6 +29,8 @@ let wsUrl: string;
 let alice: RegisteredUser;
 let bob: RegisteredUser;
 let stranger: RegisteredUser;
+/** Bạn của alice nhưng **không** chung server — kiểm presence ngoài phạm vi guild. */
+let carol: RegisteredUser;
 const clients: GatewayTestClient[] = [];
 
 interface PresenceEntry {
@@ -53,6 +55,7 @@ beforeAll(async () => {
   bob = await registerUser(ctx, "bob");
   // Người không có guild chung: chỉ dùng để kiểm "không lộ presence".
   stranger = await registerUser(ctx, "stranger");
+  carol = await registerUser(ctx, "carol");
 
   const guildId = await createGuild(ctx, alice.token);
   const generalId = (await listChannels(ctx, alice.token, guildId))[0]!.id;
@@ -97,6 +100,23 @@ async function waitPresence(
       (f.d as PresenceEntry).status === status,
   );
   return frame.d as PresenceEntry;
+}
+
+/** Kết bạn qua API (alice gửi lời mời, người kia đồng ý). */
+async function makeFriends(a: RegisteredUser, b: RegisteredUser): Promise<void> {
+  const sent = await ctx.app.inject({
+    method: "POST",
+    url: "/api/v1/users/@me/friends",
+    headers: auth(a.token),
+    payload: { username: b.username },
+  });
+  expect([200, 201]).toContain(sent.statusCode);
+  const accepted = await ctx.app.inject({
+    method: "POST",
+    url: `/api/v1/users/@me/friends/${a.id}/accept`,
+    headers: auth(b.token),
+  });
+  expect(accepted.statusCode).toBe(200);
 }
 
 describe("presence", () => {
@@ -191,5 +211,31 @@ describe("presence", () => {
     deviceOne.send({ op: GatewayOpcode.PresenceUpdate, d: { status: "idle" } });
     const mirrored = await waitPresence(deviceTwo, alice.id, "idle");
     expect(mirrored.status).toBe("idle");
+
+    // Trả lại trạng thái mặc định: trạng thái được lưu ở hub nên sẽ rò sang test sau.
+    deviceOne.send({ op: GatewayOpcode.PresenceUpdate, d: { status: "online" } });
+    await waitPresence(deviceTwo, alice.id, "online");
+  });
+
+  it("bạn bè không chung server vẫn thấy trạng thái của nhau", async () => {
+    await makeFriends(alice, carol);
+    const { client: aliceClient } = await connect(alice);
+    const { ready } = await connect(carol);
+
+    // carol vào sau → snapshot phải có alice dù hai người không chung guild nào.
+    const seen = ready.presences.find((item) => item.userId === alice.id);
+    expect(seen).toBeDefined();
+    expect(seen?.status).not.toBe("offline");
+
+    const { client: carolClient } = await connect(carol);
+    carolClient.send({ op: GatewayOpcode.PresenceUpdate, d: { status: "idle" } });
+    expect((await waitPresence(aliceClient, carol.id, "idle")).status).toBe("idle");
+  });
+
+  it("người lạ không chung server và không phải bạn vẫn bị ẩn", async () => {
+    const { ready } = await connect(stranger);
+    const ids = ready.presences.map((item) => item.userId);
+    expect(ids).not.toContain(alice.id);
+    expect(ids).not.toContain(carol.id);
   });
 });

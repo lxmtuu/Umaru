@@ -22,6 +22,14 @@ export interface FriendDeps {
   pool: Pool;
   tokens: TokenService;
   publisher: EventPublisher;
+  /**
+   * Nạp lại phạm vi chia sẻ presence sau khi quan hệ bạn bè đổi.
+   *
+   * Presence được chia sẻ với **bạn bè kể cả khi không chung server**; nếu không
+   * gọi hook này thì vừa kết bạn xong hai người vẫn thấy nhau offline cho tới lần
+   * kết nối sau. Tuỳ chọn để test cũ không phải dựng gateway thật.
+   */
+  refreshPresence?: (userId: string) => Promise<void>;
 }
 
 /** Trần lời mời đang chờ một người được giữ (chống biến tài khoản thành máy spam). */
@@ -55,6 +63,13 @@ function toProfile(row: ProfileRow): UserProfile {
  */
 export function registerFriendRoutes(app: FastifyInstance, deps: FriendDeps): void {
   const { pool, publisher } = deps;
+
+  /** Báo cho gateway nạp lại danh sách bạn bè; hỏng thì bỏ qua (không chặn API). */
+  function refreshPresence(...userIds: string[]): void {
+    for (const id of userIds) {
+      void deps.refreshPresence?.(id).catch(() => undefined);
+    }
+  }
   const guard = createAuthGuard(deps.tokens);
   /** 20 lời mời/phút — đủ cho thao tác thật, chặn được script dò username. */
   const requestBuckets = new BucketStore(20, 60_000);
@@ -220,6 +235,7 @@ export function registerFriendRoutes(app: FastifyInstance, deps: FriendDeps): vo
     // "họ đang nhận lời mời", tức là mình mời trước.)
     if (mine.rows[0]?.type === "pending_in") {
       await makeFriends(userId, target.id);
+      refreshPresence(userId, target.id);
       const since = new Date().toISOString();
       publisher.publishToUser(target.id, "FRIEND_ADD", {
         user: await profileOf(userId),
@@ -279,6 +295,7 @@ export function registerFriendRoutes(app: FastifyInstance, deps: FriendDeps): vo
       }
 
       await makeFriends(userId, otherId);
+      refreshPresence(userId, otherId);
       const since = new Date().toISOString();
       const [me, other] = await Promise.all([profileOf(userId), profileOf(otherId)]);
       publisher.publishToUser(otherId, "FRIEND_ADD", { user: me, since });
@@ -313,6 +330,7 @@ export function registerFriendRoutes(app: FastifyInstance, deps: FriendDeps): vo
       );
       // Chỉ báo khi thật sự có quan hệ bị xoá; xoá lại lần hai không bắn event rác.
       publisher.publishToUser(otherId, "FRIEND_REMOVE", { userId: userId as Snowflake });
+      refreshPresence(userId, otherId);
       return reply.code(204).send();
     },
   );

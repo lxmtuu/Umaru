@@ -29,6 +29,7 @@ import { ProfileDialog } from "./ProfileDialog.js";
 import { RoleSettings } from "./RoleSettings.js";
 import { type DropTarget, resolveDrop } from "../lib/channelDrop.js";
 import { isSpeaking } from "../lib/voice.js";
+import { PRESENCE_DOT, presenceOf } from "../lib/presence.js";
 import { VoiceBar } from "./VoiceBar.js";
 import { VoiceScreens } from "./VoiceScreens.js";
 import { FriendsPanel } from "./FriendsPanel.js";
@@ -523,10 +524,17 @@ export function ChatScreen() {
                           : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
                     }`}
                   >
-                    <Avatar
-                      avatarUrl={dmAvatarUrl(dm)}
-                      name={dmInitial(dm)}
-                    />
+                    <span className="relative shrink-0">
+                      <Avatar avatarUrl={dmAvatarUrl(dm)} name={dmInitial(dm)} />
+                      {/* DM 1-1: chấm của người bên kia. Nhóm thì không có một
+                          trạng thái duy nhất nên bỏ trống. */}
+                      {dm.recipient !== null && (
+                        <span
+                          className={`absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-slate-900 ${PRESENCE_DOT[presenceOf(state.presence, dm.recipient.userId as string)]}`}
+                          aria-hidden
+                        />
+                      )}
+                    </span>
                     <span className={`truncate ${unread > 0 || mentions > 0 ? "font-semibold" : ""}`}>
                       {dmTitle(dm)}
                     </span>
@@ -976,6 +984,7 @@ export function ChatScreen() {
             requestsLoading={state.messageRequestsLoading}
             onAcceptRequest={(channelId) => void state.acceptMessageRequest(channelId)}
             onDeclineRequest={(channelId) => void state.declineMessageRequest(channelId)}
+            presence={state.presence}
             query={state.friendQuery}
             onQueryChange={(value) => state.setFriendQuery(value)}
             onAdd={(username) => void state.addFriend(username)}

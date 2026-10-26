@@ -44,6 +44,12 @@ const fake = vi.hoisted(() => {
       this.stateCb?.("ready");
     }
 
+    presenceSent: string[] = [];
+
+    updatePresence(status: string): void {
+      this.presenceSent.push(status);
+    }
+
     close(): void {
       this.closeCalls += 1;
     }
@@ -156,5 +162,61 @@ describe("connectGateway", () => {
     await useChat.getState().connectGateway();
     expect(first?.closeCalls).toBe(1);
     expect(fake.FakeGatewayClient.last).not.toBe(first);
+  });
+});
+
+describe("presence và quan hệ bạn bè", () => {
+  it("READY nạp presences vào store, không có trong danh sách = chưa có", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", {
+      ...readyPayload(),
+      presences: [{ userId: "2", status: "dnd" }],
+    });
+    expect(useChat.getState().presence["2"]).toBe("dnd");
+  });
+
+  it("PRESENCE_UPDATE cập nhật đúng một người, không xoá người khác", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", {
+      ...readyPayload(),
+      presences: [
+        { userId: "2", status: "online" },
+        { userId: "3", status: "idle" },
+      ],
+    });
+    fake.FakeGatewayClient.last?.emit("PRESENCE_UPDATE", { userId: "3", status: "offline" });
+    expect(useChat.getState().presence).toMatchObject({ "2": "online", "3": "offline" });
+  });
+
+  it("huỷ kết bạn với người không chung server → quên trạng thái của họ", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", {
+      ...readyPayload(),
+      presences: [{ userId: "999", status: "online" }],
+    });
+    expect(useChat.getState().presence["999"]).toBe("online");
+
+    fake.FakeGatewayClient.last?.emit("FRIEND_REMOVE", { userId: "999" });
+    expect(useChat.getState().presence["999"]).toBeUndefined();
+  });
+
+  it("huỷ kết bạn nhưng vẫn chung server → giữ trạng thái", async () => {
+    await useChat.getState().connectGateway();
+    // "1" là chính mình và có trong member list của guild 10.
+    fake.FakeGatewayClient.last?.emit("READY", {
+      ...readyPayload(),
+      presences: [{ userId: "1", status: "online" }],
+    });
+    fake.FakeGatewayClient.last?.emit("FRIEND_REMOVE", { userId: "1" });
+    expect(useChat.getState().presence["1"]).toBe("online");
+  });
+
+  it("setPresence cập nhật lạc quan và gửi lên gateway", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    useChat.getState().setPresence("dnd");
+    expect(useChat.getState().selfStatus).toBe("dnd");
+    expect(useChat.getState().presence["1"]).toBe("dnd");
+    expect(fake.FakeGatewayClient.last?.presenceSent).toEqual(["dnd"]);
   });
 });

@@ -77,6 +77,11 @@ interface Session {
   /** channelId → guildId, để biết gửi CHANNEL_DELETE cho guild nào. */
   channelGuilds: Map<string, string>;
   guildIds: Set<string>;
+  /**
+   * Bạn bè (đã đồng ý) — presence được chia sẻ với bạn bè **kể cả khi không
+   * chung server**, giống Discord: danh sách bạn bè phải hiện đúng chấm xanh.
+   */
+  friendIds: Set<string>;
   removalTimer: NodeJS.Timeout | null;
 }
 
@@ -290,6 +295,7 @@ export class GatewayHub implements EventPublisher {
       visibleChannels: bootstrap.visibleChannels,
       channelGuilds: channelGuildMap(bootstrap),
       guildIds: bootstrap.guildIds,
+      friendIds: await this.loadFriendIds(userId),
       removalTimer: null,
     };
     this.sessions.set(session.id, session);
@@ -585,6 +591,49 @@ export class GatewayHub implements EventPublisher {
     return selected ?? "online";
   }
 
+  /** Bạn bè đã đồng ý (hai dòng `friend` trong `relationships`). */
+  private async loadFriendIds(userId: string): Promise<Set<string>> {
+    const result = await this.deps.pool.query<{ friend_id: string }>(
+      "SELECT target_id::text AS friend_id FROM relationships WHERE user_id = $1 AND type = 'friend'",
+      [userId],
+    );
+    return new Set(result.rows.map((row) => row.friend_id));
+  }
+
+  /**
+   * Nạp lại danh sách bạn bè và **phát bù** presence cho hai phía.
+   *
+   * Cần thiết vì phạm vi chia sẻ presence phụ thuộc quan hệ bạn bè: vừa kết bạn
+   * xong mà không nạp lại thì hai người phải chờ tới lần kết nối sau mới thấy
+   * trạng thái của nhau.
+   */
+  async refreshFriendAudience(userId: string): Promise<void> {
+    const sessions = [...this.sessions.values()].filter(
+      (session) => String(session.userId) === String(userId),
+    );
+    if (sessions.length === 0) return;
+    const friendIds = await this.loadFriendIds(userId);
+    for (const session of sessions) {
+      session.friendIds = friendIds;
+      if (session.socket === null) continue;
+      // Gửi snapshot mới cho chính mình, và báo trạng thái của mình cho người
+      // vừa trở thành bạn (nếu họ đang kết nối).
+      for (const entry of this.presenceSnapshotFor(session)) {
+        this.dispatch(session, "PRESENCE_UPDATE", entry);
+      }
+      this.broadcastPresence(session, this.presenceStatusFor(session.userId));
+    }
+  }
+
+  /** Presence có được chia sẻ giữa hai session: chung guild **hoặc** là bạn bè. */
+  private sharesPresence(a: Session, b: Session): boolean {
+    if (String(a.userId) === String(b.userId)) return false;
+    for (const guildId of a.guildIds) {
+      if (b.guildIds.has(guildId)) return true;
+    }
+    return a.friendIds.has(String(b.userId)) || b.friendIds.has(String(a.userId));
+  }
+
   /** Người có chung ít nhất một guild với session này (không gồm chính họ). */
   private presenceSnapshotFor(session: Session): PresenceEntry[] {
     const byUser = new Map<string, PresenceEntry>();
@@ -592,14 +641,7 @@ export class GatewayHub implements EventPublisher {
       if (other.socket === null) continue;
       if (String(other.userId) === String(session.userId)) continue;
       if (byUser.has(String(other.userId))) continue;
-      let sharesGuild = false;
-      for (const guildId of other.guildIds) {
-        if (session.guildIds.has(guildId)) {
-          sharesGuild = true;
-          break;
-        }
-      }
-      if (!sharesGuild) continue;
+      if (!this.sharesPresence(session, other)) continue;
       byUser.set(String(other.userId), {
         userId: other.userId,
         status: this.presenceStatusFor(other.userId),
@@ -633,15 +675,11 @@ export class GatewayHub implements EventPublisher {
       // Trạng thái của **chính mình** chỉ cần phát cho thiết bị khác của mình
       // khi mình vừa chủ động đổi (`skipSessionId` có giá trị). Lúc kết nối thì
       // bỏ qua: họ vừa vào, tự biết mình online.
-      if (other.userId === session.userId && skipSessionId === undefined) continue;
-      let sharesGuild = false;
-      for (const guildId of session.guildIds) {
-        if (other.guildIds.has(guildId)) {
-          sharesGuild = true;
-          break;
-        }
-      }
-      if (sharesGuild) targets.set(other.id, other);
+      const sameUser = String(other.userId) === String(session.userId);
+      if (sameUser && skipSessionId === undefined) continue;
+      // Cùng người (thiết bị khác) luôn nhận; người khác thì phải chung server
+      // hoặc là bạn bè.
+      if (sameUser || this.sharesPresence(session, other)) targets.set(other.id, other);
     }
     for (const target of targets.values()) {
       this.dispatch(target, "PRESENCE_UPDATE", { userId: session.userId, status });
