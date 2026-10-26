@@ -43,6 +43,11 @@ curl -s localhost:8080/api/v1/../health   # → {"ok":true,...}
 
 Mở `http://localhost:8080`.
 
+**Không muốn build trên máy chủ?** CI build sẵn image cho mỗi lần merge vào `main`
+và mỗi tag `v*`, đẩy lên GHCR (`ghcr.io/lxmtuu/umaru/api`, `.../web`). Trên máy
+chủ có thể `docker compose pull` thay cho `--build` — nhưng **vẫn phải xem log
+lần chạy đầu**, và image cần đăng nhập GHCR nếu repo để private.
+
 `migrate` là container **one-shot** chạy trước `api` (`service_completed_successfully`).
 API cũng tự áp migration lúc khởi động với advisory lock, nên chạy lại nhiều lần
 hoặc nhiều bản song song vẫn an toàn; `migrate` chỉ để lỗi schema hiện rõ ràng và
@@ -115,12 +120,17 @@ chuyển sang object storage trước, nếu không node nào upload thì node k
 - **Một node.** Rate limit, session gateway và replay buffer nằm trong bộ nhớ
   process; chạy `--scale api=2` sẽ ra hành vi sai (mỗi node đếm riêng, WebSocket
   của người A không tới được người B). Cần Redis trước khi scale.
-- **Chưa có CI/CD**: pipeline trong `.github/workflows/ci.yml` chỉ typecheck +
-  build + test, chưa build/push image. Thêm bước `docker/build-push-action` khi
-  có registry.
-- **Chưa có `docker build` nào từng chạy** trong môi trường viết code (sandbox
-  không có Docker). Những gì đã kiểm: các bước build/`pnpm deploy --legacy` chạy
-  đúng ngoài Docker, runtime 25MB tự chạy và trả `/health` 200; luật proxy
-  (SPA fallback, cache header, REST, **WebSocket upgrade**) kiểm bằng một proxy
-  Node mô phỏng đúng `nginx.conf`. Lần `docker compose up --build` đầu tiên vẫn
-  nên chạy trên máy có Docker và xem log.
+- **Image do CI build, nhưng chỉ một kiến trúc** (`linux/amd64`). Chạy trên
+  ARM (Mac M-series, Ampere) sẽ phải build lại. `.github/workflows/docker.yml`
+  build cả hai target rồi **chạy thật** container (`scripts/ci-image-smoke.sh`):
+  `/health` 200 sau migration, SPA + fallback `/terms`, header `sw.js`, asset
+  vào được, **đăng ký tài khoản qua nginx → Fastify → argon2 → Postgres**, và
+  **WebSocket nâng cấp 101 qua proxy**. Image chỉ được đẩy lên GHCR **sau khi**
+  smoke xanh, nên registry không bao giờ nhận bản chưa từng chạy được.
+- **Chưa có `docker compose up` đầu-cuối nào được chạy bởi người viết code**
+  (sandbox không có Docker). Thứ đã chạy thật: từng bước `pnpm deploy --legacy`
+  ngoài Docker (runtime 25 MB tự chạy, `/health` 200), và toàn bộ kịch bản
+  `scripts/ci-image-smoke.sh` chạy với API + web preview thật (mọi bước xanh trừ
+  bước `docker inspect` cần container). Phần **chỉ CI kiểm được**: bản thân
+  `docker build`, `USER node`, volume `/data/uploads`. Lần `docker compose up
+  --build` đầu tiên trên máy chủ vẫn nên xem log.
