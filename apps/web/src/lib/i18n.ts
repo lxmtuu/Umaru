@@ -55,7 +55,6 @@ const en = {
   voiceDeafen: "Deafen",
   voiceUndeafen: "Undeafen",
   voiceInChannel: "In voice",
-  voiceOnlyState: "Voice state only — audio comes in G2",
   invite: "Invite",
   inviteCopied: "Invite code copied: {code}",
   members: "Members",
@@ -290,7 +289,6 @@ const en = {
   pushTestNothing: "Nothing was sent: this device has no push subscription.",
   voiceShareScreen: "Share screen",
   voiceStopShare: "Stop sharing",
-  voiceSharing: "You are sharing your screen",
   voiceShareBlocked: "You can only listen here, so you cannot share",
   voiceScreenSharing: "is sharing a screen",
 } as const;
@@ -348,7 +346,6 @@ const vi: Record<MessageKey, string> = {
   voiceDeafen: "Tắt tai nghe",
   voiceUndeafen: "Bật tai nghe",
   voiceInChannel: "Đang trong kênh thoại",
-  voiceOnlyState: "Mới là trạng thái — chưa có âm thanh",
   invite: "Mời",
   inviteCopied: "Đã copy mã mời: {code}",
   members: "Thành viên",
@@ -583,7 +580,6 @@ const vi: Record<MessageKey, string> = {
   pushTestNothing: "Chưa gửi được: máy này chưa có đăng ký thông báo đẩy.",
   voiceShareScreen: "Chia sẻ màn hình",
   voiceStopShare: "Dừng chia sẻ",
-  voiceSharing: "Bạn đang chia sẻ màn hình",
   voiceShareBlocked: "Bạn chỉ nghe được ở kênh này nên không chia sẻ được",
   voiceScreenSharing: "đang chia sẻ màn hình",
 };
