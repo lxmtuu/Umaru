@@ -179,12 +179,10 @@ tệp mới đi vào bucket. Trộn hai nơi thì tệp cũ sẽ 404.
 
 ## 8. Giới hạn đã biết của bản deploy này
 
-- **Một node là mặc định.** Chạy nhiều node được, nhưng phải đặt `REDIS_URL` +
-  `GATEWAY_NODE_ID` khác nhau và bật sticky cho đường WebSocket (§9). Rate limit
-  và throttle typing **vẫn đếm theo node** (chưa theo cụm) — hai node thì giới hạn
-  thực tế ×2. Replay buffer nằm trong RAM node giữ session ⇒ resume sai node sẽ
-  full resync (không mất tin nhắn, chỉ mất trải nghiệm mượt). Riêng **tệp** thì đã
-  hết ràng buộc này khi đặt `STORAGE_DRIVER=s3` (§7).
+- **Một node là mặc định.** Chạy nhiều node được: đặt `REDIS_URL` (dùng chung) và
+  `GATEWAY_NODE_ID` khác nhau cho từng node (§9). Rate limit và throttle typing
+  **vẫn đếm theo node** (chưa theo cụm) — hai node thì giới hạn thực tế ×2. Riêng
+  **tệp** đã hết ràng buộc này khi đặt `STORAGE_DRIVER=s3` (§7).
 - **Image do CI build, nhưng chỉ một kiến trúc** (`linux/amd64`). Chạy trên
   ARM (Mac M-series, Ampere) sẽ phải build lại. `.github/workflows/docker.yml`
   build cả hai target rồi **chạy thật** container (`scripts/ci-image-smoke.sh`):
@@ -215,8 +213,9 @@ GATEWAY_NODE_ID=api-1
 ```
 
 `deploy/nginx.conf` trong repo chỉ trỏ tới **một** `api` (một node là mặc định). Muốn
-nhiều node thì sửa `upstream` và thêm **sticky** cho đường WebSocket — replay buffer
-nằm trong RAM node đang giữ session:
+nhiều node thì thêm các `api` vào `upstream`. **Không bắt buộc sticky**: session + replay
+nằm trong Redis nên client đổi node vẫn resume được (ADR-0006). Vẫn nên bật sticky nếu
+được — đổi node thì phải dựng lại session từ DB, tốn hơn một chút:
 
 ```nginx
 upstream umaru_api {
@@ -227,21 +226,26 @@ upstream umaru_api {
 ```
 
 `ip_hash` đủ cho beta; sau proxy/CDN thật thì `request.ip` có thể là IP của CDN, khi đó
-dùng sticky cookie (`hash $cookie_umaru_node consistent`) hoặc làm nốt ADR-0003 để
-resume được trên mọi node.
+dùng sticky cookie (`hash $cookie_umaru_node consistent`) — hoặc không cần sticky, vì
+resume đã đọc session từ Redis.
 
 ### Đã kiểm bằng gì
 
 - **Test tự động** (`gateway-cluster.test.ts`): hai `buildApp()` dùng chung DB, mỗi app
   một bus — tin nhắn, typing, DM, presence, cùng việc **không** gửi trùng sự kiện của
-  chính node phát, đều có test.
-- **Chạy thật hai tiến trình** (đã làm, xanh): node 1 ở 4000, node 2 ở 4001, bus là
-  `scripts/fake-redis.mjs` (broker nói RESP thật trên TCP). `scripts/multi-node-check.mjs`
+  chính node phát, đều có test. `gateway-resume.test.ts`: session tạo ở node A, client
+  ngắt rồi resume ở node B — nhận đúng tin đã lỡ, node A nhả session (không hai chủ),
+  và replay có khoảng trống thì buộc identify lại thay vì resume thiếu tin.
+- **Chạy thật hai tiến trình** (đã làm, xanh): node 1 ở 4000, node 2 ở 4001, bus + store
+  là `scripts/fake-redis.mjs` (broker nói RESP thật trên TCP). `scripts/multi-node-check.mjs`
   tái lập được toàn bộ: READY thấy người ở node khác online, tin nhắn đi **cả hai
-  chiều**, `TYPING_START`, `PRESENCE_UPDATE`.
+  chiều**, `TYPING_START`, `PRESENCE_UPDATE`, và **resume qua node** (đóng socket ở node 1,
+  nhận tin trong lúc offline, reconnect vào node 2 → nhận đúng tin đã lỡ).
 - **Chưa kiểm với Redis thật** (sandbox không có Redis). Lần đầu dựng Redis thật nên:
-  xem log `Redis: đã subscribe kênh "..."` ở từng node, rồi tắt/bật Redis để thấy nó tự
-  nối lại và hàng đợi publish không mất sự kiện mới.
+  xem log `Redis: đã subscribe kênh "..."` ở từng node, kiểm `/health` có
+  `"sessionStore":"RedisSessionStore"`, rồi tắt/bật Redis để thấy nó tự nối lại và hàng
+  đợi publish không mất sự kiện mới. TTL thật của session/replay cũng chỉ kiểm được trên
+  Redis thật (bản giả trong test chỉ ghi lại TTL).
 
 ```bash
 # tái lập kiểm chứng đa node trên máy dev, không cần Redis thật

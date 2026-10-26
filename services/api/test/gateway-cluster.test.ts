@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import type { BusMessage, EventBus } from "../src/gateway/bus.js";
+import { WireHub } from "./wire-bus.js";
 import { ClusterPublisher } from "../src/gateway/cluster.js";
 import type { GatewayHub } from "../src/gateway/hub.js";
 import {
@@ -24,37 +25,10 @@ import {
  * nhận được sự kiện phát từ node A — và **không** nhận trùng. Giao thức RESP với
  * Redis thật nằm ở `redis-bus.test.ts` (Redis giả nói TCP thật).
  */
-class WireHub {
-  /** Message đã đi qua dây — test soi được nội dung. */
-  readonly published: BusMessage[] = [];
-  private readonly handlers = new Map<string, (message: BusMessage) => void>();
-
-  end(name: string): EventBus {
-    return {
-      publish: (message) => {
-        this.published.push(message);
-        for (const [key, handler] of this.handlers) {
-          // Giống Redis: kết nối đã publish không nhận lại message của mình.
-          if (key === name) continue;
-          setImmediate(() => handler(message));
-        }
-      },
-      subscribe: (handler) => {
-        this.handlers.set(name, handler);
-      },
-      close: async () => {
-        this.handlers.delete(name);
-      },
-    };
-  }
-
-  readonly busA = this.end("a");
-  readonly busB = this.end("b");
-}
-
 const HUB_STUB = (calls: unknown[][]): GatewayHub =>
   ({
     setPresenceRelay: () => undefined,
+    setSessionRelay: () => undefined,
     deliverToChannel: (...args: unknown[]) => calls.push(["channel", ...args]),
     deliverToGuild: (...args: unknown[]) => calls.push(["guild", ...args]),
     deliverToUser: (...args: unknown[]) => calls.push(["user", ...args]),
@@ -85,6 +59,7 @@ describe("ClusterPublisher — đơn vị", () => {
     };
     const hub = {
       setPresenceRelay: () => undefined,
+    setSessionRelay: () => undefined,
       deliverToChannel: () => order.push("local"),
     } as unknown as GatewayHub;
     const publisher = new ClusterPublisher(hub, bus, "node-1");
@@ -98,6 +73,7 @@ describe("ClusterPublisher — đơn vị", () => {
     const seen: unknown[] = [];
     const hub = {
       setPresenceRelay: () => undefined,
+    setSessionRelay: () => undefined,
       deliverToChannel: (channelId: string) => seen.push(channelId),
     } as unknown as GatewayHub;
     new ClusterPublisher(hub, bus, "node-1");
@@ -122,6 +98,7 @@ describe("ClusterPublisher — đơn vị", () => {
     const calls: unknown[][] = [];
     const hub = {
       setPresenceRelay: () => undefined,
+    setSessionRelay: () => undefined,
       grantChannelAccess: (...args: unknown[]) => calls.push(["grant", ...args]),
       revokeChannelAccess: (...args: unknown[]) => calls.push(["revoke", ...args]),
       refreshGuildVisibility: async () => {
@@ -182,10 +159,10 @@ describe("Gateway nhiều node", () => {
 
   beforeAll(async () => {
     wire = new WireHub();
-    nodeA = await createTestContext({}, { bus: wire.busA, nodeId: "node-a" });
+    nodeA = await createTestContext({}, { bus: wire.end("a"), nodeId: "node-a" });
     // Node B dùng **cùng pool** nên không migrate/truncate lại (sẽ xoá dữ liệu
     // node A vừa tạo); đóng B cũng không `end()` pool của A.
-    nodeB = await createTestContext({}, { bus: wire.busB, nodeId: "node-b", pool: nodeA.pool });
+    nodeB = await createTestContext({}, { bus: wire.end("b"), nodeId: "node-b", pool: nodeA.pool });
     await nodeA.app.listen({ port: 0, host: "127.0.0.1" });
     await nodeB.app.listen({ port: 0, host: "127.0.0.1" });
     urlA = `ws://127.0.0.1:${(nodeA.app.server.address() as AddressInfo).port}/api/v1/gateway/ws`;

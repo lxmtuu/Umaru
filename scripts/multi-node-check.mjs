@@ -70,8 +70,10 @@ function connect(url) {
   const socket = new WebSocket(url);
   const frames = [];
   const waiters = [];
+  let lastSeq = 0;
   socket.addEventListener("message", (event) => {
     const frame = JSON.parse(String(event.data));
+    if (typeof frame.s === "number" && frame.s > lastSeq) lastSeq = frame.s;
     const index = waiters.findIndex((waiter) => waiter.predicate(frame));
     if (index >= 0) waiters.splice(index, 1)[0].resolve(frame);
     else frames.push(frame);
@@ -84,7 +86,7 @@ function connect(url) {
       waiters.push({ predicate, resolve: (frame) => (clearTimeout(timer), resolve(frame)) });
     });
   return new Promise((resolve, reject) => {
-    socket.addEventListener("open", () => resolve({ socket, next }));
+    socket.addEventListener("open", () => resolve({ socket, next, lastSeq: () => lastSeq }));
     socket.addEventListener("error", () => reject(new Error(`không nối được ${url}`)));
   });
 }
@@ -107,7 +109,7 @@ await api(NODE_A, "POST", `/api/v1/invites/${invite.body.code}`, { token: bob.to
 // Alice ở node 1, Bob ở node 2 — hai tiến trình khác nhau.
 const a = await connect(WS_A);
 a.socket.send(JSON.stringify({ op: 2, d: { token: alice.token } }));
-await a.next((frame) => frame.t === "READY");
+const readyA = await a.next((frame) => frame.t === "READY");
 
 const b = await connect(WS_B);
 b.socket.send(JSON.stringify({ op: 2, d: { token: bob.token } }));
@@ -142,7 +144,33 @@ a.socket.send(JSON.stringify({ op: 3, d: { status: "idle" } }));
 const presence = await b.next((frame) => frame.t === "PRESENCE_UPDATE" && frame.d.userId === alice.id);
 check("PRESENCE_UPDATE đi qua bus", presence.d.status === "idle");
 
+// ---------------------------------------------------------------------------
+// Resume qua node: đóng socket ở node 1, nhận tin trong lúc offline, rồi
+// reconnect thẳng vào node 2 — phải nhận đúng tin đã lỡ (session + replay nằm
+// trong Redis dùng chung, không phải RAM của node 1).
+// ---------------------------------------------------------------------------
+const sessionId = readyA.d.sessionId;
+const lastSeq = a.lastSeq();
 a.socket.close();
+await new Promise((resolve) => setTimeout(resolve, 300));
+
+const missed = await api(NODE_A, "POST", `/api/v1/channels/${channelId}/messages`, {
+  token: alice.token,
+  body: { content: "gửi khi Alice offline" },
+});
+check("gửi tin trong lúc Alice offline", missed.status === 201, String(missed.status));
+
+const resumed = await connect(WS_B);
+resumed.socket.send(JSON.stringify({ op: 6, d: { token: alice.token, sessionId, seq: lastSeq } }));
+const replayed = await resumed.next((frame) => frame.t === "MESSAGE_CREATE");
+check(
+  "resume ở node 2 nhận đúng tin đã lỡ (không full resync)",
+  replayed.d.id === missed.body.id,
+  replayed.d.content,
+);
+const resumedFrame = await resumed.next((frame) => frame.t === "RESUMED");
+check("frame RESUMED có s lớn hơn tin vừa replay", resumedFrame.s > replayed.s, `${replayed.s} → ${resumedFrame.s}`);
+resumed.socket.close();
 b.socket.close();
 
 console.log(failures === 0 ? "\nTất cả bước đa node đều xanh." : `\n${failures} bước đỏ.`);

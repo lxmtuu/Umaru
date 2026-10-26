@@ -23,6 +23,7 @@ import type { TokenService } from "../auth/tokens.js";
 import type { UserRow } from "../mappers.js";
 import { mapUser } from "../mappers.js";
 import { Bucket } from "../rateLimit.js";
+import type { ReplayFrame as StoredReplayFrame, SessionStore } from "./sessionStore.js";
 
 /** Sự kiện không ghi vào replay log (spec §4.2). */
 const TRANSIENT_EVENTS = new Set<GatewayEventName>(["TYPING_START", "PRESENCE_UPDATE", "RESUMED"]);
@@ -59,6 +60,11 @@ export interface HubDeps {
   tokens: TokenService;
   /** Ghi log cảnh báo (heartbeat dư bị bỏ, đóng session…) — app truyền logger vào. */
   log?: (line: string) => void;
+  /**
+   * Nơi lưu session + replay log ngoài RAM (Redis). `null`/bỏ trống = chạy một
+   * node, replay nằm trong bộ nhớ như trước (ADR-0006).
+   */
+  sessionStore?: SessionStore | null;
 }
 
 /** Một dòng presence mà node khác báo sang (hoặc node này báo đi). */
@@ -142,9 +148,16 @@ export class GatewayHub implements EventPublisher {
   private readonly remotePresence = new Map<string, { status: PresenceStatus; guildIds: Set<string> }>();
   /** Do `ClusterPublisher` gắn vào khi chạy nhiều node; một node thì không có. */
   private presenceRelay: ((userId: string, status: PresenceStatus, guildIds: string[]) => void) | null = null;
+  /**
+   * Báo node khác "session này giờ của tao" khi resume ở node khác. Node cũ bỏ
+   * session cục bộ và **không** phát offline (người dùng vẫn đang online).
+   */
+  private sessionRelay: ((sessionId: string) => void) | null = null;
+  private readonly store: SessionStore | null;
   private readonly sweepTimer: NodeJS.Timeout;
 
   constructor(private readonly deps: HubDeps) {
+    this.store = deps.sessionStore ?? null;
     this.sweepTimer = setInterval(() => this.sweep(), 30_000);
     this.sweepTimer.unref();
   }
@@ -159,6 +172,33 @@ export class GatewayHub implements EventPublisher {
    */
   setPresenceRelay(relay: (userId: string, status: PresenceStatus, guildIds: string[]) => void): void {
     this.presenceRelay = relay;
+  }
+
+  /** Gắn đường báo "session bị node khác đòi" (chỉ khi chạy nhiều node). */
+  setSessionRelay(relay: (sessionId: string) => void): void {
+    this.sessionRelay = relay;
+  }
+
+  /**
+   * Node khác vừa resume session này → bỏ bản cục bộ, đóng socket cũ.
+   *
+   * **Không** phát `offline`: người dùng đang online ở node kia. Không xoá khoá
+   * Redis: node mới vừa ghi đè `node` của chính nó vào đó.
+   */
+  dropClaimedSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return;
+    if (session.removalTimer !== null) {
+      clearTimeout(session.removalTimer);
+      session.removalTimer = null;
+    }
+    this.sessions.delete(sessionId);
+    this.socketStates.forEach((otherState) => {
+      if (otherState.session?.id === sessionId) otherState.session = null;
+    });
+    if (session.socket !== null) {
+      this.close(session.socket, CLOSE.sessionGone, "Session đã được resume ở node khác");
+    }
   }
 
   /** Presence mà node này biết (cục bộ + nghe được từ node khác). */
@@ -397,6 +437,9 @@ export class GatewayHub implements EventPublisher {
       clearTimeout(state.identifyTimer);
       state.identifyTimer = null;
     }
+    // Session phải có mặt trong store **trước** frame đầu tiên, nếu không frame
+    // READY có thể được ghi vào một session mà không node nào tìm lại được.
+    void this.persistSession(session);
 
     this.dispatch(session, "READY", {
       user: session.user,
@@ -433,15 +476,18 @@ export class GatewayHub implements EventPublisher {
       return;
     }
 
-    const session = this.sessions.get(sessionId);
-    if (
-      session === undefined ||
-      session.userId !== userId ||
-      (session.socket !== null && session.socket !== socket)
-    ) {
+    const local = this.sessions.get(sessionId);
+    if (local === undefined) {
+      // Session không nằm ở node này: có thể client vừa rơi vào node khác sau khi
+      // mất mạng, hoặc node cũ đã restart. Nếu có store thì nhận lại từ đó.
+      await this.resumeFromStore(socket, state, userId, sessionId, seq);
+      return;
+    }
+    if (local.userId !== userId || (local.socket !== null && local.socket !== socket)) {
       this.send(socket, { op: GatewayOpcode.InvalidSession, d: false });
       return;
     }
+    const session = local;
 
     if (session.removalTimer !== null) {
       clearTimeout(session.removalTimer);
@@ -466,6 +512,96 @@ export class GatewayHub implements EventPublisher {
     this.broadcastPresence(session, this.presenceStatusFor(session.userId));
   }
 
+  /**
+   * Resume một session **không** thuộc node này: dựng lại session từ store (DB là
+   * nguồn sự thật cho quyền/guild, store chỉ giữ `seq` + replay), gửi những frame
+   * client lỡ, rồi đòi quyền sở hữu.
+   *
+   * Đây là đường khiến "restart API" và "reconnect vào node khác" không còn làm
+   * client phải full resync — đúng phần còn thiếu của ADR-0003.
+   */
+  private async resumeFromStore(
+    socket: WebSocket,
+    state: SocketState,
+    userId: Snowflake,
+    sessionId: string,
+    seq: number,
+  ): Promise<void> {
+    if (this.store === null) {
+      this.send(socket, { op: GatewayOpcode.InvalidSession, d: false });
+      return;
+    }
+    const meta = await this.store.load(sessionId);
+    if (meta === null || meta.userId !== String(userId)) {
+      // Không tồn tại hoặc của người khác — cùng một câu trả lời, không tiết lộ
+      // session id nào có thật.
+      this.send(socket, { op: GatewayOpcode.InvalidSession, d: false });
+      return;
+    }
+
+    const userResult = await this.deps.pool.query<UserRow>("SELECT * FROM users WHERE id = $1", [userId]);
+    const userRow = userResult.rows[0];
+    if (userRow === undefined) {
+      this.send(socket, { op: GatewayOpcode.InvalidSession, d: false });
+      return;
+    }
+    const bootstrap = await loadBootstrap(this.deps.pool, userId);
+    const session: Session = {
+      id: sessionId,
+      userId,
+      user: mapUser(userRow, "online"),
+      socket,
+      seq: meta.seq,
+      replay: [],
+      visibleChannels: bootstrap.visibleChannels,
+      channelGuilds: channelGuildMap(bootstrap),
+      guildIds: bootstrap.guildIds,
+      friendIds: await this.loadFriendIds(userId),
+      removalTimer: null,
+    };
+    this.sessions.set(sessionId, session);
+    state.session = session;
+    if (state.identifyTimer !== null) {
+      clearTimeout(state.identifyTimer);
+      state.identifyTimer = null;
+    }
+
+    // Đòi quyền sở hữu **trước** khi phát tiếp: node cũ phải ngừng ghi replay,
+    // nếu không hai node cùng gán `s` cho một session.
+    await this.store.claim(sessionId, this.deps.config.nodeId, this.deps.config.sessionTtlMs);
+    this.sessionRelay?.(sessionId);
+    if (meta.node !== "" && meta.node !== this.deps.config.nodeId) {
+      this.deps.log?.(`[gateway] session ${sessionId} chuyển từ node ${meta.node} sang ${this.deps.config.nodeId}`);
+    }
+
+    const frames = await this.store.readReplay(sessionId, seq);
+    // Server đã gán `s` mà replay không còn frame nào để bù (log bị cắt, hoặc
+    // node cũ chết trước khi kịp ghi) → **không** giả vờ resume liền mạch.
+    // Thà bắt client identify lại (full resync) còn hơn để họ mất tin mà không
+    // biết. Đây là lý do `meta.seq` được ghi lúc ngắt kết nối.
+    if (frames.length === 0 && meta.seq > seq) {
+      this.deps.log?.(
+        `[gateway] session ${sessionId} có khoảng trống replay (seq ${seq} → ${meta.seq}) — buộc identify lại`,
+      );
+      this.sessions.delete(sessionId);
+      state.session = null;
+      this.send(socket, { op: GatewayOpcode.InvalidSession, d: false });
+      return;
+    }
+    // `seq` của session phải lớn hơn **mọi** `s` đã phát, kể cả `s` client đã
+    // nhận trước khi ngắt: nếu không, frame RESUMED sẽ trùng số và client dedupe
+    // theo `s` sẽ bỏ luôn frame đó.
+    session.seq = Math.max(meta.seq, seq, ...frames.map((frame) => frame.s));
+    for (const frame of frames) {
+      this.send(socket, frame.payload as GatewayReceivePayload);
+    }
+    this.dispatch(session, "RESUMED", {});
+    for (const entry of this.presenceSnapshotFor(session)) {
+      this.dispatch(session, "PRESENCE_UPDATE", entry);
+    }
+    this.broadcastPresence(session, this.presenceStatusFor(session.userId));
+  }
+
   private handleSocketClose(socket: WebSocket, state: SocketState): void {
     state.closed = true;
     if (state.identifyTimer !== null) {
@@ -478,7 +614,11 @@ export class GatewayHub implements EventPublisher {
     if (session === null || session.socket !== socket) return;
     session.socket = null;
     session.replay = session.replay.slice(-this.deps.config.maxReplayEvents);
+    void this.persistSession(session, Date.now());
     session.removalTimer = setTimeout(() => {
+      void this.store?.delete(session.id).catch((error: unknown) => {
+        this.deps.log?.(`[gateway] không xoá được session ${session.id} khỏi store: ${String(error)}`);
+      });
       this.sessions.delete(session.id);
       this.socketStates.forEach((otherState) => {
         if (otherState.session?.id === session.id) otherState.session = null;
@@ -708,6 +848,15 @@ export class GatewayHub implements EventPublisher {
       if (session.replay.length > this.deps.config.maxReplayEvents) {
         session.replay.splice(0, session.replay.length - this.deps.config.maxReplayEvents);
       }
+      // Đa node: cũng ghi vào store để node khác resume được. Một node thì
+      // `store` là null — giữ nguyên đường cũ, không tốn gì.
+      this.store?.appendReplay(
+        session.id,
+        session.seq,
+        payload,
+        this.deps.config.sessionTtlMs,
+        this.deps.config.maxReplayEvents,
+      );
     }
     if (session.socket !== null) this.send(session.socket, payload);
   }
@@ -884,6 +1033,25 @@ export class GatewayHub implements EventPublisher {
         selfDeaf: false,
         joinedAt: new Date().toISOString(),
       });
+    }
+  }
+
+  /** Ghi metadata session (userId/seq/node) + gia hạn TTL trong store. */
+  private async persistSession(session: Session, disconnectedAt: number | null = null): Promise<void> {
+    if (this.store === null) return;
+    try {
+      await this.store.save(
+        {
+          id: session.id,
+          userId: String(session.userId),
+          seq: session.seq,
+          node: this.deps.config.nodeId,
+          disconnectedAt,
+        },
+        this.deps.config.sessionTtlMs,
+      );
+    } catch (error) {
+      this.deps.log?.(`[gateway] không ghi được session ${session.id}: ${String(error)}`);
     }
   }
 

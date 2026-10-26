@@ -114,12 +114,13 @@ Validate (đã có trong `decodeGatewayPayload`): `op` phải thuộc tập trê
 ### 4.1 Trạng thái session (server)
 
 ```
-gw:session:{session_id} = {
-  user_id, gateway_node, shard: 0,
-  last_seq, connected_at, status: "online" | "disconnected",
-  disconnected_at
+{prefix}:session:{session_id} = hash {
+  userId, node, seq, disconnectedAt   (disconnectedAt rỗng khi còn socket)
 }
 ```
+
+`{prefix}` mặc định `umaru`. Khi **không** đặt `REDIS_URL`, session chỉ nằm trong RAM
+của node đang giữ kết nối (chế độ một node, không cần Redis).
 
 - TTL **5 phút** kể từ lúc ngắt. Quá hạn → `INVALID_SESSION d=false`.
 - Một user có thể có nhiều session (web + desktop + mobile). Mọi session của user đều nhận dispatch của user đó; presence tính "online" khi **còn ≥ 1** session `online`.
@@ -127,13 +128,13 @@ gw:session:{session_id} = {
 
 ### 4.2 Replay log
 
-Mỗi session có một **Redis Stream** `gw:replay:{session_id}`:
+Mỗi session có một **Redis list** `{prefix}:replay:{session_id}` (xem [ADR-0006](adr/0006-session-replay-redis.md); ADR-0003 phác Stream, thực tế dùng list vì chỉ cần đọc phần đuôi):
 
-- `XADD` mỗi dispatch **được replay** (xem cột *Replay* ở §6), `MAXLEN ~ 2000`, `EXPIRE 300`.
-- Khi resume: `XRANGE gw:replay:{session_id} (seq +` … lấy các entry có `s > seq`, gửi tuần tự với **đúng `s` ban đầu**, rồi gửi `RESUMED` (cũng là dispatch, `s` = số mới).
+- `RPUSH` mỗi dispatch **được replay** (xem cột *Replay* ở §6) dạng `{"s":…,"payload":…}`, `LTRIM -MAX_REPLAY_EVENTS` và `PEXPIRE` theo `SESSION_TTL_MS` — một lượt pipeline.
+- Khi resume: đọc các frame có `s > seq`, gửi tuần tự với **đúng `s` ban đầu**, rồi gửi `RESUMED` (cũng là dispatch, `s` = số mới).
 - **Không** replay: `READY`, transient event, sự kiện người dùng không còn quyền xem.
-- Nếu `seq` nhỏ hơn entry cũ nhất trong stream (client offline quá lâu) → `INVALID_SESSION d=false`.
-- Nếu session thuộc node khác: node hiện tại đọc stream từ Redis (không cần gọi node cũ) — đây là lý do chọn Redis Streams thay vì buffer trong RAM (ADR-0003).
+- **Session ở node khác** (client đổi node, hoặc node cũ đã restart): node hiện tại đọc session + replay từ Redis, dựng lại quyền/guild từ Postgres, **đòi quyền sở hữu** rồi mới phát tiếp. Node cũ bỏ bản cục bộ và đóng socket cũ bằng `4003` (không phát `offline` — người dùng đang online ở node mới).
+- **Khoảng trống**: nếu server đã gán `s` mà replay không còn frame nào để bù (`seq` server > `seq` client, danh sách rỗng/cũ) → `INVALID_SESSION d=false`, client identify lại thay vì resume thiếu tin.
 - Client nhận `READY` mới thì **phải xoá cache channel/message cục bộ** và nạp lại qua REST; `RESUMED` thì giữ nguyên cache.
 
 ### 4.3 Quy tắc đồng bộ phía client
@@ -339,7 +340,7 @@ Tinh chỉnh bằng biến môi trường: `RATE_LIMITS=off` (mặc định bậ
 
 ## 9. Việc còn thiếu so với spec này (ghi nhận trung thực)
 
-- **Replay log đang nằm trong bộ nhớ một process** (`MAX_REPLAY_EVENTS`, TTL session), chưa phải Redis Streams như §4.2. Bus đa node đã có (ADR-0005) nên fan-out, presence, DM, voice đều qua node được; phần **còn thiếu** là session + replay trong Redis ⇒ `RESUME` phải tới đúng node cũ (dùng sticky LB), và restart API là mất session đang resume (ADR-0003).
+- **Session + replay đã nằm trong Redis** khi đặt `REDIS_URL` (ADR-0006): resume được khi client đổi node và khi API restart. Còn lại: **cửa sổ** khi node chết — frame chỉ được ghi bởi node đang sở hữu session, nên tin nhắn phát sinh trong lúc node đó chết không vào replay (và không phát hiện được để báo khoảng trống). Không đặt `REDIS_URL` thì replay vẫn trong RAM (một node).
 - **Rate limit đã có** cho `IDENTIFY`/`RESUME`/frame/session và cho `POST /messages` (spec §7), nhưng bộ đếm **nằm trong bộ nhớ từng process** — đa node thì giới hạn thực tế nhân lên theo số node, và restart server là mất trạng thái (chấp nhận được: cửa sổ ngắn). Chuyển sang Redis khi lên đa node.
 - Đóng `1009` (frame quá lớn) hiện **vẫn để client reconnect** theo backoff chung; spec §2.1 nói "không reconnect". Hành vi hiện tại an toàn hơn (client gửi frame lớn thường do bug, reconnect một lần rồi bỏ), nhưng chưa khớp câu chữ.
 - `READY` đã có `guilds[]` (`{ guild, channels, roles, members }` — member kèm `roleIds`), `dms[]` (`DmChannelSummary`: `channel`, `recipients`, `recipient` (chỉ DM 1-1, group DM = `null`), `ownerId`/`name` cho group DM), `readStates[]` (`{ channelId, lastReadMessageId, unread, mentions }`), `channelPermissions` (channelId → bitfield của **chính user nhận**, server tính bằng `resolvePermissions`; gồm cả DM) và `voiceStates[]` (chỉ kênh user xem được).

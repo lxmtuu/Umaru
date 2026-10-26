@@ -34,6 +34,11 @@ export const CONTROL_PRESENCE = "__PRESENCE";
 export const CONTROL_PRESENCE_SYNC = "__PRESENCE_SYNC";
 /** Trả lời `CONTROL_PRESENCE_SYNC`: cả danh sách presence node này biết. */
 export const CONTROL_PRESENCE_STATE = "__PRESENCE_STATE";
+/**
+ * "Session `target` giờ của tao" — node cũ bỏ bản cục bộ, **không** phát
+ * offline. Có mặt để hai node không cùng gán `s` cho một session.
+ */
+export const CONTROL_SESSION_CLAIM = "__SESSION_CLAIM";
 
 export interface BusMessage {
   /**

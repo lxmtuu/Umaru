@@ -11,6 +11,7 @@ import { MemoryMailer } from "../src/mail.js";
 import type { ReportNotifier } from "../src/admin/notify.js";
 import type { PushSender, PushTransport } from "../src/push/sender.js";
 import type { EventBus } from "../src/gateway/bus.js";
+import type { SessionStore } from "../src/gateway/sessionStore.js";
 import type { EventPublisher } from "../src/events.js";
 
 export const TEST_DATABASE_URL =
@@ -32,6 +33,7 @@ export interface TestContext {
   /** Lớp phát sự kiện route dùng (hub, hoặc hub + bus khi nhiều node). */
   publisher: EventPublisher;
   bus: EventBus | null;
+  sessionStore: SessionStore | null;
   close(): Promise<void>;
 }
 
@@ -46,6 +48,8 @@ export interface TestContextOptions {
   pool?: Pool;
   /** Tên node trong bus — nhiều node trong cùng tiến trình phải khác nhau. */
   nodeId?: string;
+  /** Store session/replay dùng chung giữa các node trong test. */
+  sessionStore?: SessionStore;
 }
 
 export async function createTestContext(
@@ -79,6 +83,7 @@ export async function createTestContext(
     logger: false,
   };
   const ownsPool = options.pool === undefined;
+  if (options.nodeId !== undefined) config.nodeId = options.nodeId;
   const pool = options.pool ?? createPool(config.databaseUrl, { max: 5 });
   if (ownsPool) {
     await migrate(pool, config.migrationsDir);
@@ -91,7 +96,7 @@ export async function createTestContext(
     mailer,
     pushTransport: options.pushTransport,
     bus: options.bus,
-    nodeId: options.nodeId,
+    sessionStore: options.sessionStore,
   });
   const { app, hub, reportNotifier, pushSender } = built;
   return {
@@ -105,6 +110,7 @@ export async function createTestContext(
     pushSender,
     publisher: built.publisher,
     bus: built.bus,
+    sessionStore: built.sessionStore,
     async close() {
       await app.close();
       if (ownsPool) await pool.end();

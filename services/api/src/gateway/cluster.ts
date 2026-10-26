@@ -10,6 +10,7 @@ import {
   CONTROL_PRESENCE_STATE,
   CONTROL_PRESENCE_SYNC,
   CONTROL_REFRESH_FRIENDS,
+  CONTROL_SESSION_CLAIM,
   isBusMessage,
   type BusMessage,
   type EventBus,
@@ -36,6 +37,9 @@ export class ClusterPublisher implements EventPublisher {
     // đổi trạng thái), nên nối thẳng vào hub bằng relay.
     hub.setPresenceRelay((userId, status, guildIds) => {
       this.emit("control", userId, CONTROL_PRESENCE, { status, guildIds });
+    });
+    hub.setSessionRelay((sessionId) => {
+      this.emit("control", sessionId, CONTROL_SESSION_CLAIM, {});
     });
     this.bus.subscribe((message) => {
       // Message của chính mình: đã fan-out tại chỗ rồi.
@@ -159,6 +163,10 @@ export class ClusterPublisher implements EventPublisher {
         if (message.event === CONTROL_PRESENCE_STATE) {
           const entries = message.data as PresenceState[];
           if (Array.isArray(entries)) this.hub.applyRemotePresence(entries);
+          return;
+        }
+        if (message.event === CONTROL_SESSION_CLAIM) {
+          this.hub.dropClaimedSession(message.target);
           return;
         }
         if (message.event === CONTROL_REFRESH_FRIENDS) {

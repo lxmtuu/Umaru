@@ -1,6 +1,6 @@
 # ADR-0003 — Resume gateway bằng session + Redis Streams replay log
 
-- **Trạng thái:** Accepted
+- **Trạng thái:** Accepted (đã hiện thực — xem [ADR-0006](0006-session-replay-redis.md): chọn Redis **list** thay cho Stream)
 - **Ngày:** 2026-10-22
 - **Liên quan:** [gateway-protocol.md §4](../gateway-protocol.md), [sdk/gateway.ts](../../packages/sdk/src/gateway.ts)
 

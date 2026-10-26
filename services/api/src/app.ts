@@ -17,6 +17,9 @@ import { registerGatewayRoutes } from "./gateway/routes.js";
 import { GatewayHub } from "./gateway/hub.js";
 import { ClusterPublisher } from "./gateway/cluster.js";
 import { RedisBus } from "./gateway/redis-bus.js";
+import { RedisClient } from "./gateway/redis-client.js";
+import { RedisSessionStore } from "./gateway/redis-session-store.js";
+import type { SessionStore } from "./gateway/sessionStore.js";
 import type { EventBus } from "./gateway/bus.js";
 import type { EventPublisher } from "./events.js";
 import { registerGuildRoutes } from "./guilds/routes.js";
@@ -48,8 +51,11 @@ export interface AppDeps {
    * `config.redisUrl` (không có thì chạy một node, fan-out trong bộ nhớ).
    */
   bus?: EventBus;
-  /** Ghi đè tên node (test nhiều node trong cùng một tiến trình). */
-  nodeId?: string;
+  /**
+   * Store session/replay (Redis) — bơm vào khi test. `undefined` = tự dựng theo
+   * `config.redisUrl` (không có thì replay nằm trong RAM).
+   */
+  sessionStore?: SessionStore;
 }
 
 export interface BuiltApp {
@@ -65,6 +71,8 @@ export interface BuiltApp {
   publisher: EventPublisher;
   /** Bus liên node (`null` khi chạy một node) — `close()` khi tắt app. */
   bus: EventBus | null;
+  /** Store session/replay (`null` khi replay nằm trong RAM). */
+  sessionStore: SessionStore | null;
   /** Tên node trong bus — mỗi tiến trình một tên. */
   nodeId: string;
 }
@@ -111,16 +119,34 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   }
   // Chưa có SMTP_URL → ghi mail ra log để dev tự bấm link (xem mail.ts).
   const mailer = deps.mailer ?? createMailer(config, (line) => app.log.info(line));
-  const hub = new GatewayHub({ pool, config, tokens, log: (line) => app.log.warn(line) });
+  const logLine = (line: string): void => app.log.warn(line);
+  const nodeId = config.nodeId;
+  // Store session/replay: chỉ bật khi có Redis, để chạy một node vẫn không cần
+  // hạ tầng gì thêm.
+  const redisClient =
+    config.redisUrl === null || deps.sessionStore !== undefined
+      ? null
+      : new RedisClient({ url: config.redisUrl, log: logLine });
+  const sessionStore: SessionStore | null =
+    deps.sessionStore ?? (redisClient === null ? null : new RedisSessionStore(redisClient));
+  const hub = new GatewayHub({
+    pool,
+    config,
+    tokens,
+    sessionStore,
+    log: (line) => app.log.warn(line),
+  });
   // Một node: route phát thẳng qua hub (không tốn thêm lớp nào). Nhiều node:
   // fan-out tại chỗ **rồi** đẩy lên bus, và nhận bus của node khác để fan-out.
-  const logLine = (line: string): void => app.log.warn(line);
-  const nodeId = deps.nodeId ?? config.nodeId;
   const bus: EventBus | null =
     deps.bus ?? (config.redisUrl === null ? null : new RedisBus({ url: config.redisUrl, channel: config.redisChannel, log: logLine }));
   const publisher: EventPublisher =
     bus === null ? hub : new ClusterPublisher(hub, bus, nodeId, logLine);
-  if (bus !== null) app.log.info(`Gateway: chế độ nhiều node, bus=${bus.constructor.name}, node=${nodeId}`);
+  if (bus !== null) {
+    app.log.info(
+      `Gateway: chế độ nhiều node, bus=${bus.constructor.name}, session=${sessionStore === null ? "RAM" : sessionStore.constructor.name}, node=${nodeId}`,
+    );
+  }
   // Push: chỉ gửi khi đã cấu hình VAPID; `transport` bơm được từ `deps` để test
   // kiểm nội dung gửi đi mà không cần mạng ra dịch vụ push.
   const pushSender = new PushSender({
@@ -162,6 +188,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     ...hub.getStats(),
     node: nodeId,
     bus: bus === null ? "local" : bus.constructor.name,
+    sessionStore: sessionStore === null ? "memory" : sessionStore.constructor.name,
   }));
 
   await app.register(
@@ -195,6 +222,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   app.addHook("onClose", async () => {
     hub.dispose();
     await bus?.close();
+    await sessionStore?.close();
   });
 
   // Cảnh báo cấu hình thiếu: báo cáo vẫn được ghi nhưng không ai đọc được.
@@ -204,5 +232,5 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     );
   }
 
-  return { app, hub, tokens, mailer, reportNotifier, pushSender, publisher, bus, nodeId };
+  return { app, hub, tokens, mailer, reportNotifier, pushSender, publisher, bus, sessionStore, nodeId };
 }

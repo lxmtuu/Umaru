@@ -6,8 +6,9 @@ Mỗi ADR ghi lại **một** quyết định kiến trúc: bối cảnh, lựa 
 |---|---|---|
 | [0001](0001-monorepo-shared-protocol.md) | Monorepo pnpm + Turborepo, `packages/protocol` là nguồn sự thật duy nhất | Accepted |
 | [0002](0002-json-wire-format.md) | Gateway v1 dùng JSON text, chưa dùng binary | Accepted (xem lại ở G3) |
-| [0003](0003-gateway-resume-redis-streams.md) | Resume bằng session + Redis Streams replay log | Accepted |
+| [0003](0003-gateway-resume-redis-streams.md) | Resume bằng session + Redis Streams replay log | Accepted (hiện thực ở 0006) |
 | [0004](0004-backend-typescript-first.md) | Backend G1 bằng TypeScript (Fastify + `ws`), Rust/Go chỉ khi vượt ngưỡng | Accepted |
 | [0005](0005-gateway-multi-node-bus.md) | Đa node gateway: bus Redis pub/sub, mỗi node tự lọc theo session của mình | Accepted |
+| [0006](0006-session-replay-redis.md) | Session + replay log trong Redis, resume được qua node và qua restart | Accepted |
 
 Tài liệu liên quan: [data-model.md](../data-model.md) · [gateway-protocol.md](../gateway-protocol.md) · [ROADMAP.md](../../ROADMAP.md)
