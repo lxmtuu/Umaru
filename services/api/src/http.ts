@@ -21,6 +21,8 @@ export const notFound = (message = "Không tìm thấy") =>
 export const conflict = (message: string) => new HttpError(409, "CONFLICT", message);
 export const tooManyRequests = (message: string) =>
   new HttpError(429, "TOO_MANY_REQUESTS", message);
+export const serviceUnavailable = (message: string) =>
+  new HttpError(503, "SERVICE_UNAVAILABLE", message);
 
 export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((error, _request, reply) => {

@@ -169,6 +169,23 @@ export interface VoiceState {
 }
 
 /**
+ * Token vào phòng âm thanh (LiveKit). Chỉ xin được khi đã vào phòng bằng
+ * `PUT /channels/:id/voice` và có quyền `CONNECT`.
+ *
+ * `canPublish: false` (thiếu `SPEAK`) vẫn nghe được — giống Discord: bị mute
+ * vĩnh viễn thì không nói, nhưng không bị đá ra khỏi phòng.
+ */
+export interface VoiceToken {
+  url: string;
+  token: string;
+  room: Snowflake;
+  identity: Snowflake;
+  expiresAt: string;
+  canPublish: boolean;
+  canSubscribe: boolean;
+}
+
+/**
  * `VOICE_STATE_UPDATE` dùng **cùng shape** với `VoiceState` để client chỉ cần
  * một mapper; `channelId: null` = người đó đã rời phòng (client xoá khỏi danh
  * sách mọi phòng của guild đó).

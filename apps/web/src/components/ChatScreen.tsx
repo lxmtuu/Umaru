@@ -682,7 +682,47 @@ export function ChatScreen() {
               >
                 🎧
               </button>
-              <span className="ml-auto text-[10px] text-slate-500">{t("voiceOnlyState")}</span>
+              {/* Trạng thái âm thanh: nói rõ "đang thông / chưa bật / lỗi gì" thay
+                  vì im lặng — người dùng phải phân biệt được "phòng câm" với
+                  "micro của tôi bị chặn". */}
+              {state.voiceAudio === null || state.voiceAudio.status === "connecting" ? (
+                <span className="ml-auto text-[10px] text-slate-500">
+                  {t("voiceAudioConnecting")}
+                </span>
+              ) : state.voiceAudio.status === "connected" ? (
+                <span
+                  className={`ml-auto text-[10px] ${
+                    state.voiceAudio.canPublish ? "text-emerald-300" : "text-amber-300"
+                  }`}
+                  title={
+                    state.voiceAudio.canPublish
+                      ? t("voiceAudioLive")
+                      : t("voiceAudioNoSpeaker")
+                  }
+                >
+                  {state.voiceAudio.canPublish ? `● ${t("voiceAudioLive")}` : `👂 ${t("voiceAudioNoSpeaker")}`}
+                </span>
+              ) : (
+                <span className="ml-auto flex items-center gap-1 text-[10px] text-amber-300">
+                  <span
+                    title={t(state.voiceAudio.errorKey ?? "voiceErrorUnknown")}
+                    className="max-w-[10rem] truncate"
+                  >
+                    {state.voiceAudio.status === "unavailable"
+                      ? t("voiceAudioUnavailable")
+                      : t(state.voiceAudio.errorKey ?? "voiceErrorUnknown")}
+                  </span>
+                  {state.voiceAudio.status !== "unavailable" && (
+                    <button
+                      type="button"
+                      onClick={() => void state.retryVoiceAudio()}
+                      className="rounded border border-amber-300/40 px-1 py-0.5 hover:bg-amber-300/10"
+                    >
+                      {t("voiceRetry")}
+                    </button>
+                  )}
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -1594,7 +1634,7 @@ function ChannelButton({
         canConnect
           ? `${voiceActive === true ? voiceLeaveLabel : voiceJoinLabel}: ${channel.name ?? ""}`
           : isVoice
-            ? `${voiceLabel} · G2`
+            ? voiceLabel
             : channel.name ?? ""
       }
       className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm ${

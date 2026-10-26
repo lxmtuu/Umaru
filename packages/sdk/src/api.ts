@@ -16,6 +16,7 @@ import type {
   User,
   GuildMemberSummary,
   VoiceState,
+  VoiceToken,
   FriendList,
   FriendSummary,
   FriendRequestSummary,
@@ -656,6 +657,16 @@ export class UmaruApi {
     return this.request<FriendSummary>(`${API_PREFIX}/users/@me/friends/${userId}/accept`, {
       method: "POST",
     });
+  }
+
+  /**
+   * Token vào phòng **âm thanh** của kênh thoại đang ở (LiveKit).
+   *
+   * Server trả 404 nếu chưa join phòng bằng `joinVoice`, 503 nếu server chưa
+   * cấu hình SFU — client hiểu 503 là "chỉ có trạng thái, chưa có tiếng".
+   */
+  getVoiceToken(channelId: string): Promise<VoiceToken> {
+    return this.request<VoiceToken>(`${API_PREFIX}/channels/${channelId}/voice/token`);
   }
 
   /** Huỷ kết bạn / từ chối lời mời / huỷ lời mời đã gửi (idempotent). */

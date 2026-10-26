@@ -263,6 +263,16 @@ const en = {
   notificationsBlocked: "Notifications are blocked in your browser settings",
   notificationsUnsupported: "This browser does not support notifications",
   unknownUser: "Someone",
+  voiceAudioConnecting: "Connecting audio…",
+  voiceAudioLive: "Live",
+  voiceAudioUnavailable: "Audio is not enabled on this server",
+  voiceAudioNoSpeaker: "You can listen but not speak here",
+  voiceRetry: "Retry",
+  voiceErrorNotConfigured: "This server has no audio service configured (LiveKit)",
+  voiceErrorNotInChannel: "Join the voice channel again to get audio",
+  voiceErrorMicDenied: "Microphone access was blocked — allow it in your browser settings",
+  voiceErrorConnect: "Could not connect to the audio room",
+  voiceErrorUnknown: "Unknown audio error",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -318,7 +328,7 @@ const vi: Record<MessageKey, string> = {
   voiceDeafen: "Tắt tai nghe",
   voiceUndeafen: "Bật tai nghe",
   voiceInChannel: "Đang trong kênh thoại",
-  voiceOnlyState: "Mới là trạng thái — âm thanh ở G2",
+  voiceOnlyState: "Mới là trạng thái — chưa có âm thanh",
   invite: "Mời",
   inviteCopied: "Đã copy mã mời: {code}",
   members: "Thành viên",
@@ -526,6 +536,16 @@ const vi: Record<MessageKey, string> = {
   notificationsBlocked: "Trình duyệt đang chặn thông báo — mở cài đặt trang để bật lại",
   notificationsUnsupported: "Trình duyệt này không hỗ trợ thông báo",
   unknownUser: "Ai đó",
+  voiceAudioConnecting: "Đang kết nối âm thanh…",
+  voiceAudioLive: "Đang thông",
+  voiceAudioUnavailable: "Server chưa bật âm thanh",
+  voiceAudioNoSpeaker: "Bạn chỉ nghe được, không nói được ở kênh này",
+  voiceRetry: "Thử lại",
+  voiceErrorNotConfigured: "Server chưa cấu hình dịch vụ âm thanh (LiveKit)",
+  voiceErrorNotInChannel: "Hãy vào lại kênh thoại để lấy âm thanh",
+  voiceErrorMicDenied: "Trình duyệt chặn micro — mở cài đặt trang để cho phép",
+  voiceErrorConnect: "Không kết nối được phòng âm thanh",
+  voiceErrorUnknown: "Lỗi âm thanh không xác định",
 };
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, vi };

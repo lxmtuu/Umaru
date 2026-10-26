@@ -26,6 +26,15 @@ import { clearAvatarCache, validateAvatar } from "./avatars.js";
 import { dmPeer, dmTitle } from "./dms.js";
 import { translate } from "./i18n.js";
 import {
+  VoiceAudioSession,
+  beginVoiceAudio,
+  classifyVoiceError,
+  shouldPublishMicrophone,
+  voiceAudioError,
+  type VoiceAudioErrorKey,
+  type VoiceAudioState,
+} from "./voice.js";
+import {
   NOTIFICATION_SETTINGS_KEY,
   decideNotify,
   notificationPermission,
@@ -172,6 +181,12 @@ interface ChatState {
    * Server là nguồn sự thật: mọi thay đổi đến qua `VOICE_STATE_UPDATE`.
    */
   voiceStates: VoiceState[];
+  /**
+   * Phiên **âm thanh** của phòng đang ngồi. `null` = không ở phòng nào.
+   * Tách khỏi `voiceStates`: trạng thái (ai ở phòng nào) luôn đúng dù SFU hỏng;
+   * ở đây chỉ nói "có tiếng hay không" và vì sao.
+   */
+  voiceAudio: VoiceAudioState | null;
   error: string | null;
   notice: string | null;
   /** Thông báo một dòng (xác thực email, gửi lại mail...) — tự tắt được. */
@@ -348,6 +363,8 @@ interface ChatState {
   /** Đổi ai được nhắn tin cho mình (`everyone` | `friends`). */
   setDmPrivacy(privacy: "everyone" | "friends"): Promise<boolean>;
   /** Đồng ý một yêu cầu nhắn tin → DM hiện trong sidebar và mở luôn. */
+  /** Thử kết nối lại âm thanh của phòng hiện tại (sau lỗi mạng). */
+  retryVoiceAudio(): Promise<void>;
   acceptMessageRequest(channelId: string): Promise<boolean>;
   /** Từ chối → cuộc trò chuyện bị xoá với cả hai. */
   declineMessageRequest(channelId: string): Promise<boolean>;
@@ -390,6 +407,82 @@ function ackChannel(channelId: string, messageId?: string, force = false): void 
   if (!force && now - last < ACK_THROTTLE_MS) return;
   ackedAt.set(channelId, now);
   void authedApi.ackRead(channelId, messageId).catch(() => undefined);
+}
+
+/** Một phiên âm thanh cho mỗi tab (một phòng tại một thời điểm mỗi server). */
+let voiceSession: VoiceAudioSession | null = null;
+
+/**
+ * Bật/tắt mic + loa theo trạng thái **server** vừa phát. Không tự quyết định
+ * mute ở client: `VOICE_STATE_UPDATE` là nguồn sự thật duy nhất, nên hai tab
+ * của cùng một người không thể nói hai điều khác nhau.
+ */
+function applyVoiceAudio(state: ChatState): void {
+  if (voiceSession === null) return;
+  const mine = state.voiceStates.find((entry) => entry.userId === state.me?.id);
+  const audio = state.voiceAudio;
+  if (audio === null || audio.status !== "connected") {
+    // Chưa nối xong (hoặc SFU không có) — chưa có gì để bật/tắt.
+    voiceSession.setDeafened(mine?.selfDeaf ?? false);
+    return;
+  }
+  void voiceSession.setMicrophone(
+    mine === undefined
+      ? false
+      : shouldPublishMicrophone({
+          // `canPublish` do server quyết định lúc cấp token (quyền `SPEAK`).
+          canPublish: audio.canPublish,
+          selfMute: mine.selfMute,
+          selfDeaf: mine.selfDeaf,
+        }),
+  );
+  voiceSession.setDeafened(mine?.selfDeaf ?? false);
+}
+
+/**
+ * Mở phiên âm thanh cho phòng vừa vào. Mọi lỗi ở đây **không** đá người dùng ra
+ * khỏi phòng: trạng thái vẫn đúng, chỉ là không có tiếng — và UI nói rõ lý do.
+ */
+async function startVoiceAudio(
+  channelId: string,
+  get: () => ChatState,
+  set: (patch: Partial<ChatState>) => void,
+): Promise<void> {
+  await stopVoiceAudio();
+  set({ voiceAudio: beginVoiceAudio(channelId) });
+  try {
+    const token = await authedApi.getVoiceToken(channelId);
+    const session = new VoiceAudioSession();
+    const mine = get().voiceStates.find((entry) => entry.userId === get().me?.id);
+    await session.connect({
+      url: token.url,
+      token: token.token,
+      canPublish: token.canPublish,
+      selfMute: mine?.selfMute ?? false,
+      selfDeaf: mine?.selfDeaf ?? false,
+    });
+    voiceSession = session;
+    set({
+      voiceAudio: { channelId, status: "connected", errorKey: null, canPublish: token.canPublish },
+    });
+  } catch (error) {
+    const errorKey = classifyVoiceError(error);
+    await stopVoiceAudio();
+    // 503 và 404 không phải "lỗi" của người dùng: server chưa bật SFU, hoặc
+    // người dùng đã bị đưa ra khỏi phòng. Hiện trạng thái khác để không doạ.
+    set({
+      voiceAudio:
+        errorKey === "voiceErrorNotConfigured"
+          ? { channelId: null, status: "unavailable" as const, errorKey, canPublish: false }
+          : voiceAudioError(channelId, errorKey),
+    });
+  }
+}
+
+async function stopVoiceAudio(): Promise<void> {
+  const session = voiceSession;
+  voiceSession = null;
+  if (session !== null) await session.disconnect();
 }
 
 /**
@@ -527,6 +620,7 @@ const initialState = {
   ),
   notificationPermission: notificationPermission(),
   voiceStates: [],
+  voiceAudio: null,
   error: null,
   notice: null,
   banner: null,
@@ -966,6 +1060,8 @@ export const useChat = create<ChatState>()((set, get) => ({
           ],
         };
       });
+      // Mute/deafen của chính mình (kể cả thao tác từ tab khác) → áp vào media.
+      if (data.userId === get().me?.id) applyVoiceAudio(get());
     });
 
     /**
@@ -2110,13 +2206,26 @@ export const useChat = create<ChatState>()((set, get) => ({
       (entry) => entry.channelId === channelId && entry.userId === get().me?.id,
     );
     try {
-      if (inChannel) await authedApi.leaveVoice(channelId);
-      else await authedApi.joinVoice(channelId);
-      // Không tự sửa `voiceStates` ở đây: server phát `VOICE_STATE_UPDATE` cho
-      // chính mình, một nguồn sự thật duy nhất (tránh lệch khi bị từ chối).
+      if (inChannel) {
+        // Cắt tiếng **trước** khi báo rời: rời chậm một nhịp cũng không được để
+        // mic còn mở trong phòng mình đã rời.
+        await stopVoiceAudio();
+        set({ voiceAudio: null });
+        await authedApi.leaveVoice(channelId);
+      } else {
+        await authedApi.joinVoice(channelId);
+        // Không tự sửa `voiceStates` ở đây: server phát `VOICE_STATE_UPDATE` cho
+        // chính mình, một nguồn sự thật duy nhất (tránh lệch khi bị từ chối).
+        await startVoiceAudio(channelId, get, (patch) => set(patch));
+      }
     } catch (error) {
       set({ error: describeError(error) });
     }
+  },
+  async retryVoiceAudio() {
+    const mine = get().voiceStates.find((entry) => entry.userId === get().me?.id);
+    if (mine === undefined) return;
+    await startVoiceAudio(mine.channelId as string, get, (patch) => set(patch));
   },
   async toggleVoiceMute() {
     const me = get().me;

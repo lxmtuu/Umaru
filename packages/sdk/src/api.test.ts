@@ -546,4 +546,22 @@ describe("UmaruApi", () => {
     expect(calls[2]?.url).toBe("/api/v1/users/@me/message-requests/77/decline");
     expect(calls[2]?.init?.method).toBe("POST");
   });
+
+  it("getVoiceToken gọi đúng route và trả nguyên payload", async () => {
+    const payload = {
+      url: "wss://x.livekit.cloud",
+      token: "a.b.c",
+      room: "1",
+      identity: "2",
+      expiresAt: "2026-10-26T12:00:00.000Z",
+      canPublish: true,
+      canSubscribe: true,
+    };
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: payload });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    const result = await api.getVoiceToken("42");
+    expect(calls[0]?.url).toBe("/api/v1/channels/42/voice/token");
+    expect(result).toEqual(payload);
+  });
 });

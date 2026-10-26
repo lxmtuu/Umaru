@@ -11,7 +11,8 @@ import type { TokenService } from "../auth/tokens.js";
 import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
-import { badRequest, forbidden, notFound } from "../http.js";
+import { badRequest, forbidden, notFound, serviceUnavailable } from "../http.js";
+import { createLiveKitToken } from "./livekit.js";
 
 export interface VoiceDeps {
   pool: Pool;
@@ -251,6 +252,53 @@ export function registerVoiceRoutes(app: FastifyInstance, deps: VoiceDeps): void
       const state = mapVoiceState(row);
       announce(state, state.channelId);
       return reply.code(200).send(state);
+    },
+  );
+
+  /**
+   * Token vào phòng âm thanh (LiveKit) của kênh thoại.
+   *
+   * Điều kiện: **đang ở trong phòng đó** + có `CONNECT`. Cố tình không cấp
+   * token cho người chỉ "định vào": token là chìa khoá mở luồng media, phát
+   * trước khi join nghĩa là bất kỳ ai xem được kênh cũng nghe lén được phòng
+   * mà không ai thấy họ trong danh sách.
+   *
+   * `canPublish` theo quyền `SPEAK`: thiếu `SPEAK` vẫn nghe được (giống Discord)
+   * — nếu chặn hẳn thì người bị mute vĩnh viễn không có cách nào theo dõi phòng.
+   */
+  app.get<{ Params: { channelId: string } }>(
+    "/channels/:channelId/voice/token",
+    { preHandler: guard },
+    async (request, reply) => {
+      const userId = requireUserId(request);
+      const { channelId } = request.params;
+      const { guildId, context } = await loadVoiceChannel(userId, channelId, true);
+
+      if (config.livekit === null) {
+        throw serviceUnavailable(
+          "Server chưa cấu hình âm thanh (LIVEKIT_URL/LIVEKIT_API_KEY/LIVEKIT_API_SECRET)",
+        );
+      }
+      const state = await currentState(userId, guildId);
+      if (state === null || state.channelId !== channelId) {
+        throw notFound("Bạn chưa ở trong kênh thoại này — vào phòng trước đã");
+      }
+
+      const result = await pool.query<{ username: string; display_name: string }>(
+        "SELECT username, display_name FROM users WHERE id = $1",
+        [userId],
+      );
+      const user = result.rows[0];
+      const token = createLiveKitToken({
+        config: config.livekit,
+        room: channelId,
+        identity: userId,
+        displayName: user?.display_name ?? userId,
+        canPublish: hasPermission(context.permissions, Permission.SPEAK),
+        canSubscribe: true,
+        ttlSec: config.livekitTokenTtlSec,
+      });
+      return reply.send(token);
     },
   );
 }

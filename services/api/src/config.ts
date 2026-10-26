@@ -73,6 +73,15 @@ export interface Config {
   rateLimitSessionsPerUser: number;
   /** Số lần join/leave/mute kênh thoại mỗi 10 giây của một user. */
   rateLimitVoiceMutations: number;
+  /**
+   * LiveKit (SFU cho âm thanh kênh thoại). `null` = **chưa cấu hình** →
+   * `GET /channels/:id/voice/token` trả 503 và client chỉ hiện trạng thái
+   * (vẫn join/leave phòng được, chỉ không có tiếng). Không có giá trị mặc định
+   * nào cho secret: thiếu là tắt hẳn, không phải "chạy với key rỗng".
+   */
+  livekit: { url: string; apiKey: string; apiSecret: string } | null;
+  /** Hạn của token phòng thoại (giây) — client xin token mới trước khi hết hạn. */
+  livekitTokenTtlSec: number;
   logger: boolean;
 }
 
@@ -105,6 +114,20 @@ function splitList(raw: string | undefined): string[] {
 
 const DEFAULT_DEV_DATABASE_URL = "postgres://umaru:umaru@127.0.0.1:55432/umaru";
 const DEV_JWT_SECRET = "umaru-dev-insecure-secret";
+
+/**
+ * Ba biến `LIVEKIT_*` phải có **đủ cả ba**; thiếu một cái là tắt tính năng âm
+ * thanh. Cố tình không đoán/không dùng default: nửa cấu hình sẽ sinh token
+ * không dùng được và lỗi hiện ra ở client như "phòng hỏng" chứ không phải
+ * "server thiếu cấu hình".
+ */
+function readLiveKit(env: NodeJS.ProcessEnv): Config["livekit"] {
+  const url = env.LIVEKIT_URL?.trim();
+  const apiKey = env.LIVEKIT_API_KEY?.trim();
+  const apiSecret = env.LIVEKIT_API_SECRET?.trim();
+  if (!url || !apiKey || !apiSecret) return null;
+  return { url, apiKey, apiSecret };
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const isProduction = env.NODE_ENV === "production";
@@ -168,6 +191,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     rateLimitSessionsPerUser: readPositiveInt(env.RATE_LIMIT_SESSIONS_PER_USER, 5, 1, 100),
     rateLimitVoiceMutations: readPositiveInt(env.RATE_LIMIT_VOICE_MUTATIONS, 10, 1, 1_000),
+    livekit: readLiveKit(env),
+    livekitTokenTtlSec: readPositiveInt(env.LIVEKIT_TOKEN_TTL_SEC, 3600, 60, 86_400),
     emailVerificationEcho: env.EMAIL_VERIFICATION_ECHO
       ? env.EMAIL_VERIFICATION_ECHO !== "0"
       : !isProduction,
