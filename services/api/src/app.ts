@@ -15,6 +15,10 @@ import { registerDmRoutes } from "./dms/routes.js";
 import { registerFriendRoutes } from "./friends/routes.js";
 import { registerGatewayRoutes } from "./gateway/routes.js";
 import { GatewayHub } from "./gateway/hub.js";
+import { ClusterPublisher } from "./gateway/cluster.js";
+import { RedisBus } from "./gateway/redis-bus.js";
+import type { EventBus } from "./gateway/bus.js";
+import type { EventPublisher } from "./events.js";
 import { registerGuildRoutes } from "./guilds/routes.js";
 import { badRequest, registerErrorHandler } from "./http.js";
 import { registerMessageRoutes } from "./messages/routes.js";
@@ -39,6 +43,13 @@ export interface AppDeps {
    * thật (chỉ hoạt động khi đã cấu hình VAPID), `null` = tắt push.
    */
   pushTransport?: import("./push/sender.js").PushTransport | null;
+  /**
+   * Bus giữa các node — bơm vào khi test nhiều node. `undefined` = tự dựng theo
+   * `config.redisUrl` (không có thì chạy một node, fan-out trong bộ nhớ).
+   */
+  bus?: EventBus;
+  /** Ghi đè tên node (test nhiều node trong cùng một tiến trình). */
+  nodeId?: string;
 }
 
 export interface BuiltApp {
@@ -50,6 +61,12 @@ export interface BuiltApp {
   reportNotifier: ReportNotifier;
   /** Thông báo đẩy khi tab đóng (test chờ `whenIdle()`, hoặc bơm transport giả). */
   pushSender: PushSender;
+  /** Lớp phát sự kiện route dùng: chính `hub` khi một node, hoặc bọc bus. */
+  publisher: EventPublisher;
+  /** Bus liên node (`null` khi chạy một node) — `close()` khi tắt app. */
+  bus: EventBus | null;
+  /** Tên node trong bus — mỗi tiến trình một tên. */
+  nodeId: string;
 }
 
 export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
@@ -95,6 +112,15 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   // Chưa có SMTP_URL → ghi mail ra log để dev tự bấm link (xem mail.ts).
   const mailer = deps.mailer ?? createMailer(config, (line) => app.log.info(line));
   const hub = new GatewayHub({ pool, config, tokens, log: (line) => app.log.warn(line) });
+  // Một node: route phát thẳng qua hub (không tốn thêm lớp nào). Nhiều node:
+  // fan-out tại chỗ **rồi** đẩy lên bus, và nhận bus của node khác để fan-out.
+  const logLine = (line: string): void => app.log.warn(line);
+  const nodeId = deps.nodeId ?? config.nodeId;
+  const bus: EventBus | null =
+    deps.bus ?? (config.redisUrl === null ? null : new RedisBus({ url: config.redisUrl, channel: config.redisChannel, log: logLine }));
+  const publisher: EventPublisher =
+    bus === null ? hub : new ClusterPublisher(hub, bus, nodeId, logLine);
+  if (bus !== null) app.log.info(`Gateway: chế độ nhiều node, bus=${bus.constructor.name}, node=${nodeId}`);
   // Push: chỉ gửi khi đã cấu hình VAPID; `transport` bơm được từ `deps` để test
   // kiểm nội dung gửi đi mà không cần mạng ra dịch vụ push.
   const pushSender = new PushSender({
@@ -129,29 +155,37 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     }
   });
 
-  app.get("/health", async () => ({ ok: true, ...hub.getStats() }));
+  // `/health` cũng cho biết node nào và đang chạy chế độ một node hay nhiều node:
+  // khi debug "người ở node A không nhận tin" thì đây là chỗ nhìn đầu tiên.
+  app.get("/health", async () => ({
+    ok: true,
+    ...hub.getStats(),
+    node: nodeId,
+    bus: bus === null ? "local" : bus.constructor.name,
+  }));
 
   await app.register(
     async (api) => {
       registerAuthRoutes(api, { pool, tokens, config, mailer });
-      registerGuildRoutes(api, { pool, config, tokens, publisher: hub });
-      registerMessageRoutes(api, { pool, config, tokens, publisher: hub, push: pushSender, storage });
-      registerOverwriteRoutes(api, { pool, config, tokens, publisher: hub });
-      registerDmRoutes(api, { pool, config, tokens, publisher: hub, storage });
-      registerDmRequestRoutes(api, { pool, config, tokens, publisher: hub, storage });
-      registerReadStateRoutes(api, { pool, tokens, publisher: hub });
+      registerGuildRoutes(api, { pool, config, tokens, publisher });
+      registerMessageRoutes(api, { pool, config, tokens, publisher, push: pushSender, storage });
+      registerOverwriteRoutes(api, { pool, config, tokens, publisher });
+      registerDmRoutes(api, { pool, config, tokens, publisher, storage });
+      registerDmRequestRoutes(api, { pool, config, tokens, publisher, storage });
+      registerReadStateRoutes(api, { pool, tokens, publisher });
       registerSearchRoutes(api, { pool, tokens });
-      registerSafetyRoutes(api, { pool, tokens, config, reportNotifier, publisher: hub });
+      registerSafetyRoutes(api, { pool, tokens, config, reportNotifier, publisher });
       registerAdminRoutes(api, { pool, tokens, config });
       registerUploadRoutes(api, { pool, config, tokens , storage });
-      registerUserRoutes(api, { pool, config, tokens, publisher: hub, storage });
-      registerVoiceRoutes(api, { pool, config, tokens, publisher: hub });
+      registerUserRoutes(api, { pool, config, tokens, publisher, storage });
+      registerVoiceRoutes(api, { pool, config, tokens, publisher });
       registerPushRoutes(api, { pool, config, tokens, sender: pushSender });
       registerFriendRoutes(api, {
         pool,
         tokens,
-        publisher: hub,
-        refreshPresence: (userId) => hub.refreshFriendAudience(userId),
+        publisher,
+        // Đi qua `publisher` (không phải `hub`) để node khác cũng tính lại.
+        refreshPresence: (userId) => publisher.refreshFriendAudience(userId),
       });
       registerGatewayRoutes(api, hub, tokens, config);
     },
@@ -160,6 +194,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
 
   app.addHook("onClose", async () => {
     hub.dispose();
+    await bus?.close();
   });
 
   // Cảnh báo cấu hình thiếu: báo cáo vẫn được ghi nhưng không ai đọc được.
@@ -169,5 +204,5 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     );
   }
 
-  return { app, hub, tokens, mailer, reportNotifier, pushSender };
+  return { app, hub, tokens, mailer, reportNotifier, pushSender, publisher, bus, nodeId };
 }

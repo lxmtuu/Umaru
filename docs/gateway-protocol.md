@@ -150,12 +150,13 @@ Mỗi session có một **Redis Stream** `gw:replay:{session_id}`:
 ```
 REST handler ──(1 transaction)──▶ Postgres
       │
-      └─(sau commit)─▶ NATS subject chan:{channel_id} / guild:{guild_id}
+      └─(sau commit)─▶ fan-out session cục bộ (node này)
+                       └─▶ Redis PUBLISH umaru:gateway  (khi có nhiều node)
                                   │
-                    gateway node (subscribe theo shard)
-                                  │  lọc quyền (cache 30s) + gán s
+                    node khác nhận → fan-out session của nó
+                                  │  lọc quyền theo visibleChannels
                                   ▼
-                    XADD gw:replay:{session}  +  WS send
+                    replay buffer (RAM) + WS send
 ```
 
 Quy tắc:
@@ -168,7 +169,23 @@ Quy tắc:
 6. **Backpressure**: nếu buffer gửi > 1 MiB, bỏ transient frame trước; vẫn tắc → đóng `4008`.
 7. **At-least-once, không exactly-once**: resume replay có thể lặp; client dedupe theo `s` và theo `id` của entity.
 
-### 5.1 Typing
+### 5.1 Nhiều node (`REDIS_URL`)
+
+Khi chạy từ hai instance API, bus Redis chở sự kiện giữa các node (ADR-0005). Điều
+quan trọng với client:
+
+- **Không đổi giao thức.** Client vẫn nhận đúng event, đúng `s`, không biết mình đang
+  nói chuyện với node nào.
+- **Mỗi node tự lọc.** Node nhận event từ node khác vẫn kiểm `VIEW_CHANNEL` theo
+  session của mình — không tin node gửi.
+- **Presence đi qua bus**: `PRESENCE_UPDATE` của người ở node A tới được người ở node
+  B; `READY.presences` gồm cả người đang nối ở node khác (node mới vào hỏi
+  `__PRESENCE_SYNC`).
+- **`RESUME` vẫn phải tới đúng node** đang giữ session (replay buffer trong RAM). Sai
+  node → `INVALID_SESSION` → client IDENTIFY lại và full resync. Vì vậy load balancer
+  nên **sticky** theo cookie/địa chỉ cho đường `/api/v1/gateway/ws`.
+
+### 5.2 Typing
 
 - Client gửi `POST /channels/{id}/typing`, throttle **1 lần/8 s/kênh** (server trả `429` nếu vượt).
 - Server phát `TYPING_START { channelId, userId, timestamp }` tới các session có `VIEW_CHANNEL`, trừ chính tác giả.
@@ -322,7 +339,7 @@ Tinh chỉnh bằng biến môi trường: `RATE_LIMITS=off` (mặc định bậ
 
 ## 9. Việc còn thiếu so với spec này (ghi nhận trung thực)
 
-- **Replay log đang nằm trong bộ nhớ một process** (`MAX_REPLAY_EVENTS`, TTL session), chưa phải Redis Streams như §4.2. Resume qua nhiều node và qua restart server chưa hoạt động — phải thay `GatewayHub` phần replay khi lên đa node (ADR-0003).
+- **Replay log đang nằm trong bộ nhớ một process** (`MAX_REPLAY_EVENTS`, TTL session), chưa phải Redis Streams như §4.2. Bus đa node đã có (ADR-0005) nên fan-out, presence, DM, voice đều qua node được; phần **còn thiếu** là session + replay trong Redis ⇒ `RESUME` phải tới đúng node cũ (dùng sticky LB), và restart API là mất session đang resume (ADR-0003).
 - **Rate limit đã có** cho `IDENTIFY`/`RESUME`/frame/session và cho `POST /messages` (spec §7), nhưng bộ đếm **nằm trong bộ nhớ từng process** — đa node thì giới hạn thực tế nhân lên theo số node, và restart server là mất trạng thái (chấp nhận được: cửa sổ ngắn). Chuyển sang Redis khi lên đa node.
 - Đóng `1009` (frame quá lớn) hiện **vẫn để client reconnect** theo backoff chung; spec §2.1 nói "không reconnect". Hành vi hiện tại an toàn hơn (client gửi frame lớn thường do bug, reconnect một lần rồi bỏ), nhưng chưa khớp câu chữ.
 - `READY` đã có `guilds[]` (`{ guild, channels, roles, members }` — member kèm `roleIds`), `dms[]` (`DmChannelSummary`: `channel`, `recipients`, `recipient` (chỉ DM 1-1, group DM = `null`), `ownerId`/`name` cho group DM), `readStates[]` (`{ channelId, lastReadMessageId, unread, mentions }`), `channelPermissions` (channelId → bitfield của **chính user nhận**, server tính bằng `resolvePermissions`; gồm cả DM) và `voiceStates[]` (chỉ kênh user xem được).
@@ -336,6 +353,14 @@ Tinh chỉnh bằng biến môi trường: `RATE_LIMITS=off` (mặc định bậ
 - **DM** là `Channel` có `type: "dm"`, `guildId: null`; quyền xem suy ra từ bảng `channel_members` (không qua role/overwrite) và được nạp vào `visibleChannels` khi READY, khi tạo DM (`grantChannelAccess`) và khi resume. `DM_CHANNEL_CREATE` không vào replay log (transient) — client lấy lại danh sách qua `GET /users/@me/channels` nếu lỡ.
 - **Client đã dedupe theo `s`**: `READY` (session mới) đặt lại bộ đếm, mọi dispatch khác phải có `s` lớn hơn `s` đã nhận, frame trùng/`s` cũ bị bỏ. Trước đây server replay đã lọc `s > seq` nên chưa lỗi, nhưng chồng lấn khi replay là chuyện có thể xảy ra và hậu quả thấy được (tin nhắn lặp).
 - **Client đã tự refresh token khi gặp `4000`**: SDK nhận hook `onAuthFailure` (web nối vào `refreshSession()` dùng chung với REST), refresh xong resume lại session cũ; refresh hỏng hoặc không có hook → `closed` (đăng xuất mềm) chứ không thử lại vô hạn (giới hạn 2 lần liên tiếp). Đã xử lý cả `4003` (xoá session để IDENTIFY lại) và `4004` (chờ ≥ 5 s).
-- Chưa có sharding (`shard` luôn 0).
-- Chưa có nén frame; `OP 3`/`OP 4` (client → server) để trống có chủ đích ở v1.
-- Presence hiện là in-memory theo session của process; chưa đọc/ghi Redis.
+- Chưa có sharding (`shard` luôn 0). Có **nhiều node** (bus Redis, ADR-0005) nhưng
+  không chia shard: mỗi client tự chọn node qua load balancer, không có `GUILD_CREATE`
+  sharding như Discord.
+- Nén frame đã có (`permessage-deflate`, §1) — tắt bằng `GATEWAY_COMPRESS=off`.
+- Presence: nguồn sự thật vẫn là bộ nhớ của node đang giữ session; đa node thì **đồng
+  bộ qua bus** (thay đổi + snapshot lúc node mới vào), chưa đọc/ghi Redis. Node chết →
+  người trên node đó coi như offline cho tới khi nối lại.
+- **Rate limit và throttle typing đếm theo node**, chưa theo cụm (Redis) — hai node thì
+  giới hạn thực tế ×2.
+- `OP 3` (presence) đã dùng; `OP 4` (voice state client → server) để trống có chủ đích
+  ở v1 — trạng thái thoại đi qua REST.

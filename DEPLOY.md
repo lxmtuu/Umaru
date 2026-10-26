@@ -179,10 +179,12 @@ tệp mới đi vào bucket. Trộn hai nơi thì tệp cũ sẽ 404.
 
 ## 8. Giới hạn đã biết của bản deploy này
 
-- **Một node.** Rate limit, session gateway và replay buffer nằm trong bộ nhớ
-  process; chạy `--scale api=2` sẽ ra hành vi sai (mỗi node đếm riêng, WebSocket
-  của người A không tới được người B). Cần Redis trước khi scale. Riêng **tệp**
-  thì đã hết ràng buộc này khi đặt `STORAGE_DRIVER=s3` (§7).
+- **Một node là mặc định.** Chạy nhiều node được, nhưng phải đặt `REDIS_URL` +
+  `GATEWAY_NODE_ID` khác nhau và bật sticky cho đường WebSocket (§9). Rate limit
+  và throttle typing **vẫn đếm theo node** (chưa theo cụm) — hai node thì giới hạn
+  thực tế ×2. Replay buffer nằm trong RAM node giữ session ⇒ resume sai node sẽ
+  full resync (không mất tin nhắn, chỉ mất trải nghiệm mượt). Riêng **tệp** thì đã
+  hết ràng buộc này khi đặt `STORAGE_DRIVER=s3` (§7).
 - **Image do CI build, nhưng chỉ một kiến trúc** (`linux/amd64`). Chạy trên
   ARM (Mac M-series, Ampere) sẽ phải build lại. `.github/workflows/docker.yml`
   build cả hai target rồi **chạy thật** container (`scripts/ci-image-smoke.sh`):
@@ -197,3 +199,53 @@ tệp mới đi vào bucket. Trộn hai nơi thì tệp cũ sẽ 404.
   bước `docker inspect` cần container). Phần **chỉ CI kiểm được**: bản thân
   `docker build`, `USER node`, volume `/data/uploads`. Lần `docker compose up
   --build` đầu tiên trên máy chủ vẫn nên xem log.
+
+## 9. Chạy nhiều node gateway (tuỳ chọn)
+
+Một kết nối WebSocket chỉ sống trên **một** tiến trình. Muốn chạy ≥ 2 instance API
+sau load balancer thì các node phải nói chuyện được với nhau, nếu không người ở node
+này sẽ không nhận tin của người ở node kia (tình huống này **không** sinh lỗi trong
+log — chỉ im lặng).
+
+```bash
+# mỗi node một tên, KHÁC nhau (trùng tên ⇒ node kia bỏ qua mọi sự kiện của bạn)
+REDIS_URL=redis://:mat-khau@redis:6379/0
+REDIS_CHANNEL=umaru:gateway
+GATEWAY_NODE_ID=api-1
+```
+
+`deploy/nginx.conf` trong repo chỉ trỏ tới **một** `api` (một node là mặc định). Muốn
+nhiều node thì sửa `upstream` và thêm **sticky** cho đường WebSocket — replay buffer
+nằm trong RAM node đang giữ session:
+
+```nginx
+upstream umaru_api {
+    ip_hash;                       # sticky theo IP; cookie-based nếu có sẵn
+    server api-1:4000;
+    server api-2:4000;
+}
+```
+
+`ip_hash` đủ cho beta; sau proxy/CDN thật thì `request.ip` có thể là IP của CDN, khi đó
+dùng sticky cookie (`hash $cookie_umaru_node consistent`) hoặc làm nốt ADR-0003 để
+resume được trên mọi node.
+
+### Đã kiểm bằng gì
+
+- **Test tự động** (`gateway-cluster.test.ts`): hai `buildApp()` dùng chung DB, mỗi app
+  một bus — tin nhắn, typing, DM, presence, cùng việc **không** gửi trùng sự kiện của
+  chính node phát, đều có test.
+- **Chạy thật hai tiến trình** (đã làm, xanh): node 1 ở 4000, node 2 ở 4001, bus là
+  `scripts/fake-redis.mjs` (broker nói RESP thật trên TCP). `scripts/multi-node-check.mjs`
+  tái lập được toàn bộ: READY thấy người ở node khác online, tin nhắn đi **cả hai
+  chiều**, `TYPING_START`, `PRESENCE_UPDATE`.
+- **Chưa kiểm với Redis thật** (sandbox không có Redis). Lần đầu dựng Redis thật nên:
+  xem log `Redis: đã subscribe kênh "..."` ở từng node, rồi tắt/bật Redis để thấy nó tự
+  nối lại và hàng đợi publish không mất sự kiện mới.
+
+```bash
+# tái lập kiểm chứng đa node trên máy dev, không cần Redis thật
+node scripts/fake-redis.mjs 6390
+# rồi chạy hai node như ví dụ trên (REDIS_URL=redis://127.0.0.1:6390)
+node scripts/multi-node-check.mjs
+```

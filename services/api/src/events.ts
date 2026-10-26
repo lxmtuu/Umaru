@@ -37,4 +37,13 @@ export interface EventPublisher {
   refreshGuildVisibility(guildId: string): Promise<void>;
   /** Tính lại guild + kênh cho mọi session của một user (tạo guild, join invite). */
   refreshUserVisibility(userId: string): Promise<void>;
+  /**
+   * Tính lại **danh sách bạn** cho session của một user (kết bạn, xoá bạn).
+   *
+   * Khác `refreshUserVisibility` ở chỗ nó còn gửi `PRESENCE_UPDATE` cho chính
+   * người đó và cho bạn của họ. Khi chạy nhiều node, session của user có thể nằm
+   * ở node khác — nếu chỉ tính cục bộ thì bạn mới kết sẽ không thấy nhau "đang
+   * online" cho tới lần reconnect sau.
+   */
+  refreshFriendAudience(userId: string): Promise<void>;
 }

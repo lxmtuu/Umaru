@@ -1,4 +1,5 @@
 import path from "node:path";
+import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 
 export interface Config {
@@ -16,6 +17,18 @@ export interface Config {
   gatewayCompress: boolean;
   /** Frame nhỏ hơn mức này (byte) không nén — nén frame 80 byte là lỗ. */
   gatewayCompressThreshold: number;
+  /**
+   * Bus giữa các node gateway. `null` = một node (fan-out trong bộ nhớ).
+   * Đặt khi chạy nhiều instance API sau load balancer.
+   */
+  redisUrl: string | null;
+  /** Kênh pub/sub dùng chung giữa các node. */
+  redisChannel: string;
+  /**
+   * Tên node trong bus. Phải **khác nhau giữa các node**, vì mỗi node bỏ qua
+   * message do chính mình phát (đã fan-out tại chỗ rồi). Mặc định `host:pid`.
+   */
+  nodeId: string;
   maxReplayEvents: number;
   migrationsDir: string;
   /** Bỏ trống = suy ra từ request (tiện dev). Production nên đặt tường minh. */
@@ -281,6 +294,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       0,
       1_048_576,
     ),
+    redisUrl: (env.REDIS_URL ?? "").trim() === "" ? null : (env.REDIS_URL ?? "").trim(),
+    redisChannel:
+      (env.REDIS_CHANNEL ?? "").trim() === "" ? "umaru:gateway" : (env.REDIS_CHANNEL ?? "").trim(),
+    nodeId:
+      (env.GATEWAY_NODE_ID ?? "").trim() === ""
+        ? `${hostname()}:${process.pid}`
+        : (env.GATEWAY_NODE_ID ?? "").trim(),
     maxReplayEvents: Number(env.MAX_REPLAY_EVENTS ?? "2000"),
     migrationsDir:
       env.MIGRATIONS_DIR ?? fileURLToPath(new URL("../../../db/migrations/", import.meta.url)),

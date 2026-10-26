@@ -61,6 +61,14 @@ export interface HubDeps {
   log?: (line: string) => void;
 }
 
+/** Một dòng presence mà node khác báo sang (hoặc node này báo đi). */
+export interface PresenceState {
+  userId: string;
+  status: PresenceStatus;
+  /** Guild của người đó **theo node nguồn**, để node nhận tự lọc người xem. */
+  guildIds: string[];
+}
+
 interface ReplayFrame {
   s: number;
   payload: DispatchPayload;
@@ -124,6 +132,16 @@ export class GatewayHub implements EventPublisher {
    * buffer, xem ADR-0003).
    */
   private readonly selectedStatus = new Map<string, PresenceStatus>();
+  /**
+   * Presence của người đang nối ở **node khác**, do bus báo sang.
+   *
+   * Chỉ để trả lời câu "ai đang online" cho `READY`/member list; trạng thái của
+   * người nối ở node này luôn thắng (họ có session thật ở đây). Xoá dòng khi
+   * nghe `offline`.
+   */
+  private readonly remotePresence = new Map<string, { status: PresenceStatus; guildIds: Set<string> }>();
+  /** Do `ClusterPublisher` gắn vào khi chạy nhiều node; một node thì không có. */
+  private presenceRelay: ((userId: string, status: PresenceStatus, guildIds: string[]) => void) | null = null;
   private readonly sweepTimer: NodeJS.Timeout;
 
   constructor(private readonly deps: HubDeps) {
@@ -133,6 +151,81 @@ export class GatewayHub implements EventPublisher {
 
   dispose(): void {
     clearInterval(this.sweepTimer);
+  }
+
+  /**
+   * Gắn đường phát presence sang node khác. Chỉ `ClusterPublisher` gọi; chế độ
+   * một node không có relay nên không tốn gì.
+   */
+  setPresenceRelay(relay: (userId: string, status: PresenceStatus, guildIds: string[]) => void): void {
+    this.presenceRelay = relay;
+  }
+
+  /** Presence mà node này biết (cục bộ + nghe được từ node khác). */
+  localPresenceState(): PresenceState[] {
+    const byUser = new Map<string, PresenceState>();
+    for (const [userId, entry] of this.remotePresence) {
+      byUser.set(userId, { userId, status: entry.status, guildIds: [...entry.guildIds] });
+    }
+    for (const session of this.sessions.values()) {
+      if (session.socket === null) continue;
+      byUser.set(String(session.userId), {
+        userId: String(session.userId),
+        status: this.presenceStatusFor(session.userId),
+        guildIds: [...session.guildIds],
+      });
+    }
+    return [...byUser.values()];
+  }
+
+  /**
+   * Nhận trạng thái presence của một người từ node khác.
+   *
+   * Lọc tại đây chứ không tin node gửi: chỉ gửi tiếp cho session **có quan hệ**
+   * với người đó (chung guild hoặc bạn bè). `offline` thì xoá khỏi bộ nhớ đệm.
+   */
+  deliverPresence(userId: string, status: PresenceStatus, guildIds: string[]): void {
+    const id = String(userId);
+    const local = [...this.sessions.values()].some(
+      (session) => session.socket !== null && String(session.userId) === id,
+    );
+    if (status === "offline") this.remotePresence.delete(id);
+    else if (!local) this.remotePresence.set(id, { status, guildIds: new Set(guildIds) });
+
+    for (const target of this.sessions.values()) {
+      if (target.socket === null) continue;
+      const sameUser = String(target.userId) === id;
+      if (!sameUser && !this.audienceMatches(target, id, guildIds)) continue;
+      this.dispatch(target, "PRESENCE_UPDATE", { userId: id as Snowflake, status });
+    }
+  }
+
+  /** Danh sách presence của node khác (khi có node mới tham gia) — áp + phát. */
+  applyRemotePresence(entries: PresenceState[]): void {
+    for (const entry of entries) {
+      const id = String(entry.userId);
+      const local = [...this.sessions.values()].some(
+        (session) => session.socket !== null && String(session.userId) === id,
+      );
+      if (local) continue; // session thật ở đây thì trạng thái cục bộ mới đúng
+      if (entry.status === "offline") {
+        this.remotePresence.delete(id);
+        continue;
+      }
+      this.remotePresence.set(id, { status: entry.status, guildIds: new Set(entry.guildIds) });
+    }
+    for (const entry of entries) {
+      this.deliverPresence(entry.userId, entry.status, entry.guildIds);
+    }
+  }
+
+  /** Session này có được thấy presence của `userId` không (chung guild / bạn bè). */
+  private audienceMatches(session: Session, userId: string, guildIds: string[]): boolean {
+    if (session.friendIds.has(userId)) return true;
+    for (const guildId of guildIds) {
+      if (session.guildIds.has(guildId)) return true;
+    }
+    return false;
   }
 
   // ---------- vòng đời socket ----------
@@ -411,6 +504,22 @@ export class GatewayHub implements EventPublisher {
     event: E,
     data: GatewayEventMap[E],
   ): void {
+    this.deliverToChannel(channelId, event, data);
+  }
+
+  /**
+   * Fan-out **chỉ trên node này**.
+   *
+   * `publishToChannel` gọi hàm này rồi (khi chạy nhiều node) đẩy tiếp qua bus;
+   * node khác nhận bus cũng gọi đúng hàm này. Nhờ vậy điều kiện "ai được nhận"
+   * (quyền xem kênh, không echo typing về người gõ) chỉ tồn tại ở **một** chỗ:
+   * mỗi node tự lọc theo session của mình, không tin node gửi.
+   */
+  deliverToChannel<E extends GatewayEventName>(
+    channelId: string,
+    event: E,
+    data: GatewayEventMap[E],
+  ): void {
     for (const session of this.sessions.values()) {
       // Session đang offline vẫn phải ghi replay log — đó là cơ chế resume.
       if (!session.visibleChannels.has(channelId)) continue;
@@ -428,6 +537,15 @@ export class GatewayHub implements EventPublisher {
     event: E,
     data: GatewayEventMap[E],
   ): void {
+    this.deliverToGuild(guildId, event, data);
+  }
+
+  /** Fan-out **chỉ trên node này** (xem `deliverToChannel`). */
+  deliverToGuild<E extends GatewayEventName>(
+    guildId: string,
+    event: E,
+    data: GatewayEventMap[E],
+  ): void {
     for (const session of this.sessions.values()) {
       if (!session.guildIds.has(guildId)) continue;
       this.dispatch(session, event, data);
@@ -435,6 +553,11 @@ export class GatewayHub implements EventPublisher {
   }
 
   publishVoiceState(channelId: string, data: VoiceStateUpdate): void {
+    this.deliverVoiceState(channelId, data);
+  }
+
+  /** Fan-out **chỉ trên node này** (xem `deliverToChannel`). */
+  deliverVoiceState(channelId: string, data: VoiceStateUpdate): void {
     for (const session of this.sessions.values()) {
       const involved = session.userId === data.userId;
       if (!involved && !session.visibleChannels.has(channelId)) continue;
@@ -443,6 +566,15 @@ export class GatewayHub implements EventPublisher {
   }
 
   publishToUser<E extends GatewayEventName>(
+    userId: string,
+    event: E,
+    data: GatewayEventMap[E],
+  ): void {
+    this.deliverToUser(userId, event, data);
+  }
+
+  /** Fan-out **chỉ trên node này** (xem `deliverToChannel`). */
+  deliverToUser<E extends GatewayEventName>(
     userId: string,
     event: E,
     data: GatewayEventMap[E],
@@ -647,6 +779,13 @@ export class GatewayHub implements EventPublisher {
         status: this.presenceStatusFor(other.userId),
       });
     }
+    // Người nối ở node khác: chỉ thêm khi node này không có session của chính họ
+    // (có session thật thì trạng thái cục bộ đúng hơn).
+    for (const [userId, entry] of this.remotePresence) {
+      if (byUser.has(userId)) continue;
+      if (!this.audienceMatches(session, userId, [...entry.guildIds])) continue;
+      byUser.set(userId, { userId: userId as Snowflake, status: entry.status });
+    }
     return [...byUser.values()];
   }
 
@@ -668,6 +807,9 @@ export class GatewayHub implements EventPublisher {
   }
 
   private broadcastPresence(session: Session, status: PresenceStatus, skipSessionId?: string): void {
+    // Node khác phải biết: session của người xem có thể đang nằm ở đó. Relay nhận
+    // `guildIds` để node kia tự lọc người xem theo quan hệ.
+    this.presenceRelay?.(String(session.userId), status, [...session.guildIds]);
     const targets = new Map<string, Session>();
     for (const other of this.sessions.values()) {
       if (other.socket === null) continue;

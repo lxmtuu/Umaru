@@ -10,6 +10,8 @@ import { createPool, migrate, truncateAll, type Pool } from "../src/db.js";
 import { MemoryMailer } from "../src/mail.js";
 import type { ReportNotifier } from "../src/admin/notify.js";
 import type { PushSender, PushTransport } from "../src/push/sender.js";
+import type { EventBus } from "../src/gateway/bus.js";
+import type { EventPublisher } from "../src/events.js";
 
 export const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? "postgres://umaru:umaru@127.0.0.1:55432/umaru_test";
@@ -27,12 +29,28 @@ export interface TestContext {
   reportNotifier: ReportNotifier;
   /** Thông báo đẩy — `await whenIdle()` để chờ các lần gửi bất đồng bộ xong. */
   pushSender: PushSender;
+  /** Lớp phát sự kiện route dùng (hub, hoặc hub + bus khi nhiều node). */
+  publisher: EventPublisher;
+  bus: EventBus | null;
   close(): Promise<void>;
+}
+
+export interface TestContextOptions {
+  pushTransport?: PushTransport | null;
+  /** Bus bơm vào — dùng để dựng nhiều node nói chuyện với nhau trong test. */
+  bus?: EventBus;
+  /**
+   * Dùng lại pool của node khác: node thứ hai **không** migrate/truncate (sẽ
+   * xoá sạch dữ liệu node một vừa tạo) và không `end()` pool khi đóng.
+   */
+  pool?: Pool;
+  /** Tên node trong bus — nhiều node trong cùng tiến trình phải khác nhau. */
+  nodeId?: string;
 }
 
 export async function createTestContext(
   envOverrides: NodeJS.ProcessEnv = {},
-  options: { pushTransport?: PushTransport | null } = {},
+  options: TestContextOptions = {},
 ): Promise<TestContext> {
   const uploadsDir = await mkdtemp(path.join(tmpdir(), "umaru-uploads-"));
   const config: Config = {
@@ -60,16 +78,22 @@ export async function createTestContext(
     }),
     logger: false,
   };
-  const pool = createPool(config.databaseUrl, { max: 5 });
-  await migrate(pool, config.migrationsDir);
-  await truncateAll(pool);
+  const ownsPool = options.pool === undefined;
+  const pool = options.pool ?? createPool(config.databaseUrl, { max: 5 });
+  if (ownsPool) {
+    await migrate(pool, config.migrationsDir);
+    await truncateAll(pool);
+  }
   const mailer = new MemoryMailer();
-  const { app, hub, reportNotifier, pushSender } = await buildApp({
+  const built = await buildApp({
     config,
     pool,
     mailer,
     pushTransport: options.pushTransport,
+    bus: options.bus,
+    nodeId: options.nodeId,
   });
+  const { app, hub, reportNotifier, pushSender } = built;
   return {
     app,
     hub,
@@ -79,9 +103,11 @@ export async function createTestContext(
     mailer,
     reportNotifier,
     pushSender,
+    publisher: built.publisher,
+    bus: built.bus,
     async close() {
       await app.close();
-      await pool.end();
+      if (ownsPool) await pool.end();
       await rm(uploadsDir, { recursive: true, force: true });
     },
   };
