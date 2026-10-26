@@ -522,3 +522,73 @@ describe("ChatScreen — reaction trên tin nhắn", () => {
     expect(screen.queryByRole("button", { name: /người thả/ })).toBeNull();
   });
 });
+
+describe("ChatScreen — menu chuột phải ở sidebar (kênh & thành viên)", () => {
+  function sidebar(): HTMLElement {
+    // `aside` của danh sách thành viên có aria-label = nhãn đếm.
+    return screen.getByLabelText("Thành viên — 2");
+  }
+
+  it("chuột phải vào kênh: có Đánh dấu đã đọc / Sao chép liên kết / Cài đặt kênh", () => {
+    render(<ChatScreen />);
+    fireEvent.contextMenu(screen.getAllByRole("button", { name: /chung/ })[0]!);
+    const menu = screen.getByRole("menu", { name: "Hành động với kênh" });
+    expect(within(menu).getByRole("menuitem", { name: /Đánh dấu đã đọc/ })).toBeTruthy();
+    expect(within(menu).getByRole("menuitem", { name: /Sao chép liên kết kênh/ })).toBeTruthy();
+    // Demo là chủ server ⇒ có quyền mở cài đặt kênh.
+    expect(within(menu).getByRole("menuitem", { name: /Cài đặt kênh/ })).toBeTruthy();
+  });
+
+  it("Đánh dấu đã đọc xoá badge chưa đọc của kênh", () => {
+    useChat.setState({ unread: { [CHANNEL.id]: 3 } } as never);
+    render(<ChatScreen />);
+    fireEvent.contextMenu(screen.getAllByRole("button", { name: /chung/ })[0]!);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Đánh dấu đã đọc/ }));
+    expect(useChat.getState().unread[CHANNEL.id as string]).toBeUndefined();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("người không có quyền quản lý kênh thì menu không có Cài đặt kênh", () => {
+    // Bỏ quyền MANAGE_CHANNELS/MANAGE_ROLES và không còn là chủ server.
+    useChat.setState({
+      guilds: [{ ...GUILD, ownerId: "1001" }],
+      permissions: { [CHANNEL.id as string]: 1795n },
+    } as never);
+    render(<ChatScreen />);
+    fireEvent.contextMenu(screen.getAllByRole("button", { name: /chung/ })[0]!);
+    const menu = screen.getByRole("menu", { name: "Hành động với kênh" });
+    expect(within(menu).queryByRole("menuitem", { name: /Cài đặt kênh/ })).toBeNull();
+  });
+
+  it("chuột phải vào thành viên khác: Nhắn tin / Sao chép tên người dùng / Chặn", () => {
+    render(<ChatScreen />);
+    fireEvent.contextMenu(within(sidebar()).getByText("Minh"));
+    const menu = screen.getByRole("menu", { name: "Hành động với thành viên" });
+    expect(within(menu).getByRole("menuitem", { name: /Nhắn tin/ })).toBeTruthy();
+    expect(within(menu).getByRole("menuitem", { name: /Sao chép tên người dùng/ })).toBeTruthy();
+    expect(within(menu).getByRole("menuitem", { name: /Chặn/ })).toBeTruthy();
+  });
+
+  it("người đã bị chặn thì mục đảo thành Bỏ chặn (không phải ngõ cụt)", () => {
+    useChat.setState({ blocks: [MEMBERS[1]] } as never);
+    render(<ChatScreen />);
+    fireEvent.contextMenu(within(sidebar()).getByText("Minh"));
+    const menu = screen.getByRole("menu", { name: "Hành động với thành viên" });
+    expect(within(menu).getByRole("menuitem", { name: /Bỏ chặn/ })).toBeTruthy();
+    expect(within(menu).queryByRole("menuitem", { name: /^Chặn$/ })).toBeNull();
+  });
+
+  it("chuột phải vào chính mình: không mở menu", () => {
+    render(<ChatScreen />);
+    fireEvent.contextMenu(within(sidebar()).getByText("Demo"));
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("Escape đóng menu sidebar", () => {
+    render(<ChatScreen />);
+    fireEvent.contextMenu(within(sidebar()).getByText("Minh"));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+});

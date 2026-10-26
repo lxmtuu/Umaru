@@ -42,6 +42,10 @@ mở ở **hai cửa sổ riêng tư khác nhau** để kiểm realtime.
       không treo.
 - [ ] Ô tìm kiếm: gõ `markdown` → ra tin cũ; bấm kết quả → nhảy tới đúng tin.
 - [ ] Ghim một tin → hiện trong danh sách ghim; bỏ ghim → mất khỏi danh sách.
+- [ ] Chuột phải một kênh → Đánh dấu đã đọc / Sao chép liên kết kênh / Cài đặt
+      kênh (chỉ hiện khi có quyền); liên kết dán vào tab mới mở đúng kênh.
+- [ ] Chuột phải một thành viên → Nhắn tin (mở DM), Sao chép tên người dùng, Chặn;
+      người đã chặn thì mục đảo thành Bỏ chặn; chuột phải chính mình không mở menu.
 - [ ] Thả emoji vào tin (nút 😊+ hoặc chip có sẵn) → chip hiện số người; cửa sổ
       kia thấy chip ngay không cần F5; bấm lại chip của mình → bỏ, chip biến mất khi
       còn 0 người.

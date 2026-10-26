@@ -7,7 +7,15 @@ import type {
   VoiceState,
 } from "@umaru/protocol";
 import { Permission, hasPermission } from "@umaru/protocol";
-import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import {
   formatBytes,
   MAX_FILES_PER_MESSAGE,
@@ -84,6 +92,15 @@ export function ChatScreen() {
     x: number;
     y: number;
   } | null>(null);
+  /**
+   * Menu chuột phải ở sidebar (kênh hoặc thành viên). Tách khỏi `messageMenu`
+   * vì hai menu có bộ mục khác nhau và chỉ một cái được mở tại một thời điểm.
+   */
+  const [sidebarMenu, setSidebarMenu] = useState<
+    | { kind: "channel"; channel: Channel; x: number; y: number }
+    | { kind: "member"; member: GuildMemberSummary; x: number; y: number }
+    | null
+  >(null);
   /** Thông báo ngắn ("Đã sao chép") — tự tắt, không cần người dùng đóng. */
   const [toast, setToast] = useState<string | null>(null);
   /** Vị trí con trỏ trong ô soạn — quyết định `@…` nào đang gõ và chèn ở đâu. */
@@ -504,6 +521,15 @@ export function ChatScreen() {
     return `${base}?channel=${message.channelId}&message=${message.id}`;
   }
 
+  /** Link mở đúng kênh (không kèm tin) — dùng cho "Sao chép liên kết kênh". */
+  function channelLink(target: Channel): string {
+    const base =
+      typeof window === "undefined"
+        ? ""
+        : `${window.location.origin}${window.location.pathname}`;
+    return `${base}?channel=${target.id}`;
+  }
+
   async function copyText(text: string): Promise<void> {
     const ok = await copyToClipboard(text);
     flashToast(ok ? t("copied") : t("copyFailed"));
@@ -516,6 +542,89 @@ export function ChatScreen() {
    * hành động phá huỷ xuống cuối, chữ đỏ. Mục nào người dùng không có quyền thì
    * **không hiện**, thay vì hiện rồi báo lỗi 403.
    */
+  /**
+   * Mục cho menu chuột phải của một kênh.
+   *
+   * Chỉ hiện thứ **làm được ngay**: đánh dấu đã đọc, sao chép liên kết (ai thấy
+   * kênh thì mở được link), và Chỉnh sửa kênh khi có quyền. Không có "Xoá kênh"
+   * trong menu này — xoá là việc phá huỷ cả lịch sử, phải vào Channel Settings
+   * (nơi có bước xác nhận) chứ không đặt cạnh "Đánh dấu đã đọc".
+   */
+  function channelMenuItems(target: Channel): ContextMenuItem[] {
+    const items: ContextMenuItem[] = [
+      {
+        id: "mark-read",
+        label: t("markAsRead"),
+        icon: "✓",
+        onSelect: () => state.markRead(target.id as string),
+      },
+      {
+        id: "copy-channel-link",
+        label: t("copyChannelLink"),
+        icon: "🔗",
+        onSelect: () => void copyText(channelLink(target)),
+      },
+    ];
+    if (canManageChannelSettings && target.type !== "guild_voice") {
+      items.push({
+        id: "edit-channel",
+        label: t("channelSettings"),
+        icon: "⚙",
+        onSelect: () => void state.openChannelSettings(target.id as string),
+      });
+    }
+    return items;
+  }
+
+  /**
+   * Mục cho menu chuột phải của một thành viên.
+   *
+   * Không hiện gì với chính mình (tự nhắn tin/tự chặn là vô nghĩa). `block` để
+   * cuối và tô đỏ như mọi hành động phá huỷ khác.
+   */
+  function memberMenuItems(member: GuildMemberSummary): ContextMenuItem[] {
+    const isSelf = member.userId === state.me?.id;
+    if (isSelf) return [];
+    const items: ContextMenuItem[] = [
+      {
+        id: "dm",
+        label: t("sendDirectMessage"),
+        icon: "💬",
+        onSelect: () => void state.openDm(member.userId as string),
+      },
+      {
+        id: "copy-username",
+        label: t("copyUsername"),
+        icon: "📋",
+        onSelect: () => void copyText(`@${member.username}`),
+      },
+    ];
+    // Đã chặn rồi thì mục đảo thành "Bỏ chặn": hiện "Chặn" cho người đã chặn là
+    // ngõ cụt (bấm lại chỉ nhận 409/không có gì xảy ra).
+    const blocked = (state.blocks ?? []).some((entry) => entry.userId === member.userId);
+    items.push(
+      blocked
+        ? {
+            id: "unblock",
+            label: t("unblock"),
+            icon: "✅",
+            onSelect: () => void state.unblockUser(member.userId as string),
+          }
+        : {
+            id: "block",
+            label: t("block"),
+            icon: "🚫",
+            danger: true,
+            onSelect: () => {
+              if (window.confirm(t("blockConfirm", { name: member.displayName }))) {
+                void state.blockUser(member.userId as string);
+              }
+            },
+          },
+    );
+    return items;
+  }
+
   function messageMenuItems(message: Message): ContextMenuItem[] {
     const mine = message.authorId === state.me?.id;
     const moderate = mine || canManageMessages(channelId as string);
@@ -811,6 +920,15 @@ export function ChatScreen() {
                       channel={channel}
                       active={channel.id === channelId}
                       onSelect={() => void state.selectChannel(channel.id)}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setSidebarMenu({
+                          kind: "channel",
+                          channel,
+                          x: event.clientX,
+                          y: event.clientY,
+                        });
+                      }}
                       onVoiceToggle={() => void state.toggleVoice(channel.id)}
                       voiceActive={myVoice?.channelId === channel.id}
                       voiceLabel={t("voiceChannel")}
@@ -1880,6 +1998,11 @@ export function ChatScreen() {
           offlineLabel={t("offlineMembers")}
           youLabel={t("you")}
           ownerLabel={t("serverOwner")}
+          onMemberContextMenu={(member, event) => {
+            event.preventDefault();
+            if (member.userId === state.me?.id) return;
+            setSidebarMenu({ kind: "member", member, x: event.clientX, y: event.clientY });
+          }}
         />
       )}
 
@@ -1950,6 +2073,20 @@ export function ChatScreen() {
             </>
           )}
         </Modal>
+      )}
+
+      {sidebarMenu !== null && (
+        <ContextMenu
+          x={sidebarMenu.x}
+          y={sidebarMenu.y}
+          label={sidebarMenu.kind === "channel" ? t("channelMenu") : t("memberMenu")}
+          items={
+            sidebarMenu.kind === "channel"
+              ? channelMenuItems(sidebarMenu.channel)
+              : memberMenuItems(sidebarMenu.member)
+          }
+          onClose={() => setSidebarMenu(null)}
+        />
       )}
 
       {messageMenu !== null && (
@@ -2046,6 +2183,7 @@ function ChannelButton({
   channel,
   active,
   onSelect,
+  onContextMenu,
   onVoiceToggle,
   voiceActive,
   voiceLabel,
@@ -2060,6 +2198,8 @@ function ChannelButton({
   channel: Channel;
   active: boolean;
   onSelect: () => void;
+  /** Menu chuột phải (Đánh dấu đã đọc / Sao chép liên kết / Chỉnh sửa kênh). */
+  onContextMenu?: (event: ReactMouseEvent) => void;
   /** Kênh thoại: vào/ra phòng (một nút cho cả hai chiều). */
   onVoiceToggle?: () => void;
   /** Đang ở trong phòng của kênh này. */
@@ -2088,6 +2228,7 @@ function ChannelButton({
       // Kênh thoại: bấm là vào/ra phòng (không mở khung chat). Vẫn kéo-thả được
       // vì drag bắt đầu từ sự kiện riêng, không phải click.
       onClick={canConnect ? onVoiceToggle : isVoice ? undefined : onSelect}
+      onContextMenu={onContextMenu}
       aria-disabled={isVoice && !canConnect}
       aria-pressed={canConnect ? (voiceActive ?? false) : undefined}
       draggable={drag !== undefined}

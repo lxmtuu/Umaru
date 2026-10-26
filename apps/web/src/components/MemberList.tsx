@@ -1,4 +1,5 @@
 import type { GuildMemberSummary, PresenceStatus, Role } from "@umaru/protocol";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { Avatar } from "./Avatar.js";
 import { useLocale } from "../lib/i18n.js";
 import { groupMembersByRole, type MemberSection } from "../lib/memberList.js";
@@ -32,6 +33,11 @@ export interface MemberListProps {
   offlineLabel: string;
   youLabel: string;
   ownerLabel: string;
+  /**
+   * Menu chuột phải trên một thành viên (Nhắn tin / Sao chép tên / Chặn).
+   * Tuỳ chọn để `MemberList` vẫn dùng được ở nơi không cần menu.
+   */
+  onMemberContextMenu?: (member: GuildMemberSummary, event: ReactMouseEvent) => void;
 }
 
 function hex(color: number): string {
@@ -53,6 +59,7 @@ export function MemberList({
   offlineLabel,
   youLabel,
   ownerLabel,
+  onMemberContextMenu,
 }: MemberListProps) {
   // `locale` để component render lại khi đổi ngôn ngữ, kể cả khi props không đổi.
   useLocale((state) => state.locale);
@@ -72,6 +79,11 @@ export function MemberList({
         <div
           className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-white/5"
           title={isOwner ? ownerLabel : undefined}
+          onContextMenu={
+            onMemberContextMenu === undefined
+              ? undefined
+              : (event) => onMemberContextMenu(member, event)
+          }
         >
           <span className="relative shrink-0">
             <Avatar
