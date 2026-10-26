@@ -26,7 +26,8 @@ import { GroupDmPanel } from "./GroupDmPanel.js";
 import { ProfileDialog } from "./ProfileDialog.js";
 import { RoleSettings } from "./RoleSettings.js";
 import { type DropTarget, resolveDrop } from "../lib/channelDrop.js";
-import { canShareScreen, isSpeaking } from "../lib/voice.js";
+import { isSpeaking } from "../lib/voice.js";
+import { VoiceBar } from "./VoiceBar.js";
 import { VoiceScreens } from "./VoiceScreens.js";
 import { FriendsPanel } from "./FriendsPanel.js";
 import { formatTabTitle } from "../lib/notifications.js";
@@ -663,125 +664,20 @@ export function ChatScreen() {
 
         {/* Thanh thoại: chỉ hiện khi mình đang ở trong một phòng thoại. */}
         {myVoice !== null && (
-          <div className="border-t border-white/5 bg-emerald-400/5 px-3 py-2">
-            <div className="mb-1 flex items-center justify-between gap-2">
-              <span className="min-w-0 truncate text-[11px] font-semibold text-emerald-200">
-                🔊 {channels.find((c) => c.id === myVoice.channelId)?.name ?? t("voiceInChannel")}
-              </span>
-              <button
-                type="button"
-                onClick={() => void state.toggleVoice(myVoice.channelId)}
-                className="shrink-0 rounded px-1 text-[11px] text-slate-400 hover:bg-white/5 hover:text-rose-300"
-                title={t("voiceLeave")}
-                aria-label={t("voiceLeave")}
-              >
-                ✕
-              </button>
-            </div>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => void state.toggleVoiceMute()}
-                aria-pressed={myVoice.selfMute}
-                title={myVoice.selfMute ? t("voiceUnmute") : t("voiceMute")}
-                aria-label={myVoice.selfMute ? t("voiceUnmute") : t("voiceMute")}
-                className={`rounded px-2 py-0.5 text-xs ring-2 hover:bg-white/5 ${
-                  isSpeaking(state.voiceSpeakers, state.me?.id)
-                    ? "ring-emerald-400"
-                    : "ring-transparent"
-                } ${
-                  myVoice.selfMute ? "bg-rose-400/20 text-rose-200" : "text-slate-300"
-                }`}
-              >
-                {myVoice.selfMute ? "🔇" : "🎙"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void state.toggleVoiceDeafen()}
-                aria-pressed={myVoice.selfDeaf}
-                title={myVoice.selfDeaf ? t("voiceUndeafen") : t("voiceDeafen")}
-                aria-label={myVoice.selfDeaf ? t("voiceUndeafen") : t("voiceDeafen")}
-                className={`rounded px-2 py-0.5 text-xs hover:bg-white/5 ${
-                  myVoice.selfDeaf ? "bg-rose-400/20 text-rose-200" : "text-slate-300"
-                }`}
-              >
-                🎧
-              </button>
-              <button
-                type="button"
-                onClick={() => void state.toggleScreenShare()}
-                aria-pressed={state.screenSharing}
-                disabled={
-                  !canShareScreen({
-                    canPublish: state.voiceAudio?.canPublish ?? false,
-                    status: state.voiceAudio?.status ?? "idle",
-                  })
-                }
-                title={
-                  state.screenSharing
-                    ? t("voiceStopShare")
-                    : state.voiceAudio?.canPublish === true
-                      ? t("voiceShareScreen")
-                      : t("voiceShareBlocked")
-                }
-                aria-label={state.screenSharing ? t("voiceStopShare") : t("voiceShareScreen")}
-                className={`rounded px-2 py-0.5 text-xs hover:bg-white/5 disabled:opacity-40 ${
-                  state.screenSharing ? "bg-emerald-400/20 text-emerald-200" : "text-slate-300"
-                }`}
-              >
-                {state.screenSharing ? "⏹" : "🖥"}
-              </button>
-              {/* Trạng thái âm thanh: nói rõ "đang thông / chưa bật / lỗi gì" thay
-                  vì im lặng — người dùng phải phân biệt được "phòng câm" với
-                  "micro của tôi bị chặn". */}
-              {state.voiceAudio === null ||
-              state.voiceAudio.status === "connecting" ||
-              state.voiceAudio.status === "reconnecting" ? (
-                <span className="ml-auto text-[10px] text-amber-300/80">
-                  {state.voiceAudio?.status === "reconnecting"
-                    ? t("voiceAudioReconnecting")
-                    : t("voiceAudioConnecting")}
-                </span>
-              ) : state.voiceAudio.status === "connected" ? (
-                <span
-                  className={`ml-auto text-[10px] ${
-                    state.voiceAudio.canPublish ? "text-emerald-300" : "text-amber-300"
-                  }`}
-                  title={
-                    state.voiceAudio.canPublish
-                      ? t("voiceAudioLive")
-                      : t("voiceAudioNoSpeaker")
-                  }
-                >
-                  {state.voiceAudio.canPublish
-                    ? isSpeaking(state.voiceSpeakers, state.me?.id)
-                      ? `● ${t("voiceSpeaking")}`
-                      : `● ${t("voiceAudioLive")}`
-                    : `👂 ${t("voiceAudioNoSpeaker")}`}
-                </span>
-              ) : (
-                <span className="ml-auto flex items-center gap-1 text-[10px] text-amber-300">
-                  <span
-                    title={t(state.voiceAudio.errorKey ?? "voiceErrorUnknown")}
-                    className="max-w-[10rem] truncate"
-                  >
-                    {state.voiceAudio.status === "unavailable"
-                      ? t("voiceAudioUnavailable")
-                      : t(state.voiceAudio.errorKey ?? "voiceErrorUnknown")}
-                  </span>
-                  {state.voiceAudio.status !== "unavailable" && (
-                    <button
-                      type="button"
-                      onClick={() => void state.retryVoiceAudio()}
-                      className="rounded border border-amber-300/40 px-1 py-0.5 hover:bg-amber-300/10"
-                    >
-                      {t("voiceRetry")}
-                    </button>
-                  )}
-                </span>
-              )}
-            </div>
-          </div>
+          <VoiceBar
+            channelName={channels.find((c) => c.id === myVoice.channelId)?.name ?? t("voiceInChannel")}
+            selfMute={myVoice.selfMute}
+            selfDeaf={myVoice.selfDeaf}
+            voiceAudio={state.voiceAudio}
+            speakers={state.voiceSpeakers}
+            meId={state.me?.id ?? null}
+            screenSharing={state.screenSharing}
+            onLeave={() => void state.toggleVoice(myVoice.channelId)}
+            onToggleMute={() => void state.toggleVoiceMute()}
+            onToggleDeafen={() => void state.toggleVoiceDeafen()}
+            onToggleScreenShare={() => void state.toggleScreenShare()}
+            onRetry={() => void state.retryVoiceAudio()}
+          />
         )}
 
         <div className="border-t border-white/5 px-3 py-2">
