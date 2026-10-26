@@ -17,6 +17,9 @@ vi.mock("../lib/session.js", () => ({
   authedApi: {
     listMessages: async () => [],
     ackRead: async () => undefined,
+    // Ô soạn gọi `notifyTyping` mỗi lần gõ; thiếu hàm này thì mock `authedApi`
+    // ném lỗi *sau* khi test đã xanh → vitest đánh dấu cả lượt chạy là hỏng.
+    sendTyping: async () => undefined,
     listMessageRequests: async () => [],
     listPins: async () => [],
     searchMessages: async () => ({ hits: [], hasMore: false }),
