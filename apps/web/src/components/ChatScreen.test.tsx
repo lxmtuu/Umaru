@@ -375,3 +375,79 @@ describe("ChatScreen — menu chuột phải trên tin nhắn", () => {
     expect(screen.getByText(/Đang trả lời/)).toBeTruthy();
   });
 });
+
+describe("ChatScreen — gợi ý @mention và bảng emoji", () => {
+  /** Gõ vào ô soạn rồi đặt con trỏ ở cuối — jsdom không tự dời con trỏ. */
+  function typeDraft(value: string) {
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value } });
+    box.setSelectionRange(value.length, value.length);
+    fireEvent.keyUp(box, { key: value.slice(-1) });
+    return box;
+  }
+
+  it("gõ `@mi` → hiện gợi ý đúng người, không gợi ý chính mình", () => {
+    render(<ChatScreen />);
+    typeDraft("@mi");
+    const list = screen.getByRole("listbox", { name: "Gợi ý thành viên để nhắc" });
+    expect(within(list).getByRole("option", { name: /Minh/ })).toBeTruthy();
+    // "Demo" là chính mình → không nằm trong danh sách.
+    expect(within(list).queryByRole("option", { name: /Demo/ })).toBeNull();
+  });
+
+  it("Enter chọn gợi ý: chèn `@username ` vào ô soạn, KHÔNG gửi tin", () => {
+    render(<ChatScreen />);
+    const box = typeDraft("@mi");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect((box as HTMLTextAreaElement).value).toBe("@minh ");
+    // Gợi ý đóng sau khi chọn.
+    expect(screen.queryByRole("listbox")).toBeNull();
+    // Tin chưa được gửi: vẫn còn nội dung trong ô soạn.
+    expect(screen.getByRole("textbox")).toBeTruthy();
+  });
+
+  it("Escape đóng gợi ý, gõ tiếp thì hiện lại", () => {
+    render(<ChatScreen />);
+    const box = typeDraft("@mi");
+    expect(screen.queryByRole("listbox")).not.toBeNull();
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+
+    fireEvent.change(box, { target: { value: "@min" } });
+    box.setSelectionRange(4, 4);
+    expect(screen.queryByRole("listbox")).not.toBeNull();
+  });
+
+  it("gõ email không bật gợi ý (chỉ `@` sau khoảng trắng mới là mention)", () => {
+    render(<ChatScreen />);
+    typeDraft("minh@example.com");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("bấm một gợi ý cũng chèn được (dùng chuột)", () => {
+    render(<ChatScreen />);
+    const box = typeDraft("@mi");
+    fireEvent.mouseDown(screen.getByRole("option", { name: /Minh/ }));
+    expect((box as HTMLTextAreaElement).value).toBe("@minh ");
+  });
+
+  it("mở bảng emoji, chọn một cái → chèn vào ô soạn và đóng bảng", () => {
+    render(<ChatScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Chèn emoji" }));
+    const picker = screen.getByRole("dialog", { name: "Bảng emoji" });
+    expect(picker).toBeTruthy();
+
+    fireEvent.click(within(picker).getByRole("button", { name: "🎉" }));
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("🎉");
+    expect(screen.queryByRole("dialog", { name: "Bảng emoji" })).toBeNull();
+  });
+
+  it("bảng emoji nhóm đúng nhãn tiếng Việt", () => {
+    render(<ChatScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Chèn emoji" }));
+    const picker = screen.getByRole("dialog", { name: "Bảng emoji" });
+    expect(within(picker).getByText("Cảm xúc")).toBeTruthy();
+    expect(within(picker).getByText("Mặt")).toBeTruthy();
+    expect(within(picker).getByText("Công việc")).toBeTruthy();
+  });
+});

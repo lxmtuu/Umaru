@@ -14,7 +14,7 @@ import {
   validateFiles,
 } from "../lib/attachments.js";
 import { SEARCH_MIN_LENGTH, useChat, type SearchScope } from "../lib/chatStore.js";
-import { translate, useLocale, useT } from "../lib/i18n.js";
+import { translate, useLocale, useT, type MessageKey } from "../lib/i18n.js";
 import { ChannelSettings } from "./ChannelSettings.js";
 import { MessageAttachments } from "./MessageAttachments.js";
 import { MemberList } from "./MemberList.js";
@@ -36,7 +36,18 @@ import { FriendsPanel } from "./FriendsPanel.js";
 import { formatTabTitle } from "../lib/notifications.js";
 import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu.js";
+import { MentionSuggest } from "./MentionSuggest.js";
+import { DEFAULT_EMOJI_GROUPS, EmojiPicker } from "./EmojiPicker.js";
+import { activeMention, applyMention, insertSnippet, rankMentionCandidates } from "../lib/composer.js";
 import { copyToClipboard } from "../lib/clipboard.js";
+
+/** Nhóm emoji trong `EmojiPicker` → khoá i18n của nhãn nhóm. */
+const EMOJI_GROUP_LABEL: Record<string, MessageKey> = {
+  reactions: "emojiReactions",
+  faces: "emojiFaces",
+  hearts: "emojiHearts",
+  work: "emojiWork",
+};
 
 export function ChatScreen() {
   const t = useT();
@@ -75,6 +86,11 @@ export function ChatScreen() {
   } | null>(null);
   /** Thông báo ngắn ("Đã sao chép") — tự tắt, không cần người dùng đóng. */
   const [toast, setToast] = useState<string | null>(null);
+  /** Vị trí con trỏ trong ô soạn — quyết định `@…` nào đang gõ và chèn ở đâu. */
+  const [caret, setCaret] = useState(0);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Đóng menu khi component bị gỡ (đổi kênh, đăng xuất) và dọn timer của toast:
@@ -353,6 +369,8 @@ export function ChatScreen() {
     const files = pendingFiles;
     const parent = replyTo;
     setDraft("");
+    setCaret(0);
+    setMentionDismissed(false);
     setPendingFiles([]);
     setAttachError(null);
     setReplyTo(null);
@@ -392,6 +410,75 @@ export function ChatScreen() {
     await state.deleteMessage(message.id);
     setConfirmDeleteId(null);
     if (editingId === message.id) cancelEdit();
+  }
+
+  /**
+   * Người có thể `@nhắc`: thành viên server đang mở, hoặc những người trong DM.
+   *
+   * Bỏ chính mình — Discord cũng vậy: tự nhắc mình không có ý nghĩa và chỉ làm
+   * danh sách dài thêm.
+   */
+  const mentionCandidates = useMemo(() => {
+    const self = state.me?.id;
+    const rows = activeDm !== null ? [activeDm.recipient, ...(activeDm.recipients ?? [])] : members;
+    const seen = new Set<string>();
+    const out: Array<{ userId: string; username: string; displayName: string; avatarUrl: string | null }> = [];
+    for (const row of rows) {
+      if (row === null || row === undefined) continue;
+      if (self !== undefined && row.userId === self) continue;
+      if (seen.has(row.userId)) continue;
+      seen.add(row.userId);
+      out.push({
+        userId: row.userId,
+        username: row.username,
+        displayName: row.displayName,
+        avatarUrl: row.avatarUrl ?? null,
+      });
+    }
+    return out;
+  }, [activeDm, members, state.me?.id]);
+
+  const mentionTrigger = activeMention(draft, caret);
+  /**
+   * `mentionDismissed` để `Escape` thật sự đóng: nếu chỉ dựa vào trigger thì
+   * gõ thêm một ký tự là popup bật lại ngay, rất khó chịu khi đang cố bỏ nó.
+   * Mọi thay đổi nội dung đều bật lại (xem `onChange`).
+   */
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const mentionSuggestions =
+    mentionTrigger === null || mentionDismissed
+      ? []
+      : rankMentionCandidates(mentionCandidates, mentionTrigger.query);
+  const activeMentionIndex =
+    mentionSuggestions.length === 0 ? 0 : Math.min(mentionIndex, mentionSuggestions.length - 1);
+
+  /**
+   * Áp một thay đổi lên ô soạn rồi **trả con trỏ về đúng chỗ**.
+   *
+   * Không làm bước sau thì sau khi chèn `@minh ` con trỏ nhảy về đầu textarea và
+   * người dùng gõ tiếp vào giữa câu cũ — lỗi rất khó chịu mà chỉ xuất hiện khi
+   * bấm vào gợi ý (không phải khi gõ).
+   */
+  function applyComposerEdit(next: { text: string; caret: number }): void {
+    setDraft(next.text);
+    setCaret(next.caret);
+    setMentionIndex(0);
+    requestAnimationFrame(() => {
+      const element = textareaRef.current;
+      if (element === null) return;
+      element.focus();
+      element.setSelectionRange(next.caret, next.caret);
+    });
+  }
+
+  function pickMention(item: { username: string }): void {
+    if (mentionTrigger === null) return;
+    applyComposerEdit(applyMention(draft, mentionTrigger, caret, item.username));
+  }
+
+  function pickEmoji(emoji: string): void {
+    setEmojiOpen(false);
+    applyComposerEdit(insertSnippet(draft, caret, caret, emoji));
   }
 
   function flashToast(text: string): void {
@@ -1566,7 +1653,7 @@ export function ChatScreen() {
               {attachError !== null && (
                 <p className="mb-2 text-xs text-rose-300">{attachError}</p>
               )}
-              <div className="flex items-end gap-2">
+              <div className="relative flex items-end gap-2">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -1587,13 +1674,63 @@ export function ChatScreen() {
                 >
                   📎
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setEmojiOpen((open) => !open)}
+                  title={t("insertEmoji")}
+                  aria-label={t("insertEmoji")}
+                  aria-haspopup="dialog"
+                  aria-expanded={emojiOpen}
+                  className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:border-emerald-400/40 hover:text-emerald-200"
+                >
+                  😊
+                </button>
                 <textarea
+                  ref={textareaRef}
                   value={draft}
+                  aria-autocomplete={mentionSuggestions.length > 0 ? "list" : undefined}
+                  aria-controls={mentionSuggestions.length > 0 ? "mention-suggest" : undefined}
                   onChange={(event) => {
                     setDraft(event.target.value);
+                    setCaret(event.target.selectionStart ?? event.target.value.length);
+                    // Gõ thêm là bật lại gợi ý đã bị `Escape` đóng.
+                    setMentionDismissed(false);
+                    setMentionIndex(0);
                     if (event.target.value.length > 0) state.notifyTyping();
                   }}
+                  // Con trỏ còn di chuyển bằng phím/mouse mà không đổi nội dung —
+                  // không cập nhật thì gợi ý tính theo vị trí cũ.
+                  onKeyUp={(event) =>
+                    setCaret(event.currentTarget.selectionStart ?? event.currentTarget.value.length)
+                  }
+                  onClick={(event) =>
+                    setCaret(event.currentTarget.selectionStart ?? event.currentTarget.value.length)
+                  }
                   onKeyDown={(event) => {
+                    // Gợi ý `@` đang mở thì phím thuộc về nó trước.
+                    if (mentionSuggestions.length > 0) {
+                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                        event.preventDefault();
+                        const delta = event.key === "ArrowDown" ? 1 : -1;
+                        const count = mentionSuggestions.length;
+                        setMentionIndex((current) => {
+                          const base = Math.min(current, count - 1);
+                          return (base + delta + count) % count;
+                        });
+                        return;
+                      }
+                      if (event.key === "Enter" || event.key === "Tab") {
+                        event.preventDefault();
+                        const picked = mentionSuggestions[activeMentionIndex];
+                        if (picked !== undefined) pickMention(picked);
+                        return;
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        setMentionDismissed(true);
+                        return;
+                      }
+                    }
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
                       void submitMessage();
@@ -1620,6 +1757,27 @@ export function ChatScreen() {
                   }
                   className="max-h-32 min-h-10 flex-1 resize-y rounded-lg border border-white/10 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-emerald-400/60"
                 />
+                {emojiOpen && (
+                  <EmojiPicker
+                    label={t("emojiPicker")}
+                    groups={DEFAULT_EMOJI_GROUPS.map((group) => ({
+                      label: t(EMOJI_GROUP_LABEL[group.key] ?? "emojiReactions"),
+                      emojis: group.emojis,
+                    }))}
+                    onPick={pickEmoji}
+                    onClose={() => setEmojiOpen(false)}
+                  />
+                )}
+                {mentionSuggestions.length > 0 && (
+                  <MentionSuggest
+                    id="mention-suggest"
+                    label={t("mentionSuggest")}
+                    items={mentionSuggestions}
+                    activeIndex={activeMentionIndex}
+                    onPick={pickMention}
+                    onHover={setMentionIndex}
+                  />
+                )}
                 <button
                   type="submit"
                   disabled={draft.trim().length === 0 && pendingFiles.length === 0}
