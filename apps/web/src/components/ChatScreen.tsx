@@ -35,6 +35,8 @@ import { VoiceScreens } from "./VoiceScreens.js";
 import { FriendsPanel } from "./FriendsPanel.js";
 import { formatTabTitle } from "../lib/notifications.js";
 import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu.js";
+import { copyToClipboard } from "../lib/clipboard.js";
 
 export function ChatScreen() {
   const t = useT();
@@ -65,6 +67,24 @@ export function ChatScreen() {
   const [editDraft, setEditDraft] = useState("");
   /** Tin đang chờ xác nhận xoá — tránh xoá nhầm khi hover. */
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  /** Menu chuột phải đang mở: tin nào, ở toạ độ nào. */
+  const [messageMenu, setMessageMenu] = useState<{
+    message: Message;
+    x: number;
+    y: number;
+  } | null>(null);
+  /** Thông báo ngắn ("Đã sao chép") — tự tắt, không cần người dùng đóng. */
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Đóng menu khi component bị gỡ (đổi kênh, đăng xuất) và dọn timer của toast:
+  // timer còn sống sau khi unmount sẽ `setState` trên component đã chết.
+  useEffect(
+    () => () => {
+      if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+    },
+    [],
+  );
   const now = useNow();
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -372,6 +392,108 @@ export function ChatScreen() {
     await state.deleteMessage(message.id);
     setConfirmDeleteId(null);
     if (editingId === message.id) cancelEdit();
+  }
+
+  function flashToast(text: string): void {
+    setToast(text);
+    if (toastTimer.current !== null) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2000);
+  }
+
+  /**
+   * Liên kết tới một tin: `?channel=<id>&message=<id>`.
+   *
+   * Dùng `origin + pathname` chứ không hardcode host: app chạy được ở localhost,
+   * preview và tên miền thật. Deep link đọc cả hai tham số nên dán vào đâu cũng
+   * mở đúng kênh **và** cuộn tới đúng tin.
+   */
+  function messageLink(message: Message): string {
+    const base =
+      typeof window === "undefined"
+        ? ""
+        : `${window.location.origin}${window.location.pathname}`;
+    return `${base}?channel=${message.channelId}&message=${message.id}`;
+  }
+
+  async function copyText(text: string): Promise<void> {
+    const ok = await copyToClipboard(text);
+    flashToast(ok ? t("copied") : t("copyFailed"));
+  }
+
+  /**
+   * Các mục của menu chuột phải cho một tin.
+   *
+   * Thứ tự theo Discord (Trả lời → Sửa → Ghim → Sao chép → Báo cáo/Chặn) và
+   * hành động phá huỷ xuống cuối, chữ đỏ. Mục nào người dùng không có quyền thì
+   * **không hiện**, thay vì hiện rồi báo lỗi 403.
+   */
+  function messageMenuItems(message: Message): ContextMenuItem[] {
+    const mine = message.authorId === state.me?.id;
+    const moderate = mine || canManageMessages(channelId as string);
+    const items: ContextMenuItem[] = [
+      {
+        id: "reply",
+        label: t("replyMessage"),
+        icon: "↩",
+        onSelect: () => setReplyTo(message),
+      },
+    ];
+    if (moderate || activeDm !== null) {
+      items.push({
+        id: "pin",
+        label: message.pinned ? t("unpinMessage") : t("pinMessage"),
+        icon: message.pinned ? "📌" : "📍",
+        onSelect: () => void state.togglePin(message.id as string),
+      });
+      items.push({
+        id: "edit",
+        label: t("editMessage"),
+        icon: "✎",
+        onSelect: () => startEdit(message),
+      });
+    }
+    items.push({
+      id: "copy-text",
+      label: t("copyText"),
+      icon: "📋",
+      onSelect: () => void copyText(message.content),
+    });
+    items.push({
+      id: "copy-link",
+      label: t("copyLink"),
+      icon: "🔗",
+      onSelect: () => void copyText(messageLink(message)),
+    });
+    if (!mine) {
+      items.push({
+        id: "report",
+        label: t("reportMessage"),
+        icon: "🚩",
+        onSelect: () =>
+          state.openReport({ messageId: message.id as string, label: authorName(message) }),
+      });
+      items.push({
+        id: "block",
+        label: t("block"),
+        icon: "🚫",
+        danger: true,
+        onSelect: () => {
+          if (window.confirm(t("blockConfirm", { name: authorName(message) }))) {
+            void state.blockUser(message.authorId as string);
+          }
+        },
+      });
+    }
+    if (moderate || activeDm !== null) {
+      items.push({
+        id: "delete",
+        label: t("deleteMessage"),
+        icon: "🗑",
+        danger: true,
+        onSelect: () => setConfirmDeleteId(message.id),
+      });
+    }
+    return items;
   }
 
   function authorName(message: Message): string {
@@ -1127,6 +1249,11 @@ export function ChatScreen() {
                     <article
                       key={message.id}
                       id={`message-${message.id}`}
+                      onContextMenu={(event) => {
+                        // `preventDefault` để không hiện menu của trình duyệt.
+                        event.preventDefault();
+                        setMessageMenu({ message, x: event.clientX, y: event.clientY });
+                      }}
                       className={`group flex scroll-mt-4 gap-3 px-4 py-1.5 hover:bg-white/[0.03] ${
                         state.highlightMessageId === message.id
                           ? "rounded-lg bg-amber-400/10 ring-1 ring-amber-300/40"
@@ -1187,6 +1314,25 @@ export function ChatScreen() {
                             <span className="text-[10px] text-slate-600">{t("edited")}</span>
                           )}
                           <span className="ml-auto flex shrink-0 items-center gap-1 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100">
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                // Mở menu tại nút: đường dùng được bằng bàn phím
+                                // và trên màn hình cảm ứng (không có chuột phải).
+                                const rect = event.currentTarget.getBoundingClientRect();
+                                setMessageMenu({
+                                  message,
+                                  x: rect.right,
+                                  y: rect.bottom + 4,
+                                });
+                              }}
+                              title={t("messageMenu")}
+                              aria-label={t("messageMenu")}
+                              aria-haspopup="menu"
+                              className="rounded px-1 text-[11px] text-slate-400 hover:bg-white/10 hover:text-slate-100"
+                            >
+                              ⋯
+                            </button>
                             <button
                               type="button"
                               onClick={() => setReplyTo(message)}
@@ -1573,6 +1719,25 @@ export function ChatScreen() {
             </>
           )}
         </Modal>
+      )}
+
+      {messageMenu !== null && (
+        <ContextMenu
+          x={messageMenu.x}
+          y={messageMenu.y}
+          label={t("messageMenu")}
+          items={messageMenuItems(messageMenu.message)}
+          onClose={() => setMessageMenu(null)}
+        />
+      )}
+
+      {toast !== null && (
+        <div
+          role="status"
+          className="pointer-events-none fixed bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-full bg-slate-900/90 px-3 py-1.5 text-xs text-slate-100 shadow-lg ring-1 ring-white/10"
+        >
+          {toast}
+        </div>
       )}
 
       {showProfile && <ProfileDialog onClose={() => setShowProfile(false)} />}

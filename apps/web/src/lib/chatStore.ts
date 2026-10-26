@@ -478,7 +478,7 @@ function applyChannelDeepLink(
   set: (patch: Partial<ChatState>) => void,
 ): void {
   if (typeof window === "undefined") return;
-  const { channelId, cleanedSearch } = readChannelDeepLink(window.location.search);
+  const { channelId, messageId, cleanedSearch } = readChannelDeepLink(window.location.search);
   if (channelId === null) return;
   window.history.replaceState(
     {},
@@ -486,8 +486,16 @@ function applyChannelDeepLink(
     `${window.location.pathname}${cleanedSearch}${window.location.hash}`,
   );
   const state = get();
+  /** Chọn kênh xong mới cuộn tới tin: cuộn trước thì danh sách tin còn rỗng. */
+  const openThenReveal = async (): Promise<void> => {
+    if (messageId === null) return;
+    await revealMessage(get, set, channelId, messageId);
+  };
+
   if (state.dms.some((entry) => entry.channel.id === channelId)) {
-    void get().selectDm(channelId);
+    void get()
+      .selectDm(channelId)
+      .then(openThenReveal);
     return;
   }
   const channel = Object.values(state.channels)
@@ -502,7 +510,9 @@ function applyChannelDeepLink(
     // tải lại cả bootstrap chỉ vì bấm một thông báo.
     set({ activeGuildId: guildId });
   }
-  void get().selectChannel(channelId);
+  void get()
+    .selectChannel(channelId)
+    .then(openThenReveal);
 }
 
 async function loadPushService(): Promise<PushService> {

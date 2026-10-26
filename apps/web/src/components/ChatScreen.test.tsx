@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message, Snowflake } from "@umaru/protocol";
 
@@ -291,5 +291,87 @@ describe("ChatScreen — dựng giao diện thật", () => {
     const dots = container.querySelectorAll("span.absolute.-bottom-0\\.5");
     // Chấm trong sidebar DM: màu vàng vì Minh đang "Đang chờ".
     expect([...dots].some((node) => node.className.includes("bg-amber-400"))).toBe(true);
+  });
+});
+
+describe("ChatScreen — menu chuột phải trên tin nhắn", () => {
+  function openMenuOn(text: string) {
+    const article = screen.getByText(text).closest("article");
+    expect(article).not.toBeNull();
+    fireEvent.contextMenu(article as HTMLElement, { clientX: 120, clientY: 80 });
+    return screen.getByRole("menu", { name: "Hành động với tin nhắn" });
+  }
+
+  it("chuột phải vào tin của người khác: có Trả lời/Sao chép/Báo cáo, không có Xoá", () => {
+    render(<ChatScreen />);
+    const menu = openMenuOn("Tin đầu tiên trong ngày");
+    const labels = within(menu)
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent ?? "");
+    expect(labels.some((label) => label.includes("Trả lời"))).toBe(true);
+    expect(labels.some((label) => label.includes("Sao chép nội dung"))).toBe(true);
+    expect(labels.some((label) => label.includes("Sao chép liên kết"))).toBe(true);
+    expect(labels.some((label) => label.includes("Báo cáo tin nhắn"))).toBe(true);
+    // Không có quyền MANAGE_MESSAGES ở kênh này và không phải tin của mình.
+    expect(labels.some((label) => label.includes("Xoá"))).toBe(false);
+  });
+
+  it("chuột phải vào tin của mình: có Ghim/Sửa/Xoá, không có Báo cáo", () => {
+    render(<ChatScreen />);
+    const menu = openMenuOn("Tin của mình");
+    const labels = within(menu)
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent ?? "");
+    expect(labels.some((label) => label.includes("Ghim tin nhắn"))).toBe(true);
+    expect(labels.some((label) => label.includes("Sửa"))).toBe(true);
+    expect(labels.some((label) => label.includes("Xoá"))).toBe(true);
+    expect(labels.some((label) => label.includes("Báo cáo"))).toBe(false);
+  });
+
+  it("nút ⋯ mở đúng menu đó (đường dùng được bằng bàn phím, không cần chuột phải)", () => {
+    render(<ChatScreen />);
+    const buttons = screen.getAllByRole("button", { name: "Hành động với tin nhắn" });
+    fireEvent.click(buttons[0]!);
+    expect(screen.getByRole("menu", { name: "Hành động với tin nhắn" })).toBeTruthy();
+  });
+
+  it("Sao chép liên kết: clipboard nhận URL mở đúng kênh + đúng tin, và báo đã chép", async () => {
+    const written: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: async (text: string) => void written.push(text) },
+      configurable: true,
+    });
+    render(<ChatScreen />);
+    const menu = openMenuOn("Tin của mình");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /Sao chép liên kết/ }));
+
+    // Menu đóng ngay sau khi chọn.
+    expect(screen.queryByRole("menu")).toBeNull();
+    await screen.findByText("Đã sao chép");
+    expect(written).toHaveLength(1);
+    expect(written[0]).toContain("?channel=3000&message=5003");
+  });
+
+  it("mục Xoá chỉ mở bước xác nhận, không xoá ngay", () => {
+    render(<ChatScreen />);
+    const menu = openMenuOn("Tin của mình");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /Xoá/ }));
+    expect(screen.getByText("Xoá?")).toBeTruthy();
+    // Tin vẫn còn trên màn hình.
+    expect(screen.getByText("Tin của mình")).toBeTruthy();
+  });
+
+  it("Escape đóng menu", () => {
+    render(<ChatScreen />);
+    openMenuOn("Tin của mình");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("mục Trả lời bật thanh \"đang trả lời\" ở ô soạn tin", () => {
+    render(<ChatScreen />);
+    const menu = openMenuOn("Tin của mình");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /Trả lời/ }));
+    expect(screen.getByText(/Đang trả lời/)).toBeTruthy();
   });
 });
