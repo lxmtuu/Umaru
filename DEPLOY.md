@@ -84,6 +84,13 @@ Caddy tự chuyển tiếp `Upgrade` và `X-Forwarded-*`. Nếu dùng ALB/Cloudf
 bật WebSocket (ALB: target group dùng giao thức HTTP/1.1) và đặt
 `GATEWAY_PUBLIC_URL=wss://umaru.example.com/api/v1/gateway/ws` cho chắc.
 
+**Nén WebSocket** (`permessage-deflate`) bật mặc định: frame ≥ 1 KiB được nén,
+mỗi message nén độc lập (không tái dùng từ điển — tránh rò rỉ kiểu BREACH). Đằng
+sau nginx/Cloudflare thì cứ để nguyên: extension này là giữa client và API, proxy
+chỉ chuyển tiếp header bắt tay. Nếu một proxy lạ làm rơi header
+`Sec-WebSocket-Extensions`, client vẫn chạy bình thường (chỉ là không nén) — muốn
+tắt hẳn thì đặt `GATEWAY_COMPRESS=off`.
+
 Sau khi có TLS, `PUBLIC_WEB_URL=https://umaru.example.com` để link trong mail đúng.
 
 ## 5. Dữ liệu

@@ -12,6 +12,10 @@ export interface Config {
   heartbeatIntervalMs: number;
   /** Thời gian giữ session sau khi ngắt để resume (spec §4.1). */
   sessionTtlMs: number;
+  /** Nén frame gateway (`permessage-deflate`); tắt bằng `GATEWAY_COMPRESS=off`. */
+  gatewayCompress: boolean;
+  /** Frame nhỏ hơn mức này (byte) không nén — nén frame 80 byte là lỗ. */
+  gatewayCompressThreshold: number;
   maxReplayEvents: number;
   migrationsDir: string;
   /** Bỏ trống = suy ra từ request (tiện dev). Production nên đặt tường minh. */
@@ -268,6 +272,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     workerId,
     heartbeatIntervalMs: Number(env.HEARTBEAT_INTERVAL_MS ?? "41250"),
     sessionTtlMs: Number(env.SESSION_TTL_MS ?? String(5 * 60 * 1000)),
+    // Bật mặc định: nén là trong suốt với client (trình duyệt nào cũng hỗ trợ)
+    // và chỉ có lợi; `off` để dành cho lúc cần soi frame bằng tay hoặc debug.
+    gatewayCompress: !isOff(env.GATEWAY_COMPRESS),
+    gatewayCompressThreshold: readPositiveInt(
+      env.GATEWAY_COMPRESS_THRESHOLD,
+      1024,
+      0,
+      1_048_576,
+    ),
     maxReplayEvents: Number(env.MAX_REPLAY_EVENTS ?? "2000"),
     migrationsDir:
       env.MIGRATIONS_DIR ?? fileURLToPath(new URL("../../../db/migrations/", import.meta.url)),

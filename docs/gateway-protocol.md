@@ -20,7 +20,17 @@ Trạng thái: **v1 đã được triển khai một phần trong [services/api]
 | **Permission kiểm tra ở server, không ở client** | Gateway lọc theo `VIEW_CHANNEL` **trước khi** gửi; client ẩn kênh chỉ là trang trí. |
 | **Client → server frames không được retry ngẫu nhiên** | Chỉ `RESUME` được gửi lại; hành động ghi (gửi tin) đi qua REST kèm `nonce`. |
 
-Giới hạn v1: frame ≤ **4 KiB**, tối đa **1 kết nối/session**, không sharding (single gateway node), không compression.
+Giới hạn v1: frame ≤ **4 KiB**, tối đa **1 kết nối/session**, không sharding (single gateway node).
+
+**Nén frame**: bật `permessage-deflate` mặc định (`services/api/src/gateway/compression.ts`).
+
+| Tham số | Giá trị | Vì sao |
+|---|---|---|
+| `threshold` | `GATEWAY_COMPRESS_THRESHOLD`, mặc định **1024 byte** | `HEARTBEAT`/`TYPING_START` chỉ 60–120 byte; nén chúng tốn CPU + cấp phát context zlib mà gần như không giảm byte |
+| `clientNoContextTakeover` / `serverNoContextTakeover` | **true** | Mỗi message nén độc lập, **không** dùng lại từ điển của message trước → không tạo kênh rò rỉ kiểu BREACH khi kẻ tấn công chèn được nội dung vào cùng luồng nén với dữ liệu riêng của người khác |
+| `maxPayload` | 4 KiB, tính trên dữ liệu **đã giải nén** | Nén không được nới trần frame |
+
+Đo thật trên gateway của Umaru: một `MESSAGE_CREATE` ~1.5 KB đi **1768 byte** khi không nén và **211 byte** khi nén (−88%). Client không phải đổi gì — trình duyệt và `ws` (Node) tự đàm phán; tắt bằng `GATEWAY_COMPRESS=off` khi cần soi frame bằng tay.
 
 ---
 

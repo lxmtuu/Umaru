@@ -1,5 +1,6 @@
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
+import { gatewayCompressionOptions } from "./gateway/compression.js";
 import Fastify, { type FastifyInstance } from "fastify";
 import { hasAnyAdminConfigured } from "./admin/access.js";
 import { ReportNotifier } from "./admin/notify.js";
@@ -62,7 +63,11 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   });
 
   await app.register(websocket, {
-    options: { maxPayload: 4 * 1024 }, // spec §1: frame ≤ 4 KiB
+    options: {
+      maxPayload: 4 * 1024, // spec §1: frame ≤ 4 KiB (tính trên dữ liệu đã giải nén)
+      // Nén frame lớn (`READY`, `MESSAGE_CREATE`…). Tắt bằng `GATEWAY_COMPRESS=off`.
+      perMessageDeflate: gatewayCompressionOptions(config),
+    },
   });
   // Upload file đi qua multipart; trần cứng đặt ở đây để Fastify chặn trước
   // khi ghi đĩa (route vẫn kiểm lại MIME và số file).
