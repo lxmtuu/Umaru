@@ -54,6 +54,52 @@ export interface MessageDeps {
 /** Trần số tin ghim mỗi kênh — giống Discord; chặn phình danh sách ghim. */
 export const MAX_PINS_PER_CHANNEL = 50;
 
+/**
+ * Còn bao nhiêu giây nữa người này mới được gửi tin tiếp theo (slowmode).
+ *
+ * Trả **0** khi không phải chờ: kênh không bật slowmode, là DM, hoặc người gửi
+ * có `MANAGE_MESSAGES`/`MANAGE_CHANNELS` (người trực kênh cần nói nhiều; áp cả
+ * họ thì slowmode thành công cụ tự khoá mình).
+ *
+ * Thread dùng slowmode của **kênh cha**: nếu không, mở thread là cách né đồng hồ
+ * trong một cú bấm.
+ */
+async function slowmodeWaitSeconds(
+  pool: Pool,
+  options: {
+    channelId: string;
+    channel: { type: string; parent_id: string | null; slowmode_seconds: number };
+    userId: string;
+    permissions: bigint;
+  },
+): Promise<number> {
+  const { channelId, channel, userId, permissions } = options;
+  if (hasPermission(permissions, Permission.MANAGE_MESSAGES)) return 0;
+  if (hasPermission(permissions, Permission.MANAGE_CHANNELS)) return 0;
+
+  let slowmode = channel.slowmode_seconds;
+  if (channel.type === "guild_thread" && channel.parent_id !== null) {
+    const parent = await pool.query<{ slowmode_seconds: number }>(
+      "SELECT slowmode_seconds FROM channels WHERE id = $1",
+      [channel.parent_id],
+    );
+    slowmode = parent.rows[0]?.slowmode_seconds ?? 0;
+  }
+  if (slowmode <= 0) return 0;
+
+  const last = await pool.query<{ created_at: Date }>(
+    `SELECT created_at FROM messages
+      WHERE channel_id = $1 AND author_id = $2
+      ORDER BY id DESC
+      LIMIT 1`,
+    [channelId, userId],
+  );
+  const lastAt = last.rows[0]?.created_at;
+  if (lastAt === undefined) return 0;
+  const elapsed = (Date.now() - lastAt.getTime()) / 1000;
+  return elapsed >= slowmode ? 0 : Math.ceil(slowmode - elapsed);
+}
+
 /** Throttle typing: 1 lần/8s/user/channel (spec §7). */
 const typingTimestamps = new Map<string, number>();
 const TYPING_COOLDOWN_MS = 8_000;
@@ -160,6 +206,23 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       // "lưu trữ" chỉ là nhãn trang trí.
       if ((await isThreadArchived(pool, channelId)) === true) {
         throw new HttpError(403, "THREAD_ARCHIVED", "Thread đã lưu trữ — mở lại để gửi tin");
+      }
+
+      // Slowmode — kiểm **trước** khi đọc multipart để không ghi tệp mồ côi.
+      if (config.rateLimitsEnabled) {
+        const wait = await slowmodeWaitSeconds(pool, {
+          channelId,
+          channel: context.channel,
+          userId,
+          permissions: context.permissions | (context.guild?.permissions ?? 0n),
+        });
+        if (wait > 0) {
+          return reply
+            .code(429)
+            .send(
+              rateLimitedBody(wait, `Kênh đang bật slowmode — còn ${wait} giây nữa mới gửi tiếp`),
+            );
+        }
       }
 
       const id = nextId();

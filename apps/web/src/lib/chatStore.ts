@@ -316,6 +316,8 @@ interface ChatState {
   createChannel(name: string, type?: "guild_text" | "category"): Promise<void>;
   /** Đổi category chứa kênh (null = ra gốc); quyền hiệu dụng tính lại theo category mới. */
   moveChannel(channelId: string, parentId: string | null): Promise<boolean>;
+  /** Đặt slowmode (giây; 0 = tắt) — cần `MANAGE_CHANNELS`, server phát `CHANNEL_UPDATE`. */
+  setChannelSlowmode(channelId: string, seconds: number): Promise<boolean>;
   /**
    * Đổi thứ tự trong sidebar: chèn kênh vào chỉ số `position` của nhóm kênh cùng
    * category (`parentId` null = nhóm gốc). Server renumber anh em rồi phát
@@ -2056,6 +2058,26 @@ export const useChat = create<ChatState>()((set, get) => ({
       if (type === "guild_text") await get().loadMessages(channel.id);
     } catch (error) {
       set({ error: describeError(error) });
+    }
+  },
+
+  async setChannelSlowmode(channelId, seconds) {
+    try {
+      const channel = await authedApi.editChannel(channelId, {
+        slowmodeSeconds: seconds > 0 ? seconds : null,
+      });
+      const guildId = channel.guildId;
+      if (guildId === null) return false;
+      set({
+        channels: {
+          ...get().channels,
+          [guildId]: upsertChannel(get().channels[guildId] ?? [], channel),
+        },
+      });
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
     }
   },
 

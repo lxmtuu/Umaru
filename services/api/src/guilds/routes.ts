@@ -65,6 +65,22 @@ function readPosition(raw: unknown): number {
   return raw;
 }
 
+/** Trần slowmode = 6 giờ (Discord cũng vậy; dài hơn là "khoá kênh", nên làm bằng quyền). */
+export const MAX_SLOWMODE_SECONDS = 21_600;
+
+/**
+ * `slowmodeSeconds` nhận 0..21600 (0 = tắt) hoặc `null` (= tắt).
+ * Chấp nhận số thực? Không: bán giây không có nghĩa với người dùng và chỉ làm
+ * client phải làm tròn.
+ */
+function readSlowmode(raw: unknown): number {
+  if (raw === null) return 0;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > MAX_SLOWMODE_SECONDS) {
+    throw badRequest(`slowmodeSeconds phải là số nguyên từ 0 đến ${MAX_SLOWMODE_SECONDS}`);
+  }
+  return raw;
+}
+
 const canManageChannels = (permissions: bigint): boolean =>
   hasPermission(permissions, Permission.MANAGE_CHANNELS);
 
@@ -341,7 +357,7 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       const inserted = await pool.query<ChannelRow>(
         `INSERT INTO channels (id, guild_id, type, name, parent_id, position)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, guild_id, type, name, topic, parent_id, position`,
+         RETURNING id, guild_id, type, name, topic, parent_id, position, slowmode_seconds`,
         [
           channelId,
           request.params.guildId,
@@ -414,19 +430,34 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       // `position` = chỉ số trong nhóm kênh cùng category (0 = đầu nhóm) — cho kéo-thả.
       const movesPosition = body !== undefined && "position" in body && body.position !== null;
       const position = movesPosition ? readPosition(body?.position) : 0;
-      if (name === null && topic === undefined && !movesCategory && !movesPosition) {
+      // Slowmode: **0 = tắt**, 1..21600 giây. Gửi `null` cũng coi như tắt (UI có nút "Tắt").
+      const setsSlowmode = body !== undefined && "slowmodeSeconds" in body;
+      const slowmodeSeconds = setsSlowmode ? readSlowmode(body?.slowmodeSeconds) : 0;
+      if (
+        name === null &&
+        topic === undefined &&
+        !movesCategory &&
+        !movesPosition &&
+        !setsSlowmode
+      ) {
         throw badRequest("Không có gì để cập nhật");
       }
+      // Category không có tin nhắn nên slowmode ở đó là vô nghĩa — từ chối thay vì
+      // lưu một con số không bao giờ được đọc.
+      if (setsSlowmode && context.channel.type !== "guild_text" && context.channel.type !== "guild_voice") {
+        throw badRequest("Chỉ kênh chữ/kênh thoại mới đặt slowmode");
+      }
 
-      if (name !== null || topic !== undefined || movesCategory) {
+      if (name !== null || topic !== undefined || movesCategory || setsSlowmode) {
         await pool.query(
           `UPDATE channels
               SET name = COALESCE($2, name),
                   topic = COALESCE($3, topic),
                   parent_id = CASE WHEN $4 THEN $5 ELSE parent_id END,
+                  slowmode_seconds = CASE WHEN $6 THEN $7 ELSE slowmode_seconds END,
                   updated_at = now()
             WHERE id = $1`,
-          [request.params.channelId, name, topic ?? null, movesCategory, parentId],
+          [request.params.channelId, name, topic ?? null, movesCategory, parentId, setsSlowmode, slowmodeSeconds],
         );
       }
 
@@ -463,7 +494,7 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
         );
 
         const after = await pool.query<ChannelRow>(
-          `SELECT id, guild_id, type, name, topic, parent_id, position
+          `SELECT id, guild_id, type, name, topic, parent_id, position, slowmode_seconds
              FROM channels WHERE id = ANY($1::bigint[])`,
           [ordered],
         );
@@ -476,7 +507,7 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       }
 
       const updated = await pool.query<ChannelRow>(
-        `SELECT id, guild_id, type, name, topic, parent_id, position
+        `SELECT id, guild_id, type, name, topic, parent_id, position, slowmode_seconds
            FROM channels WHERE id = $1`,
         [request.params.channelId],
       );
@@ -486,7 +517,9 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
 
       // Chỉ đổi category thì tập kênh hiển thị mới đổi → tính lại quyền/visibility.
       if (movesCategory) await publisher.refreshGuildVisibility(guildId);
-      if (name !== null || topic !== undefined || movesCategory) changed.set(channel.id, channel);
+      if (name !== null || topic !== undefined || movesCategory || setsSlowmode) {
+        changed.set(channel.id, channel);
+      }
       for (const row of changed.values()) {
         publisher.publishToGuild(guildId, "CHANNEL_UPDATE", mapChannel(row));
       }

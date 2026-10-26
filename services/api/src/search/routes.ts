@@ -34,6 +34,7 @@ interface SearchRow {
   channel_topic: string | null;
   channel_parent_id: string | null;
   channel_position: number;
+  channel_slowmode_seconds: number;
   author_username: string;
   author_display_name: string;
   author_avatar_url: string | null;
@@ -87,7 +88,7 @@ const SELECT_COLUMNS = `
   m.created_at, m.edited_at,
   c.guild_id, c.type AS channel_type, c.name AS channel_name,
   c.topic AS channel_topic, c.parent_id AS channel_parent_id,
-  c.position AS channel_position,
+  c.position AS channel_position, c.slowmode_seconds AS channel_slowmode_seconds,
   u.username AS author_username, u.display_name AS author_display_name,
   u.avatar_url AS author_avatar_url,
   g.name AS guild_name,
@@ -119,6 +120,7 @@ function mapHit(row: SearchRow): MessageSearchHit {
     topic: row.channel_topic,
     categoryId: (row.channel_parent_id ?? null) as Snowflake | null,
     position: row.channel_position,
+    slowmodeSeconds: row.channel_slowmode_seconds,
   };
   const author: UserSummary = {
     userId: row.author_id as Snowflake,

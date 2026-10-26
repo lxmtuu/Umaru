@@ -160,6 +160,8 @@ export function registerDmRoutes(app: FastifyInstance, deps: DmDeps): void {
         topic: null,
         categoryId: null,
         position: 0,
+        // DM không có slowmode — chỉ là kênh 1-1 giữa hai người.
+        slowmodeSeconds: 0,
       },
       recipient: toSummary(recipientRow),
       recipients: [toSummary(recipientRow)],

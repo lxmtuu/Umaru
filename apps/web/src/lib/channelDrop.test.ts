@@ -26,6 +26,7 @@ function channel(partial: ChannelInput): Channel {
     topic: null,
     categoryId: (partial.categoryId ?? null) as Channel["categoryId"],
     position: partial.position ?? 0,
+    slowmodeSeconds: 0,
   };
 }
 

@@ -170,7 +170,7 @@ async function loadSettingsChannel(
   channelId: string,
 ): Promise<{ channel: ChannelRow; context: GuildContext }> {
   const result = await pool.query<ChannelRow>(
-    `SELECT id, guild_id, type, name, topic, parent_id, position
+    `SELECT id, guild_id, type, name, topic, parent_id, position, slowmode_seconds
        FROM channels WHERE id = $1`,
     [channelId],
   );

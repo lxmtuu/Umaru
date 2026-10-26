@@ -72,6 +72,15 @@ export function ChatScreen() {
   /** Tin đang được trả lời (thanh nhắc trên ô soạn). */
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
+  /**
+   * Mốc thời gian được gửi tin kế tiếp (slowmode của kênh).
+   *
+   * Chỉ đếm ở **client** cho gọn mắt: server vẫn là nơi quyết định (người này
+   * đổi tab, gọi API trực tiếp thì vẫn bị 429), đây chỉ là phản hồi tức thì để
+   * người dùng không gõ xong mới biết là bị chặn.
+   */
+  const [slowUntil, setSlowUntil] = useState(0);
+  const [slowNow, setSlowNow] = useState(() => Date.now());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showCreateGuild, setShowCreateGuild] = useState(false);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
@@ -392,7 +401,25 @@ export function ChatScreen() {
     setPendingFiles((current) => current.filter((item) => item !== file));
   }
 
+  const slowRemaining =
+    slowUntil > slowNow ? Math.ceil((slowUntil - slowNow) / 1000) : 0;
+
+  // Đồng hồ chỉ chạy khi thật sự đang trong thời gian chờ (không tick 1s mãi).
+  useEffect(() => {
+    if (slowUntil === 0) return;
+    const timer = window.setInterval(() => {
+      const current = Date.now();
+      setSlowNow(current);
+      if (current >= slowUntil) {
+        setSlowUntil(0);
+        window.clearInterval(timer);
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [slowUntil]);
+
   async function submitMessage() {
+    if (slowRemaining > 0) return;
     const content = draft.trim();
     // Tin chỉ có tệp vẫn gửi được (server cho phép content rỗng khi có file).
     if (content.length === 0 && pendingFiles.length === 0) return;
@@ -413,6 +440,17 @@ export function ChatScreen() {
       setDraft(content);
       setPendingFiles(files);
       setReplyTo(parent);
+      return;
+    }
+    // Vừa gửi xong: bắt đầu đếm slowmode (người trực kênh không bị đếm).
+    const channel = state.channels[state.activeGuildId ?? ""]?.find(
+      (item) => item.id === state.activeChannelId,
+    );
+    const slowmode = channel?.slowmodeSeconds ?? 0;
+    if (slowmode > 0 && !canManageMessages(state.activeChannelId)) {
+      const until = Date.now() + slowmode * 1000;
+      setSlowUntil(until);
+      setSlowNow(Date.now());
     }
   }
 
@@ -2087,11 +2125,15 @@ export function ChatScreen() {
                   type="submit"
                   disabled={
                     (draft.trim().length === 0 && pendingFiles.length === 0) ||
-                    activeThread?.archived === true
+                    activeThread?.archived === true ||
+                    slowRemaining > 0
                   }
+                  title={slowRemaining > 0 ? t("slowmodeWait", { seconds: String(slowRemaining) }) : undefined}
                   className="rounded-lg bg-emerald-400 px-3 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-300 disabled:opacity-40"
                 >
-                  {t("send")}
+                  {slowRemaining > 0
+                    ? t("slowmodeWait", { seconds: String(slowRemaining) })
+                    : t("send")}
                 </button>
               </div>
             </form>

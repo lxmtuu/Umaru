@@ -350,6 +350,8 @@ export class UmaruApi {
       topic?: string | null;
       parentId?: string | null;
       position?: number;
+      /** Slowmode 0..21600 giây; 0 hoặc `null` = tắt. */
+      slowmodeSeconds?: number | null;
     },
   ): Promise<Channel> {
     return this.request<Channel>(`${API_PREFIX}/channels/${channelId}`, {

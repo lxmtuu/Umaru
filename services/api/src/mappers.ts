@@ -48,6 +48,8 @@ export interface ChannelRow {
   topic: string | null;
   parent_id: string | null;
   position: number;
+  /** Giãn cách tối thiểu giữa hai tin của cùng một người (giây); 0 = tắt. */
+  slowmode_seconds: number;
 }
 
 export interface MessageRow {
@@ -106,6 +108,7 @@ export function mapChannel(row: ChannelRow): Channel {
     topic: row.topic,
     categoryId: row.parent_id === null ? null : snowflake(row.parent_id),
     position: row.position,
+    slowmodeSeconds: row.slowmode_seconds,
   };
 }
 

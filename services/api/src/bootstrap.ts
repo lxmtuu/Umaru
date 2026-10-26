@@ -163,6 +163,7 @@ export async function loadDms(pool: Pool, userId: Snowflake): Promise<DmChannelS
         topic: null,
         categoryId: null,
         position: 0,
+        slowmodeSeconds: 0,
       },
       recipient: isGroup ? null : (recipients[0] ?? null),
       recipients,
@@ -255,7 +256,7 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
     memberResult,
   ] = await Promise.all([
     pool.query<ChannelRow>(
-      `SELECT id, guild_id, type, name, topic, parent_id, position
+      `SELECT id, guild_id, type, name, topic, parent_id, position, slowmode_seconds
          FROM channels WHERE guild_id = ANY($1::bigint[])
         ORDER BY position, id`,
       [guildIds],

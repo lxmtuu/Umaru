@@ -25,6 +25,10 @@ vi.mock("../lib/session.js", () => ({
     listMessageRequests: async () => [],
     listPins: async () => [],
     listThreads: async () => [],
+    sendMessage: async (channelId: string, content: string) => ({
+      ...message("8001", "1000", content, "2026-10-26T05:00:00.000Z"),
+      channelId: channelId as never,
+    }),
     createThread: async (channelId: string, input: { name?: string }) => ({
       id: "7001",
       parentChannelId: channelId,
@@ -118,6 +122,7 @@ const CHANNEL = {
   topic: "Kênh thử nghiệm của đội QA",
   categoryId: null,
   position: 0,
+  slowmodeSeconds: 0,
 };
 const ROLES = [
   {
@@ -310,6 +315,7 @@ describe("ChatScreen — dựng giao diện thật", () => {
             topic: null,
             categoryId: null,
             position: 0,
+            slowmodeSeconds: 0,
           },
           recipient: {
             userId: "1001",
@@ -742,5 +748,32 @@ describe("threadNameFrom — tên thread gợi ý từ tin gốc", () => {
       ],
     };
     expect(threadNameFrom(file)).toBe("bien-ban.pdf");
+  });
+});
+
+describe("slowmode — đếm ngược ở ô soạn", () => {
+  it("gửi xong trong kênh bật slowmode thì nút đổi thành Chờ Ns và bị khoá", async () => {
+    useChat.setState({
+      channels: { "2000": [{ ...CHANNEL, slowmodeSeconds: 30 }] },
+    } as never);
+    render(<ChatScreen />);
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "câu đầu tiên" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Chờ \d+s/ })).toBeTruthy());
+    expect((screen.getByRole("button", { name: /Chờ \d+s/ }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    // Đồng hồ đếm từ 30 nên phải hiện đúng khoảng đó, không phải "Chờ 1s".
+    expect(Number(screen.getByRole("button", { name: /Chờ \d+s/ }).textContent?.match(/\d+/)?.[0]))
+      .toBeGreaterThanOrEqual(28);
+  });
+
+  it("kênh không bật slowmode thì nút vẫn là Gửi", async () => {
+    render(<ChatScreen />);
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "câu đầu tiên" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Gửi" })).toBeTruthy());
   });
 });

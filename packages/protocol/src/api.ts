@@ -109,6 +109,13 @@ export interface Channel {
   topic: string | null;
   categoryId: Snowflake | null;
   position: number;
+  /**
+   * Slowmode của kênh, tính bằng giây (0 = tắt).
+   *
+   * Chỉ áp cho **người thường**: ai có `MANAGE_MESSAGES`/`MANAGE_CHANNELS` vẫn
+   * gửi liên tục được (Discord cũng vậy — người trực kênh cần nói nhiều).
+   */
+  slowmodeSeconds: number;
 }
 
 export interface Role {
