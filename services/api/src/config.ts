@@ -138,6 +138,20 @@ export interface Config {
    * người dùng nằm ở nơi không ai ngờ và biến mất ở lần deploy sau.
    */
   storage: S3Config | null;
+  /**
+   * Xem trước liên kết (embed kiểu Discord). Bật mặc định; `EMBEDS=off` để tắt
+   * hoàn toàn việc server gọi ra ngoài (máy chủ không có internet ra ngoài, hoặc
+   * chính sách công ty không cho phép).
+   *
+   * `allowPrivateHosts` mặc định **tắt** — bật là tự mở cửa SSRF vào mạng nội bộ,
+   * chỉ dùng cho dev/test cần gọi server giả trên 127.0.0.1.
+   */
+  embeds: {
+    enabled: boolean;
+    allowPrivateHosts: boolean;
+    timeoutMs: number;
+    maxBytes: number;
+  };
   logger: boolean;
 }
 
@@ -347,6 +361,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     push: readPush(env),
     pushCooldownSec: readPositiveInt(env.PUSH_COOLDOWN_SEC, 10, 0, 3600),
     storage: readStorage(env),
+    embeds: {
+      enabled: !isOff(env.EMBEDS),
+      allowPrivateHosts: env.EMBEDS_ALLOW_PRIVATE === "1" || env.EMBEDS_ALLOW_PRIVATE === "true",
+      timeoutMs: readPositiveInt(env.EMBEDS_TIMEOUT_MS, 4000, 200, 30_000),
+      maxBytes: readPositiveInt(env.EMBEDS_MAX_BYTES, 512 * 1024, 4096, 5 * 1024 * 1024),
+    },
     emailVerificationEcho: env.EMAIL_VERIFICATION_ECHO
       ? env.EMAIL_VERIFICATION_ECHO !== "0"
       : !isProduction,

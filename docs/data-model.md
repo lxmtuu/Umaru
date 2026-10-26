@@ -39,6 +39,7 @@ erDiagram
     users ||--o{ read_states : "đã đọc"
     messages ||--o{ message_mentions : "gọi tên"
     messages ||--o{ message_reactions : "cảm xúc"
+    messages ||--o| message_embeds : "xem trước link"
     users ||--o{ message_reactions : "thả"
     users ||--o{ message_mentions : "bị gọi tên"
     users ||--o{ relationships : "quan hệ có hướng"
@@ -59,6 +60,7 @@ erDiagram
 | `permission_overwrites` | allow/deny bitfield; `target_id` là snowflake toàn cục nên role và member không đụng PK; app đảm bảo `allow & deny = 0` (trả 400 nếu chồng bit). Đã có API `GET/PUT/DELETE /channels/:id/overwrites[/:targetType/:targetId]`: `allow` phải là tập con quyền actor đang có (mask), target không được cao hơn cấp actor (phân cấp), `allow=deny=0` = xoá dòng. **Overwrite của category được kế thừa** xuống channel con: áp category trước, overwrite của kênh cùng target thắng sau. `PATCH /channels/:id` đổi được `parentId` (di chuyển kênh giữa category, `null` = ra gốc) |
 | `messages` | thứ tự hiển thị = **ORDER BY id DESC**; index `(channel_id, id DESC)` phục vụ cursor pagination — không cần cột `created_at` trong index |
 | `message_reactions` | PK `(message_id, user_id, emoji)` ⇒ thả trùng là **no-op ở tầng dữ liệu** (`ON CONFLICT DO NOTHING`), không cần `SELECT` trước. `count`/`me` gộp bằng một câu SQL (`count(*)` + `bool_or(user_id = $viewer)`) cho cả trang tin nên `me` luôn đúng theo người xem. Trần **20 emoji khác nhau/tin** enforce ở app (đếm `DISTINCT emoji`) để một tin không phình payload; emoji ≤ 32 codepoint, không khoảng trắng/control char. CASCADE theo `messages` và `users` |
+| `message_embeds` | **tối đa một/thẻ trên tin** (`message_id` là PK) — dựng ở nền sau khi gửi tin, nên cột nào cũng nullable; UPSERT khi sửa tin, CASCADE khi xoá. Tách khỏi `messages` để lấy lại/thay embed không đụng `edited_at` của tin. Nội dung trang bên ngoài **không** được tin cậy: chỉ lưu chuỗi đã cắt trần (tiêu đề 200, mô tả 400 ký tự), `image_url` chỉ nhận `http(s)` tuyệt đối |
 | `read_states` | badge chưa đọc (P0). Đã dùng: `last_read_message_id` cập nhật qua `POST /channels/:id/read` (upsert + `GREATEST`, không lùi mốc); số chưa đọc **tính bằng count** `messages.id > last_read` và `author_id <> user`, không lưu counter. Kênh chưa có dòng → mọi tin người khác gửi đều tính là chưa đọc. Số tin bị **@mention** cũng tính từ count (join `message_mentions`) chứ không lưu counter, để badge nhắc hiện độc lập và đỏ hơn badge xanh thường |
 | `message_mentions` | dòng ghi lúc gửi/sửa tin (parse `@username` khớp username đã chuẩn hoá lowercase, không cần migration sau). Dùng để badge mention tách khỏi badge tin thường và cho mentions inbox `GET /users/@me/mentions` (join `messages`/`channels`, lọc `VIEW_CHANNEL` trong SQL trước `LIMIT` để mất quyền là dòng biến mất)
 | `relationships` | quan hệ **có hướng**: `friend` lưu 2 dòng, lời mời `pending_out`/`pending_in` 2 dòng, `blocked` 1 dòng |

@@ -13,6 +13,7 @@ import type { PushSender, PushTransport } from "../src/push/sender.js";
 import type { EventBus } from "../src/gateway/bus.js";
 import type { SessionStore } from "../src/gateway/sessionStore.js";
 import type { EventPublisher } from "../src/events.js";
+import type { LinkEmbedResolver } from "../src/embeds/resolver.js";
 
 export const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? "postgres://umaru:umaru@127.0.0.1:55432/umaru_test";
@@ -34,6 +35,8 @@ export interface TestContext {
   publisher: EventPublisher;
   bus: EventBus | null;
   sessionStore: SessionStore | null;
+  /** Bộ dựng embed (`null` khi tắt) — `await whenIdle()` trước khi khẳng định. */
+  embeds: LinkEmbedResolver | null;
   close(): Promise<void>;
 }
 
@@ -50,6 +53,8 @@ export interface TestContextOptions {
   nodeId?: string;
   /** Store session/replay dùng chung giữa các node trong test. */
   sessionStore?: SessionStore;
+  /** Bộ dựng embed dùng `config.embeds` thật (test embed bơm `fetch` giả). */
+  embeds?: LinkEmbedResolver;
 }
 
 export async function createTestContext(
@@ -78,6 +83,10 @@ export async function createTestContext(
       // Đăng nhập sai: nới rộng cho test nghiệp vụ (test riêng tự đặt trần thấp).
       RATE_LIMIT_AUTH_PER_IP: "1000",
       RATE_LIMIT_AUTH_PER_EMAIL: "1000",
+      // Test dựng HTTP server trên 127.0.0.1 để kiểm embed; guard SSRF chặn
+      // loopback theo mặc định nên phải mở **chỉ trong test**.
+      EMBEDS_ALLOW_PRIVATE: "1",
+      EMBEDS_TIMEOUT_MS: "2000",
       ...envOverrides,
     }),
     logger: false,
@@ -97,6 +106,7 @@ export async function createTestContext(
     pushTransport: options.pushTransport,
     bus: options.bus,
     sessionStore: options.sessionStore,
+    embeds: options.embeds,
   });
   const { app, hub, reportNotifier, pushSender } = built;
   return {
@@ -111,6 +121,7 @@ export async function createTestContext(
     publisher: built.publisher,
     bus: built.bus,
     sessionStore: built.sessionStore,
+    embeds: built.embeds,
     async close() {
       await app.close();
       if (ownsPool) await pool.end();

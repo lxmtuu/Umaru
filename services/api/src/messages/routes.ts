@@ -35,6 +35,7 @@ import {
 } from "../uploads/storage.js";
 import { HEADER_BYTES, isImageMime, readImageSize } from "../uploads/imageSize.js";
 import type { PushSender } from "../push/sender.js";
+import type { LinkEmbedResolver } from "../embeds/resolver.js";
 
 export interface MessageDeps {
   pool: Pool;
@@ -45,6 +46,8 @@ export interface MessageDeps {
   push?: PushSender;
   /** Kho tệp đính kèm/avatar (đĩa cục bộ hoặc S3/R2 — xem `createStores`). */
   storage: Stores;
+  /** Dựng thẻ xem trước liên kết; bỏ trống = tắt (test cũ, hoặc `EMBEDS=off`). */
+  embeds?: LinkEmbedResolver;
 }
 
 /** Trần số tin ghim mỗi kênh — giống Discord; chặn phình danh sách ghim. */
@@ -55,7 +58,7 @@ const typingTimestamps = new Map<string, number>();
 const TYPING_COOLDOWN_MS = 8_000;
 
 export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): void {
-  const { pool, config, publisher, push, storage } = deps;
+  const { pool, config, publisher, push, storage, embeds } = deps;
   const guard = createAuthGuard(deps.tokens);
   const nextId = () => createSnowflake(config.workerId);
 
@@ -210,6 +213,10 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
 
       publisher.publishToChannel(channelId, "MESSAGE_CREATE", message);
 
+      // Embed tới sau bằng `MESSAGE_UPDATE`: tải trang bên ngoài không được làm
+      // chậm việc gửi tin (xem `embeds/resolver.ts`).
+      embeds?.enqueue(message.id as string, channelId, payload.content);
+
       /**
        * Thông báo đẩy cho người **đã đóng tab**. Chỉ tra tên tác giả khi push
        * được cấu hình — chưa cấu hình thì đường gửi tin không thêm truy vấn nào.
@@ -274,6 +281,10 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         editedAt: row.edited_at === null ? null : row.edited_at.toISOString(),
       });
       const [updatedMessage] = await mapMessagesWithAttachments(pool, [row], userId);
+      // Nội dung đổi thì link có thể đổi theo → xoá thẻ cũ, dựng lại.
+      if (embeds !== undefined) {
+        await embeds.refresh(row.id as string, row.channel_id as string, content);
+      }
       return reply.send(updatedMessage);
     },
   );

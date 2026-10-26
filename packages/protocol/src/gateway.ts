@@ -253,8 +253,18 @@ export interface GatewayEventMap {
   MESSAGE_UPDATE: {
     id: Snowflake;
     channelId: Snowflake;
-    content: string | null;
-    editedAt: string | null;
+    /** Vắng mặt = giữ nguyên nội dung (embed tới sau cũng dùng event này). */
+    content?: string | null;
+    /** Vắng mặt = giữ nguyên. Chỉ dùng `null` khi thật sự muốn xoá nhãn "đã sửa". */
+    editedAt?: string | null;
+    /**
+     * Có mặt = thay danh sách embed (`[]` là xoá thẻ cũ). Vắng mặt = giữ nguyên.
+     *
+     * Embed tới **sau** tin (server tải trang bên ngoài ở nền) nên client phải
+     * phân biệt "không đổi" với "đã xoá" — payload sửa nội dung không mang
+     * trường này.
+     */
+    embeds?: import("./api.js").Embed[];
   };
   MESSAGE_DELETE: { id: Snowflake; channelId: Snowflake };
   /**

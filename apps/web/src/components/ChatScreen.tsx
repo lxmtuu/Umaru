@@ -25,6 +25,7 @@ import { SEARCH_MIN_LENGTH, useChat, type SearchScope } from "../lib/chatStore.j
 import { translate, useLocale, useT, type MessageKey } from "../lib/i18n.js";
 import { ChannelSettings } from "./ChannelSettings.js";
 import { MessageAttachments } from "./MessageAttachments.js";
+import { MessageEmbeds } from "./MessageEmbed.js";
 import { MemberList } from "./MemberList.js";
 import { MessageContent } from "./MessageContent.js";
 import { legalPath } from "../lib/legalRoute.js";
@@ -1722,6 +1723,7 @@ export function ChatScreen() {
                                 </div>
                               ))}
                             <MessageAttachments attachments={message.attachments} />
+                            <MessageEmbeds embeds={message.embeds} />
                             {((message.reactions ?? []).length > 0 || reactionPickerFor === message.id) && (
                               <div className="mt-1 flex flex-wrap items-center gap-1">
                                 {(message.reactions ?? []).map((reaction) => (

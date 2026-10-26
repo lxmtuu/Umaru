@@ -1219,7 +1219,13 @@ export const useChat = create<ChatState>()((set, get) => ({
           ...current.messages,
           [data.channelId]: list.map((message) =>
             message.id === data.id
-              ? { ...message, content: data.content ?? message.content, editedAt: data.editedAt }
+              ? {
+                  ...message,
+                  content: data.content ?? message.content,
+                  editedAt: data.editedAt === undefined ? message.editedAt : data.editedAt,
+                  // Embed tới sau tin (server tải trang ở nền) — `[]` là xoá thẻ cũ.
+                  embeds: data.embeds ?? message.embeds,
+                }
               : message,
           ),
         },

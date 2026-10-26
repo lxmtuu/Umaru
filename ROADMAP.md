@@ -97,7 +97,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 | Emoji tùy chỉnh theo server + sticker | P1 (emoji), P3 (sticker/GIF picker) |
 | Ghim tin nhắn (pin limit 250 trên Discord 2025) | P1 |
 | Tải file lên (10MB free / 50MB Nitro Basic / 1GB Nitro; preview ảnh, AV1 2025) | P0 (→10MB), P1 (giới hạn theo gói) |
-| Embed link preview (OG metadata) | P1 |
+| Embed link preview (OG metadata) | ✅ đã có: `og:*`/`twitter:*` + `<title>`, ảnh tương đối, chặn SSRF, `MESSAGE_UPDATE` sau khi tải xong | P1 |
 | **Threads** (tin nhắn thành luồng, tự archive) | P1 |
 | **Polls** (10 đáp án, chọn nhiều, tối đa 1 tuần, không ẩn danh) | P2 |
 | **Voice message** (tối đa 20 phút, chỉ ghi trên mobile) | P2 |

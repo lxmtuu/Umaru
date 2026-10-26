@@ -2,6 +2,7 @@ import type { Attachment, Message, Snowflake } from "@umaru/protocol";
 import type { Pool } from "./db.js";
 import { mapMessage, type MessageRow } from "./mappers.js";
 import { loadReactionsByMessage } from "./reactions.js";
+import { loadEmbedsByMessage } from "./embeds/store.js";
 
 /**
  * Truy vấn + ánh xạ bảng `attachments`.
@@ -76,14 +77,16 @@ export async function mapMessagesWithAttachments(
   viewerId: string,
 ): Promise<Message[]> {
   const messageIds = rows.map((row) => row.id);
-  const [byMessage, reactions] = await Promise.all([
+  const [byMessage, reactions, embeds] = await Promise.all([
     loadAttachmentsByMessage(pool, messageIds),
     loadReactionsByMessage(pool, messageIds, viewerId),
+    loadEmbedsByMessage(pool, messageIds),
   ]);
   return rows.map((row) => {
     const message = mapMessage(row);
     message.attachments = byMessage.get(row.id) ?? [];
     message.reactions = reactions.get(row.id) ?? [];
+    message.embeds = embeds.get(row.id) ?? [];
     return message;
   });
 }

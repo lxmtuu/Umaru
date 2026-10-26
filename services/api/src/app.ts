@@ -35,6 +35,8 @@ import { registerUploadRoutes } from "./uploads/routes.js";
 import { registerUserRoutes } from "./users/routes.js";
 import { registerVoiceRoutes } from "./voice/routes.js";
 import { MAX_FILES_PER_MESSAGE, createStores } from "./uploads/storage.js";
+import { LinkEmbedResolver } from "./embeds/resolver.js";
+import type { FetchHtmlOptions } from "./embeds/fetch.js";
 
 export interface AppDeps {
   config: Config;
@@ -56,6 +58,13 @@ export interface AppDeps {
    * `config.redisUrl` (không có thì replay nằm trong RAM).
    */
   sessionStore?: SessionStore;
+  /**
+   * Thay hàm tải trang khi test embed (test dựng HTTP server thật trên
+   * 127.0.0.1 nên thường không cần). `undefined` = tải thật có hàng rào SSRF.
+   */
+  embedFetch?: (url: string, options: FetchHtmlOptions) => Promise<{ html: string; finalUrl: string }>;
+  /** Bỏ qua để tự dựng theo `config.embeds`; `null` = tắt hẳn embed. */
+  embeds?: LinkEmbedResolver | null;
 }
 
 export interface BuiltApp {
@@ -73,6 +82,8 @@ export interface BuiltApp {
   bus: EventBus | null;
   /** Store session/replay (`null` khi replay nằm trong RAM). */
   sessionStore: SessionStore | null;
+  /** Bộ dựng embed liên kết (`null` khi `EMBEDS=off`) — test chờ `whenIdle()`. */
+  embeds: LinkEmbedResolver | null;
   /** Tên node trong bus — mỗi tiến trình một tên. */
   nodeId: string;
 }
@@ -147,6 +158,22 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       `Gateway: chế độ nhiều node, bus=${bus.constructor.name}, session=${sessionStore === null ? "RAM" : sessionStore.constructor.name}, node=${nodeId}`,
     );
   }
+
+  /**
+   * Xem trước liên kết: dựng **một** hàng đợi cho cả tiến trình (trần đồng
+   * thời + cache URL dùng chung, xem `embeds/resolver.ts`). Tắt bằng `EMBEDS=off`
+   * khi máy chủ không được gọi ra ngoài.
+   */
+  const embeds: LinkEmbedResolver | null =
+    deps.embeds === null
+      ? null
+      : (deps.embeds ??
+        (config.embeds.enabled
+          ? new LinkEmbedResolver(
+              { pool, publisher, config: config.embeds },
+              deps.embedFetch === undefined ? {} : { fetch: deps.embedFetch },
+            )
+          : null));
   // Push: chỉ gửi khi đã cấu hình VAPID; `transport` bơm được từ `deps` để test
   // kiểm nội dung gửi đi mà không cần mạng ra dịch vụ push.
   const pushSender = new PushSender({
@@ -195,7 +222,15 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     async (api) => {
       registerAuthRoutes(api, { pool, tokens, config, mailer });
       registerGuildRoutes(api, { pool, config, tokens, publisher });
-      registerMessageRoutes(api, { pool, config, tokens, publisher, push: pushSender, storage });
+      registerMessageRoutes(api, {
+        pool,
+        config,
+        tokens,
+        publisher,
+        push: pushSender,
+        storage,
+        embeds: embeds ?? undefined,
+      });
       registerOverwriteRoutes(api, { pool, config, tokens, publisher });
       registerDmRoutes(api, { pool, config, tokens, publisher, storage });
       registerDmRequestRoutes(api, { pool, config, tokens, publisher, storage });
@@ -220,6 +255,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   );
 
   app.addHook("onClose", async () => {
+    embeds?.close();
     hub.dispose();
     await bus?.close();
     await sessionStore?.close();
@@ -232,5 +268,17 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     );
   }
 
-  return { app, hub, tokens, mailer, reportNotifier, pushSender, publisher, bus, sessionStore, nodeId };
+  return {
+    app,
+    hub,
+    tokens,
+    mailer,
+    reportNotifier,
+    pushSender,
+    publisher,
+    bus,
+    sessionStore,
+    embeds,
+    nodeId,
+  };
 }

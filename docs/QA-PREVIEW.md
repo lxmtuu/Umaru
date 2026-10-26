@@ -38,6 +38,10 @@ mở ở **hai cửa sổ riêng tư khác nhau** để kiểm realtime.
 - [ ] Gửi `@minh` → hiện gợi ý mention; sau khi gửi, mention được tô sáng.
 - [ ] Bấm "trả lời" một tin → ô nhập hiện dòng trích dẫn, tin mới có khung reply.
 - [ ] Sửa tin (menu → sửa) → hiện nhãn "đã sửa"; xoá tin → biến mất ở cả hai cửa sổ.
+- [ ] Gửi một link thật (vd `https://github.com/lxmtuu/Umaru`) → vài giây sau hiện
+      thẻ xem trước (tiêu đề + mô tả + ảnh). Sửa tin thành link khác → thẻ đổi theo.
+      **Lưu ý:** sandbox chặn mạng ra ngoài nên phải thử ở máy có internet; nếu
+      production không cho phép gọi ra ngoài thì đặt `EMBEDS=off`.
 - [ ] Tải lên ảnh < 5 MB → hiện thumbnail; thử tệp > 10 MB → báo lỗi rõ ràng,
       không treo.
 - [ ] Ô tìm kiếm: gõ `markdown` → ra tin cũ; bấm kết quả → nhảy tới đúng tin.

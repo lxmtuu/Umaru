@@ -198,6 +198,17 @@ tệp mới đi vào bucket. Trộn hai nơi thì tệp cũ sẽ 404.
   `docker build`, `USER node`, volume `/data/uploads`. Lần `docker compose up
   --build` đầu tiên trên máy chủ vẫn nên xem log.
 
+- **Xem trước liên kết là cuộc gọi ra ngoài duy nhất của server** (ngoài SMTP).
+  Mỗi tin có link, server tải trang đó một lần (timeout 4s, trần 512KB, chỉ
+  `text/html`) để đọc `og:*`. Đã chặn SSRF: `127/8`, `10/8`, `172.16/12`,
+  `192.168/16`, `169.254/16` (cloud metadata), CGNAT, IPv6 loopback/ULA/link-local
+  — kiểm **sau khi phân giải DNS** và nối đúng IP đã kiểm, redirect cũng kiểm lại
+  từng chặng. Đổi lại: server cần **internet ra ngoài**; mạng nội bộ kín thì đặt
+  `EMBEDS=off` (server không gọi gì, tin vẫn gửi bình thường, chỉ không có thẻ).
+  **Ảnh** trong thẻ là trình duyệt tải trực tiếp từ máy chủ của trang đó (có
+  `referrerPolicy="no-referrer"`), tức IP người đọc lộ với bên thứ ba — nếu cần
+  che thì phải thêm proxy ảnh (chưa làm).
+
 ## 9. Chạy nhiều node gateway (tuỳ chọn)
 
 Một kết nối WebSocket chỉ sống trên **một** tiến trình. Muốn chạy ≥ 2 instance API

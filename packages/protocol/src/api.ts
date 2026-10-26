@@ -158,6 +158,23 @@ export interface ReactionSummary {
   me: boolean;
 }
 
+/**
+ * Thẻ xem trước liên kết (kiểu embed của Discord) cho URL đầu tiên trong tin.
+ *
+ * Server tải trang một lần rồi lưu lại; client **không** gọi ra ngoài để lấy nội
+ * dung này. Mọi trường phụ đều có thể null — trang thật thiếu thẻ đủ kiểu, và
+ * một embed chỉ có tên miền vẫn tốt hơn không có gì.
+ */
+export interface Embed {
+  /** URL gốc trong nội dung tin — nơi người đọc bấm vào. */
+  url: string;
+  title: string | null;
+  description: string | null;
+  /** `og:site_name`, hoặc tên miền nếu trang không khai. */
+  siteName: string | null;
+  imageUrl: string | null;
+}
+
 export interface Message {
   id: Snowflake;
   channelId: Snowflake;
@@ -170,6 +187,12 @@ export interface Message {
   pinned: boolean;
   /** Đã gộp theo emoji, xếp theo lần thả đầu tiên. Rỗng nếu chưa ai thả. */
   reactions: ReactionSummary[];
+  /**
+   * Xem trước liên kết. Rỗng khi tin không có URL, hoặc server chưa tải xong
+   * (embed tới sau bằng `MESSAGE_UPDATE`). Tuỳ chọn vì client cũ/dữ liệu cũ
+   * không có trường này.
+   */
+  embeds?: Embed[];
 }
 
 /** Thông tin tối thiểu để render tên/avatar người gửi trong danh sách mention. */

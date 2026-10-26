@@ -123,5 +123,7 @@ export function mapMessage(row: MessageRow): Message {
     pinned: row.pinned,
     // Reaction nạp riêng theo lô (`mapMessagesWithAttachments`) vì cần `viewerId`.
     reactions: [],
+    // Embed cũng nạp riêng theo lô — gửi tin xong mới có (tải trang là việc nền).
+    embeds: [],
   };
 }
