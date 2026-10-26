@@ -6,6 +6,7 @@ import type {
   DmChannelSummary,
   Guild,
   Message,
+  ReactionSummary,
   MessageMention,
   MessageSearchHit,
   ReportInput,
@@ -717,6 +718,25 @@ export class UmaruApi {
 
   deleteMessage(messageId: string): Promise<void> {
     return this.request<void>(`${API_PREFIX}/messages/${messageId}`, { method: "DELETE" });
+  }
+
+  /**
+   * Thả emoji vào tin. Emoji nằm trong đường dẫn nên phải `encodeURIComponent`
+   * (Fastify giải mã lại); gọi lại nhiều lần là idempotent.
+   */
+  addReaction(messageId: string, emoji: string): Promise<{ reactions: ReactionSummary[] }> {
+    return this.request<{ reactions: ReactionSummary[] }>(
+      `${API_PREFIX}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
+      { method: "PUT" },
+    );
+  }
+
+  /** Bỏ emoji khỏi tin (idempotent: bỏ cái chưa thả vẫn 200). */
+  removeReaction(messageId: string, emoji: string): Promise<{ reactions: ReactionSummary[] }> {
+    return this.request<{ reactions: ReactionSummary[] }>(
+      `${API_PREFIX}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
+      { method: "DELETE" },
+    );
   }
 
   /** Đánh dấu đã đọc tới `messageId` (bỏ trống = tin mới nhất của kênh). */

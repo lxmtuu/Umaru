@@ -1,5 +1,5 @@
 import { Permission, createSnowflake, hasPermission, type Snowflake } from "@umaru/protocol";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { loadChannelContext } from "../access.js";
 import { isDmBlocked } from "../blocks.js";
 import { createAuthGuard, requireUserId } from "../auth/guard.js";
@@ -17,6 +17,12 @@ import {
   readString,
 } from "../http.js";
 import { attachmentUrl, mapMessagesWithAttachments } from "../attachments.js";
+import {
+  MAX_REACTIONS_PER_MESSAGE,
+  countDistinctReactions,
+  normalizeEmoji,
+  reactionsForMessage,
+} from "../reactions.js";
 import { mapMessage, type MessageRow } from "../mappers.js";
 import { BucketStore, rateLimitedBody } from "../rateLimit.js";
 import { syncMessageMentions } from "../mentions.js";
@@ -86,7 +92,7 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
           LIMIT $3`,
         [request.params.channelId, before, limit],
       );
-      return reply.send(await mapMessagesWithAttachments(pool, result.rows));
+      return reply.send(await mapMessagesWithAttachments(pool, result.rows, userId));
     },
   );
 
@@ -267,7 +273,7 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         content: row.content,
         editedAt: row.edited_at === null ? null : row.edited_at.toISOString(),
       });
-      const [updatedMessage] = await mapMessagesWithAttachments(pool, [row]);
+      const [updatedMessage] = await mapMessagesWithAttachments(pool, [row], userId);
       return reply.send(updatedMessage);
     },
   );
@@ -325,7 +331,7 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
           LIMIT $2`,
         [request.params.channelId, limit],
       );
-      return reply.send(await mapMessagesWithAttachments(pool, result.rows));
+      return reply.send(await mapMessagesWithAttachments(pool, result.rows, userId));
     },
   );
 
@@ -375,7 +381,7 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
           pinned: true,
         });
       }
-      const [pinned] = await mapMessagesWithAttachments(pool, [row]);
+      const [pinned] = await mapMessagesWithAttachments(pool, [row], userId);
       return reply.send(pinned);
     },
   );
@@ -409,9 +415,99 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
           pinned: false,
         });
       }
-      const [unpinned] = await mapMessagesWithAttachments(pool, [row]);
+      const [unpinned] = await mapMessagesWithAttachments(pool, [row], userId);
       return reply.send(unpinned);
     },
+  );
+
+  /**
+   * Thả / bỏ reaction trên một tin.
+   *
+   * Một cặp `PUT`/`DELETE` với emoji nằm trong đường dẫn (client
+   * `encodeURIComponent`) thay cho `POST …/reactions` kèm body: URL nói rõ thao
+   * tác, gọi lại nhiều lần vẫn ra cùng kết quả (khoá chính ba cột ở bảng
+   * `message_reactions`), và không phải lo proxy nào đó bỏ body của `DELETE`.
+   *
+   * Quyền: đọc được kênh chứa tin là thả được (giống Discord) — không cần
+   * `SEND_MESSAGES`, vì thả reaction vào tin cũ trong kênh chỉ-đọc vẫn hợp lý.
+   * DM bị chặn thì không thả được, cùng quy tắc với gửi tin.
+   */
+  async function changeReaction(
+    request: FastifyRequest<{ Params: { messageId: string; emoji: string } }>,
+    reply: FastifyReply,
+    added: boolean,
+  ) {
+    const userId = requireUserId(request);
+    const message = await loadMessage(pool, request.params.messageId);
+    await loadChannelContext(pool, userId as Snowflake, message.channel_id, Permission.VIEW_CHANNEL);
+    if (await isDmBlocked(pool, message.channel_id, userId)) {
+      throw forbidden("Không thể thả cảm xúc trong cuộc trò chuyện này");
+    }
+    // Fastify đã giải mã `%F0%9F%91%8D` trong đường dẫn thành ký tự thật.
+    const emoji = normalizeEmoji(request.params.emoji);
+    let changed: { rowCount: number | null };
+
+    if (added) {
+      // Trần chỉ áp cho emoji **mới**: người dùng đã thả emoji này rồi thì thả
+      // lại không đẩy số emoji khác nhau lên, không được chặn.
+      const mine = await pool.query(
+        `SELECT 1 FROM message_reactions
+          WHERE message_id = $1 AND user_id = $2 AND emoji = $3`,
+        [message.id, userId, emoji],
+      );
+      if (mine.rowCount === 0) {
+        const distinct = await countDistinctReactions(pool, message.id);
+        if (distinct >= MAX_REACTIONS_PER_MESSAGE) {
+          throw badRequest(`Mỗi tin tối đa ${MAX_REACTIONS_PER_MESSAGE} emoji khác nhau`);
+        }
+      }
+      changed = await pool.query(
+        `INSERT INTO message_reactions (message_id, user_id, emoji)
+         VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING`,
+        [message.id, userId, emoji],
+      );
+    } else {
+      changed = await pool.query(
+        "DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3",
+        [message.id, userId, emoji],
+      );
+    }
+
+    // Thao tác lặp (thả emoji đã thả, bỏ emoji chưa thả) không đổi gì trong DB
+    // thì **không phát event**: route vẫn 200 (idempotent) nhưng không làm mọi
+    // client trong kênh phải render lại một lần vô ích.
+    const state = { reactions: await reactionsForMessage(pool, message.id, userId) };
+    if (changed.rowCount === 0) return reply.send(state);
+
+    // `count` gửi đi là **số tuyệt đối**, không phải `+1`: delta tương đối sẽ
+    // lệch ngay khi hai người thả cùng lúc và một tab bỏ lỡ event.
+    const totals = await pool.query<{ total: string }>(
+      "SELECT count(*)::text AS total FROM message_reactions WHERE message_id = $1 AND emoji = $2",
+      [message.id, emoji],
+    );
+    publisher.publishToChannel(message.channel_id, "MESSAGE_REACTION_UPDATE", {
+      messageId: message.id as Snowflake,
+      channelId: message.channel_id as Snowflake,
+      emoji,
+      count: Number(totals.rows[0]?.total ?? "0"),
+      userId: userId as Snowflake,
+      added,
+    });
+
+    return reply.send(state);
+  }
+
+  app.put<{ Params: { messageId: string; emoji: string } }>(
+    "/messages/:messageId/reactions/:emoji",
+    { preHandler: guard },
+    async (request, reply) => changeReaction(request, reply, true),
+  );
+
+  app.delete<{ Params: { messageId: string; emoji: string } }>(
+    "/messages/:messageId/reactions/:emoji",
+    { preHandler: guard },
+    async (request, reply) => changeReaction(request, reply, false),
   );
 
   app.post<{ Params: { channelId: string } }>(

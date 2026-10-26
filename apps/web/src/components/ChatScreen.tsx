@@ -90,6 +90,8 @@ export function ChatScreen() {
   const [caret, setCaret] = useState(0);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  /** Tin đang mở bảng emoji **để thả reaction** (khác bảng emoji của ô soạn). */
+  const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1422,6 +1424,21 @@ export function ChatScreen() {
                             </button>
                             <button
                               type="button"
+                              onClick={() =>
+                                setReactionPickerFor((current) =>
+                                  current === message.id ? null : (message.id as string),
+                                )
+                              }
+                              title={t("addReaction")}
+                              aria-label={t("addReaction")}
+                              aria-haspopup="dialog"
+                              aria-expanded={reactionPickerFor === message.id}
+                              className="rounded px-1 text-[11px] text-slate-400 hover:bg-white/10 hover:text-slate-100"
+                            >
+                              😊+
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => setReplyTo(message)}
                               title={t("replyToMessage", { name: authorName(message) })}
                               aria-label={t("replyMessage")}
@@ -1556,7 +1573,63 @@ export function ChatScreen() {
                               </div>
                             )}
                             <MessageAttachments attachments={message.attachments} />
+                            {((message.reactions ?? []).length > 0 || reactionPickerFor === message.id) && (
+                              <div className="mt-1 flex flex-wrap items-center gap-1">
+                                {(message.reactions ?? []).map((reaction) => (
+                                  <button
+                                    key={reaction.emoji}
+                                    type="button"
+                                    // `mine` lấy từ chính dữ liệu server trả về (đã tính
+                                    // theo người xem) → bấm là bỏ, không cần đoán.
+                                    onClick={() =>
+                                      void state.toggleReaction(
+                                        message.id as string,
+                                        reaction.emoji,
+                                        reaction.me,
+                                      )
+                                    }
+                                    aria-pressed={reaction.me}
+                                    aria-label={t("reactionAria", {
+                                      emoji: reaction.emoji,
+                                      count: reaction.count,
+                                    })}
+                                    className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
+                                      reaction.me
+                                        ? "border-emerald-400/60 bg-emerald-400/15 text-emerald-200"
+                                        : "border-white/10 bg-white/5 text-slate-300 hover:border-white/25"
+                                    }`}
+                                  >
+                                    <span aria-hidden>{reaction.emoji}</span>
+                                    <span>{reaction.count}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </>
+                        )}
+
+                        {reactionPickerFor === message.id && (
+                          <div className="relative">
+                            <EmojiPicker
+                              label={t("emojiPicker")}
+                              groups={DEFAULT_EMOJI_GROUPS.map((group) => ({
+                                label: t(EMOJI_GROUP_LABEL[group.key] ?? "emojiReactions"),
+                                emojis: group.emojis,
+                              }))}
+                              onPick={(emoji) => {
+                                setReactionPickerFor(null);
+                                const existing = (message.reactions ?? []).find(
+                                  (entry) => entry.emoji === emoji,
+                                );
+                                void state.toggleReaction(
+                                  message.id as string,
+                                  emoji,
+                                  existing?.me ?? false,
+                                );
+                              }}
+                              onClose={() => setReactionPickerFor(null)}
+                            />
+                          </div>
                         )}
 
                         {confirmDeleteId === message.id && (

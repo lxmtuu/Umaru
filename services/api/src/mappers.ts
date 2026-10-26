@@ -121,5 +121,7 @@ export function mapMessage(row: MessageRow): Message {
     // Upload file chưa có ở bước này (G1 sẽ thêm R2 presign) — luôn [] thay vì undefined.
     attachments: [],
     pinned: row.pinned,
+    // Reaction nạp riêng theo lô (`mapMessagesWithAttachments`) vì cần `viewerId`.
+    reactions: [],
   };
 }

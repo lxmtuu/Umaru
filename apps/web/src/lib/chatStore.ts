@@ -284,6 +284,12 @@ interface ChatState {
   editMessage(messageId: string, content: string): Promise<boolean>;
   /** Xoá tin của mình (hoặc bất kỳ tin nào nếu có `MANAGE_MESSAGES`). */
   deleteMessage(messageId: string): Promise<boolean>;
+  /**
+   * Thả hoặc bỏ một emoji trên tin. Không tự sửa state: server phát
+   * `MESSAGE_REACTION_UPDATE` cho **cả** người vừa thả, nên áp hai lần là thừa
+   * và dễ lệch (optimistic + event). Một nguồn sự thật là event.
+   */
+  toggleReaction(messageId: string, emoji: string, mine: boolean): Promise<boolean>;
   createGuild(name: string): Promise<void>;
   createChannel(name: string, type?: "guild_text" | "category"): Promise<void>;
   /** Đổi category chứa kênh (null = ra gốc); quyền hiệu dụng tính lại theo category mới. */
@@ -1258,6 +1264,44 @@ export const useChat = create<ChatState>()((set, get) => ({
     });
 
     /**
+     * Reaction: server gửi **delta** (`count` tuyệt đối + ai vừa làm) vì `me`
+     * phải tính riêng cho từng người. Nhờ vậy áp được cho cả tin của mình lẫn
+     * của người khác, và lặp lại event (reconnect) vẫn ra cùng kết quả.
+     */
+    client.on("MESSAGE_REACTION_UPDATE", (data) => {
+      const current = get();
+      const list = current.messages[data.channelId];
+      if (list === undefined) return;
+      const selfId = current.me?.id;
+      set({
+        messages: {
+          ...current.messages,
+          [data.channelId]: list.map((message) => {
+            if (message.id !== data.messageId) return message;
+            // `?? []`: tin cũ trong bộ nhớ (hoặc payload từ server phiên bản trước)
+            // có thể chưa có trường này — bỏ qua thay vì ném lỗi.
+            const current0 = message.reactions ?? [];
+            const existing = current0.find((entry) => entry.emoji === data.emoji);
+            const others = current0.filter((entry) => entry.emoji !== data.emoji);
+            if (data.count === 0) return { ...message, reactions: others };
+            const me =
+              selfId !== undefined && data.userId === selfId
+                ? data.added
+                : (existing?.me ?? false);
+            // Giữ nguyên thứ tự cũ (theo lần thả đầu tiên); emoji mới xuống cuối.
+            const reactions =
+              existing === undefined
+                ? [...others, { emoji: data.emoji, count: data.count, me }]
+                : current0.map((entry) =>
+                    entry.emoji === data.emoji ? { emoji: entry.emoji, count: data.count, me } : entry,
+                  );
+            return { ...message, reactions };
+          }),
+        },
+      });
+    });
+
+    /**
      * `VOICE_STATE_UPDATE`: `channelId: null` = người đó rời phòng. Một người chỉ
      * ở một phòng mỗi server nên khi nhận trạng thái mới là **thay** bản ghi cũ
      * của chính họ trong guild đó, không phải thêm dòng.
@@ -1803,6 +1847,17 @@ export const useChat = create<ChatState>()((set, get) => ({
           [channelId]: upsertMessage(get().messages[channelId] ?? [], updated),
         },
       });
+      return true;
+    } catch (error) {
+      set({ error: describeError(error) });
+      return false;
+    }
+  },
+
+  async toggleReaction(messageId, emoji, mine) {
+    try {
+      if (mine) await authedApi.removeReaction(messageId, emoji);
+      else await authedApi.addReaction(messageId, emoji);
       return true;
     } catch (error) {
       set({ error: describeError(error) });

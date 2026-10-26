@@ -142,6 +142,22 @@ export interface ReadState {
   mentions: number;
 }
 
+/**
+ * Reaction đã gộp theo emoji.
+ *
+ * `me` tính **theo người xem**: hai client nhận cùng một tin nhưng `me` khác
+ * nhau. Vì vậy response của REST luôn tính theo người gọi, còn event realtime chỉ
+ * mang delta (`emoji`, `count`, `userId`, `added`) để mỗi client tự suy ra `me` —
+ * xem `MESSAGE_REACTION_UPDATE`.
+ */
+export interface ReactionSummary {
+  emoji: string;
+  /** Số người đã thả emoji này. Không bao giờ là 0 (0 thì reaction bị bỏ). */
+  count: number;
+  /** Người đang xem đã thả emoji này chưa. */
+  me: boolean;
+}
+
 export interface Message {
   id: Snowflake;
   channelId: Snowflake;
@@ -152,6 +168,8 @@ export interface Message {
   replyToId: Snowflake | null;
   attachments: Attachment[];
   pinned: boolean;
+  /** Đã gộp theo emoji, xếp theo lần thả đầu tiên. Rỗng nếu chưa ai thả. */
+  reactions: ReactionSummary[];
 }
 
 /** Thông tin tối thiểu để render tên/avatar người gửi trong danh sách mention. */

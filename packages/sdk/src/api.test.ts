@@ -328,6 +328,29 @@ describe("UmaruApi", () => {
     expect(calls[1]?.init?.method).toBe("DELETE");
   });
 
+  it("addReaction/removeReaction: emoji được encode trong đường dẫn, không gửi body", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 200,
+      body: { reactions: [{ emoji: "🔥", count: 1, me: true }] },
+    });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+
+    const result = await api.addReaction("5", "🔥");
+    expect(calls[0]?.url).toBe(`/api/v1/messages/5/reactions/${encodeURIComponent("🔥")}`);
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(calls[0]?.init?.body).toBeUndefined();
+    expect(result.reactions[0]).toEqual({ emoji: "🔥", count: 1, me: true });
+
+    await api.removeReaction("5", "👨‍👩‍👧‍👦");
+    expect(calls[1]?.url).toBe(
+      `/api/v1/messages/5/reactions/${encodeURIComponent("👨‍👩‍👧‍👦")}`,
+    );
+    expect(calls[1]?.init?.method).toBe("DELETE");
+    // Không body ⇒ không kèm content-type (Fastify từ chối JSON rỗng).
+    const headers = new Headers(calls[1]?.init?.headers as HeadersInit | undefined);
+    expect(headers.get("content-type")).toBeNull();
+  });
+
   it("listPinnedMessages gọi kênh pins kèm limit", async () => {
     const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
     const api = new UmaruApi({ baseUrl: "", fetchImpl });

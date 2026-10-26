@@ -215,6 +215,9 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
           replyToId: row.reply_to_id === null ? null : (row.reply_to_id as Snowflake),
           attachments: [],
           pinned: row.pinned,
+          // Mentions inbox chỉ hiện trích đoạn, không render chip reaction → không
+          // nạp thêm một câu SQL cho mỗi trang chỉ vì một trường không dùng.
+          reactions: [],
         };
 
         mentions.push({

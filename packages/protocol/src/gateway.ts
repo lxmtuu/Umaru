@@ -263,6 +263,24 @@ export interface GatewayEventMap {
    * cần phân biệt để chỉ cập nhật đúng trường `pinned`.
    */
   MESSAGE_PIN_UPDATE: { id: Snowflake; channelId: Snowflake; pinned: boolean };
+  /**
+   * Một reaction vừa được thả hoặc bỏ.
+   *
+   * Gửi **delta** chứ không gửi cả danh sách: danh sách đầy đủ phải tính `me`
+   * riêng cho từng người xem, mà broadcast là một payload chung cho cả kênh.
+   * Delta (`count` tuyệt đối + ai vừa làm) thì client nào cũng áp được đúng:
+   * `count` gán thẳng, `me` chỉ đổi khi `userId` là chính mình.
+   */
+  MESSAGE_REACTION_UPDATE: {
+    messageId: Snowflake;
+    channelId: Snowflake;
+    emoji: string;
+    /** Số người đã thả emoji này **sau** thay đổi. 0 = vừa bị bỏ hết. */
+    count: number;
+    /** Ai vừa thả/bỏ — client so với id của mình để cập nhật `me`. */
+    userId: Snowflake;
+    added: boolean;
+  };
   TYPING_START: { channelId: Snowflake; userId: Snowflake; timestamp: number };
   PRESENCE_UPDATE: { userId: Snowflake; status: PresenceStatus };
   CHANNEL_CREATE: Channel;

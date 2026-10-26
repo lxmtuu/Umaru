@@ -12,6 +12,8 @@ import type { Message, Snowflake } from "@umaru/protocol";
  * Mạng được chặn bằng mock `session.js` — bài test này chỉ nói về **giao diện**.
  */
 
+const reactionCalls = vi.hoisted(() => ({ added: [] as string[], removed: [] as string[] }));
+
 vi.mock("../lib/session.js", () => ({
   api: { getGatewayUrl: async () => ({ url: "ws://localhost/api/v1/gateway/ws", version: 1 }) },
   authedApi: {
@@ -23,6 +25,14 @@ vi.mock("../lib/session.js", () => ({
     listMessageRequests: async () => [],
     listPins: async () => [],
     searchMessages: async () => ({ hits: [], hasMore: false }),
+    addReaction: async (messageId: string, emoji: string) => {
+      reactionCalls.added.push(`${messageId}:${emoji}`);
+      return { reactions: [] };
+    },
+    removeReaction: async (messageId: string, emoji: string) => {
+      reactionCalls.removed.push(`${messageId}:${emoji}`);
+      return { reactions: [] };
+    },
   },
   clearTokens: () => undefined,
   getAccessToken: () => "token",
@@ -189,6 +199,8 @@ function seedChat() {
 
 beforeEach(() => {
   useLocale.setState({ locale: "vi" });
+  reactionCalls.added.length = 0;
+  reactionCalls.removed.length = 0;
   // jsdom không có scrollIntoView; ChatScreen tự cuộn xuống tin mới nhất.
   Element.prototype.scrollIntoView = () => undefined;
   seedChat();
@@ -452,5 +464,61 @@ describe("ChatScreen — gợi ý @mention và bảng emoji", () => {
     expect(within(picker).getByText("Cảm xúc")).toBeTruthy();
     expect(within(picker).getByText("Mặt")).toBeTruthy();
     expect(within(picker).getByText("Công việc")).toBeTruthy();
+  });
+});
+
+describe("ChatScreen — reaction trên tin nhắn", () => {
+  function seedReactions() {
+    useChat.setState({
+      messages: {
+        [CHANNEL.id]: [
+          {
+            ...message("5001", "1001", "Tin có reaction", "2026-10-26T02:00:00.000Z"),
+            reactions: [
+              { emoji: "👍", count: 2, me: true },
+              { emoji: "🔥", count: 1, me: false },
+            ],
+          },
+        ],
+      },
+    } as never);
+  }
+
+  it("hiện chip cho từng emoji kèm số người, `me` được đánh dấu aria-pressed", () => {
+    seedReactions();
+    render(<ChatScreen />);
+    const mine = screen.getByRole("button", { name: "👍 — 2 người thả" });
+    const other = screen.getByRole("button", { name: "🔥 — 1 người thả" });
+    expect(mine.getAttribute("aria-pressed")).toBe("true");
+    expect(other.getAttribute("aria-pressed")).toBe("false");
+    expect(within(mine).getByText("2")).toBeTruthy();
+  });
+
+  it("bấm chip của mình → bỏ reaction; bấm chip người khác → thả thêm", () => {
+    seedReactions();
+    render(<ChatScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "👍 — 2 người thả" }));
+    expect(reactionCalls.removed).toEqual([`5001:👍`]);
+    fireEvent.click(screen.getByRole("button", { name: "🔥 — 1 người thả" }));
+    expect(reactionCalls.added).toEqual([`5001:🔥`]);
+  });
+
+  it("nút 😊+ mở bảng emoji và thả reaction lên đúng tin", () => {
+    render(<ChatScreen />);
+    const add = screen.getAllByRole("button", { name: "Thêm cảm xúc" });
+    fireEvent.click(add[0]!);
+    const picker = screen.getByRole("dialog", { name: "Bảng emoji" });
+    fireEvent.click(within(picker).getByRole("button", { name: "🎉" }));
+    expect(reactionCalls.added).toEqual([`5001:🎉`]);
+    expect(screen.queryByRole("dialog", { name: "Bảng emoji" })).toBeNull();
+  });
+
+  it("tin chưa có reactions (payload cũ) không làm sập khung chat", () => {
+    // seedChat() dựng Message **không** có trường reactions — đúng dạng dữ liệu
+    // cũ còn trong bộ nhớ. Trước đây chỗ này ném `Cannot read properties of
+    // undefined (reading 'length')` và cả khung chat trắng.
+    render(<ChatScreen />);
+    expect(screen.getByText("Tin đầu tiên trong ngày")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /người thả/ })).toBeNull();
   });
 });

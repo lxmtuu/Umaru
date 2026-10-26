@@ -246,6 +246,7 @@ Người gửi thấy kênh bình thường kèm `requestPending: true`. Block v
 | `GUILD_MEMBER_ADD` | guild | ✓ | `{ guildId, member: { userId, username, displayName, avatarUrl, roleIds } }` — có người vào server qua invite |
 | `GUILD_MEMBER_UPDATE` | guild | ✓ | `{ guildId, member: { userId, username, displayName, avatarUrl, roleIds } }` — role của thành viên vừa được gán/thu; gửi **summary đầy đủ** để client chỉ việc thay thế, không tự ghép diff |
 | `MESSAGE_PIN_UPDATE` | channel | ✗ | `{ id, channelId, pinned }` — ghim/bỏ ghim. Tách khỏi `MESSAGE_UPDATE` vì sửa nội dung (quyền tác giả) và ghim (`MANAGE_MESSAGES`) là hai thao tác khác nhau; client chỉ cập nhật đúng trường `pinned` |
+| `MESSAGE_REACTION_UPDATE` | channel | ✗ | `{ messageId, channelId, emoji, count, userId, added }` — thả/bỏ một emoji. Gửi **delta** (`count` là số tuyệt đối, `userId` là người vừa thao tác) chứ không gửi cả danh sách, vì cờ "tôi đã thả chưa" (`me`) khác nhau theo từng người xem. Nhờ vậy client áp được idempotent kể cả khi event bị phát lại sau reconnect; thao tác lặp không đổi DB thì **không** phát event |
 | `USER_UPDATE` | guild + session của chính user | ✗ | `{ user: { id, username, displayName, avatarUrl } }` — hồ sơ công khai đổi (hiện tại: avatar). Gửi tới **mọi guild mà user là thành viên** và tới các session của chính họ (tab/thiết bị khác). Không kèm `status`: presence vẫn đi qua `PRESENCE_UPDATE` để hai nguồn không ghi đè nhau |
 | `ROLE_CREATE` / `ROLE_UPDATE` | guild | ✓ | `{ guildId, role: Role }` — role vừa tạo/sửa (kèm `isEveryone`); quyền **hiệu dụng** của từng user vẫn do `PERMISSIONS_UPDATE` đẩy riêng. Kéo-thả đổi cấp (`PATCH /guilds/:id/roles/:roleId { position }`, `position` = thứ hạng **trên xuống**) renumber cả dãy nên phát `ROLE_UPDATE` cho **đúng những role đổi `position`**, theo thứ tự mới — client chỉ cần sort lại; kéo vào đúng chỗ cũ không phát gì |
 | `ROLE_DELETE` | guild | ✓ | `{ guildId, roleId }` — `member_roles` cascade theo FK nên client tự coi như role đã gán cho ai cũng biến mất |
@@ -262,7 +263,7 @@ Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake l
 
 ### 6.1 Sự kiện dự kiến thêm (không phải v1)
 
-`GUILD_UPDATE`, `GUILD_DELETE`, `GUILD_MEMBER_REMOVE`, `MESSAGE_REACTION_ADD/REMOVE`, `CHANNEL_PINS_UPDATE`, `INVITE_CREATE/DELETE`, `VOICE_SPEAKING` (tách khỏi `VOICE_STATE_UPDATE` nếu tần suất gây nhiễu). Thêm event = thêm key vào `GatewayEventMap`, **không** tăng version (client bỏ qua event lạ).
+`GUILD_UPDATE`, `GUILD_DELETE`, `GUILD_MEMBER_REMOVE`, `CHANNEL_PINS_UPDATE`, `INVITE_CREATE/DELETE`, `VOICE_SPEAKING` (tách khỏi `VOICE_STATE_UPDATE` nếu tần suất gây nhiễu). Thêm event = thêm key vào `GatewayEventMap`, **không** tăng version (client bỏ qua event lạ).
 
 ---
 

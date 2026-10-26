@@ -1,6 +1,7 @@
 import type { Attachment, Message, Snowflake } from "@umaru/protocol";
 import type { Pool } from "./db.js";
 import { mapMessage, type MessageRow } from "./mappers.js";
+import { loadReactionsByMessage } from "./reactions.js";
 
 /**
  * Truy vấn + ánh xạ bảng `attachments`.
@@ -61,18 +62,28 @@ export async function loadAttachmentsByMessage(
   return byMessage;
 }
 
-/** `mapMessage` + nạp attachment theo lô (một câu SQL cho cả trang). */
+/**
+ * `mapMessage` + nạp attachment và reaction theo lô (mỗi thứ một câu SQL cho cả
+ * trang).
+ *
+ * `viewerId` là **bắt buộc**: reaction có cờ `me` tính theo người xem, nên không
+ * có "bản chung" đúng cho mọi người. Để tuỳ chọn thì sớm muộn cũng có route quên
+ * truyền và trả `me: false` cho chính người vừa thả.
+ */
 export async function mapMessagesWithAttachments(
   pool: Pool,
   rows: MessageRow[],
+  viewerId: string,
 ): Promise<Message[]> {
-  const byMessage = await loadAttachmentsByMessage(
-    pool,
-    rows.map((row) => row.id),
-  );
+  const messageIds = rows.map((row) => row.id);
+  const [byMessage, reactions] = await Promise.all([
+    loadAttachmentsByMessage(pool, messageIds),
+    loadReactionsByMessage(pool, messageIds, viewerId),
+  ]);
   return rows.map((row) => {
     const message = mapMessage(row);
     message.attachments = byMessage.get(row.id) ?? [];
+    message.reactions = reactions.get(row.id) ?? [];
     return message;
   });
 }

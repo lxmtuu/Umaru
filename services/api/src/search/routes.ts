@@ -145,6 +145,9 @@ function mapHit(row: SearchRow): MessageSearchHit {
     replyToId: row.reply_to_id === null ? null : (row.reply_to_id as Snowflake),
     attachments: [],
     pinned: row.pinned,
+    // Kết quả tìm kiếm là trích đoạn để nhảy tới tin; chip reaction chỉ có ở
+    // khung chat thật nên ở đây để rỗng.
+    reactions: [],
   };
   return { message, channel, guildName: row.guild_name, author, recipient };
 }

@@ -38,6 +38,8 @@ erDiagram
     channels ||--o{ read_states : "đã đọc"
     users ||--o{ read_states : "đã đọc"
     messages ||--o{ message_mentions : "gọi tên"
+    messages ||--o{ message_reactions : "cảm xúc"
+    users ||--o{ message_reactions : "thả"
     users ||--o{ message_mentions : "bị gọi tên"
     users ||--o{ relationships : "quan hệ có hướng"
     guilds ||--o{ invites : "mời vào server"
