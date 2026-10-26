@@ -13,6 +13,8 @@ export function AuthScreen() {
   const register = useChat((state) => state.register);
   const busy = useChat((state) => state.busy);
   const error = useChat((state) => state.error);
+  /** Mật khẩu đúng nhưng tài khoản có 2FA — form chuyển sang bước nhập mã. */
+  const totpRequired = useChat((state) => state.totpRequired);
 
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
@@ -21,11 +23,12 @@ export function AuthScreen() {
   const [displayName, setDisplayName] = useState("");
   /** Bắt buộc tick khi đăng ký — bằng chứng đồng ý điều khoản (server kiểm lại). */
   const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (mode === "login") {
-      await login(email, password);
+      await login(email, password, totpRequired ? totpCode : undefined);
     } else {
       if (!acceptedTerms) return;
       await register({
@@ -116,6 +119,26 @@ export function AuthScreen() {
             />
           </Field>
 
+          {totpRequired && (
+            <Field label={t("totpCode")}>
+              <input
+                name="totpCode"
+                value={totpCode}
+                onChange={(event) => setTotpCode(event.target.value)}
+                // `one-time-code` để iOS/Android gợi ý mã vừa nhận; `numeric` để
+                // điện thoại hiện bàn phím số.
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                pattern="[0-9 ]*"
+                maxLength={12}
+                autoFocus
+                required
+                className="w-full rounded-lg border border-white/10 bg-slate-900/80 px-3 py-2 text-sm tracking-[0.3em] outline-none focus:border-emerald-400/60"
+              />
+              <span className="text-[11px] text-slate-500">{t("totpCodeHint")}</span>
+            </Field>
+          )}
+
           {mode === "register" && (
             <label className="flex items-start gap-2 text-xs text-slate-400">
               <input
@@ -166,10 +189,18 @@ export function AuthScreen() {
 
           <button
             type="button"
-            onClick={() => setMode(mode === "login" ? "register" : "login")}
+            onClick={() => {
+              if (totpRequired) {
+                // Quay lại bước mật khẩu (gõ nhầm tài khoản) — xoá mã đang gõ.
+                setTotpCode("");
+                useChat.setState({ totpRequired: false, error: null });
+                return;
+              }
+              setMode(mode === "login" ? "register" : "login");
+            }}
             className="text-xs text-slate-400 hover:text-slate-200"
           >
-            {mode === "login" ? t("switchToRegister") : t("switchToLogin")}
+            {totpRequired ? t("totpBack") : mode === "login" ? t("switchToRegister") : t("switchToLogin")}
           </button>
         </form>
       </div>

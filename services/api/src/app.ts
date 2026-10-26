@@ -6,6 +6,7 @@ import { hasAnyAdminConfigured } from "./admin/access.js";
 import { ReportNotifier } from "./admin/notify.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerAuthRoutes } from "./auth/routes.js";
+import { registerTotpRoutes } from "./auth/totp-routes.js";
 import { createMailer, type Mailer } from "./mail.js";
 import { createTokenService, type TokenService } from "./auth/tokens.js";
 import type { Config } from "./config.js";
@@ -221,6 +222,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   await app.register(
     async (api) => {
       registerAuthRoutes(api, { pool, tokens, config, mailer });
+      registerTotpRoutes(api, { pool, config, tokens });
       registerGuildRoutes(api, { pool, config, tokens, publisher });
       registerMessageRoutes(api, {
         pool,

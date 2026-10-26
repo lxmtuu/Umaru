@@ -57,6 +57,22 @@ export interface AuthResult {
   refreshToken: string;
   tokenType: "Bearer";
   expiresIn: number;
+  /** Đăng nhập bằng mã khôi phục: mã đó đã bị tiêu, không dùng lại được. */
+  usedRecoveryCode?: boolean;
+}
+
+/** Trạng thái xác thực hai lớp của tài khoản đang đăng nhập. */
+export interface SecurityStatus {
+  totpEnabled: boolean;
+  recoveryCodesLeft: number;
+}
+
+export interface TotpSetup {
+  secret: string;
+  /** URI `otpauth://` để authenticator quét/đọc. */
+  otpauthUrl: string;
+  /** Bí mật chia nhóm 4 ký tự — cho người không quét QR. */
+  secretGroups: string;
 }
 
 /** Kết quả đăng ký: như `AuthResult`, kèm dấu hiệu đã gửi mail xác thực. */
@@ -148,11 +164,61 @@ export class UmaruApi {
     });
   }
 
-  login(email: string, password: string): Promise<AuthResult> {
+  /**
+   * Đăng nhập. Khi tài khoản đã bật 2FA, lần gọi đầu **không** kèm mã sẽ nhận
+   * lỗi 401 `TOTP_REQUIRED` — gọi lại cùng email/mật khẩu kèm `totp.code`
+   * hoặc `totp.recoveryCode`.
+   */
+  login(
+    email: string,
+    password: string,
+    totp: { code?: string; recoveryCode?: string } = {},
+  ): Promise<AuthResult> {
     return this.request<AuthResult>(`${API_PREFIX}/auth/login`, {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({
+        email,
+        password,
+        ...(totp.code === undefined ? {} : { totpCode: totp.code }),
+        ...(totp.recoveryCode === undefined ? {} : { recoveryCode: totp.recoveryCode }),
+      }),
     });
+  }
+
+  /** Trạng thái 2FA của chính mình (dùng cho phần cài đặt bảo mật). */
+  security(): Promise<SecurityStatus> {
+    return this.request<SecurityStatus>(`${API_PREFIX}/users/@me/security`);
+  }
+
+  /** Sinh bí mật mới (chưa có hiệu lực cho tới `enableTotp`). */
+  setupTotp(): Promise<TotpSetup> {
+    return this.request<TotpSetup>(`${API_PREFIX}/users/@me/security/totp/setup`, {
+      method: "POST",
+    });
+  }
+
+  /** Xác nhận mã đầu tiên; trả bộ mã khôi phục **chỉ hiện một lần**. */
+  enableTotp(code: string): Promise<{ recoveryCodes: string[] }> {
+    return this.request<{ recoveryCodes: string[] }>(
+      `${API_PREFIX}/users/@me/security/totp/enable`,
+      { method: "POST", body: JSON.stringify({ code }) },
+    );
+  }
+
+  /** Tắt 2FA — cần mật khẩu hiện tại. */
+  disableTotp(password: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/security/totp/disable`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    });
+  }
+
+  /** Sinh lại bộ mã khôi phục (cần mật khẩu). */
+  regenerateRecoveryCodes(password: string): Promise<{ recoveryCodes: string[] }> {
+    return this.request<{ recoveryCodes: string[] }>(
+      `${API_PREFIX}/users/@me/security/recovery-codes`,
+      { method: "POST", body: JSON.stringify({ password }) },
+    );
   }
 
   refresh(refreshToken: string): Promise<AuthResult> {

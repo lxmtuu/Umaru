@@ -241,9 +241,14 @@ interface ChatState {
   /** Thông báo một dòng (xác thực email, gửi lại mail...) — tự tắt được. */
   banner: Banner | null;
   busy: boolean;
+  /**
+   * Tài khoản đang đăng nhập có bật 2FA: mật khẩu đã đúng nhưng còn thiếu mã.
+   * `AuthScreen` dựa vào cờ này để đổi sang ô nhập mã thay vì báo lỗi.
+   */
+  totpRequired: boolean;
 
   boot(): Promise<void>;
-  login(email: string, password: string): Promise<boolean>;
+  login(email: string, password: string, totpCode?: string): Promise<boolean>;
   register(input: {
     username: string;
     displayName: string;
@@ -842,6 +847,7 @@ const initialState = {
   notice: null,
   banner: null,
   busy: false,
+  totpRequired: false,
 };
 
 /** Trường hồ sơ có thể đổi; presence là ephemeral nên không nằm ở đây. */
@@ -985,15 +991,28 @@ export const useChat = create<ChatState>()((set, get) => ({
     }
   },
 
-  async login(email, password) {
+  async login(email, password, totpCode) {
     set({ busy: true, error: null });
     try {
-      const result = await api.login(email, password);
+      const result = await api.login(
+        email,
+        password,
+        totpCode === undefined || totpCode.trim() === "" ? {} : { code: totpCode.trim() },
+      );
       storeTokens(result);
       await get().startSession();
-      set({ busy: false });
+      set({ busy: false, totpRequired: false });
+      if (result.usedRecoveryCode === true) {
+        // Mã khôi phục đã bị tiêu — nói rõ để người dùng biết còn mấy mã.
+        set({ banner: { kind: "success", text: translate("totpRecoveryUsed") } });
+      }
       return true;
     } catch (error) {
+      // `TOTP_REQUIRED` không phải lỗi: mật khẩu đã đúng, chỉ cần thêm mã.
+      if (isTotpRequired(error)) {
+        set({ busy: false, error: null, totpRequired: true });
+        return false;
+      }
       set({ busy: false, error: describeError(error) });
       return false;
     }
@@ -2977,6 +2996,13 @@ function upsertMessage(list: Message[], message: Message): Message[] {
     return next;
   }
   return [...list, message].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+}
+
+/** Lỗi 401 `TOTP_REQUIRED` từ `/auth/login` — cần hỏi thêm mã 6 số. */
+export function isTotpRequired(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const body = error.body as { error?: { code?: string } } | undefined;
+  return body?.error?.code === "TOTP_REQUIRED";
 }
 
 function describeError(error: unknown): string {

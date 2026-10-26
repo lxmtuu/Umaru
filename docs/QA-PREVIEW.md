@@ -29,6 +29,19 @@ mở ở **hai cửa sổ riêng tư khác nhau** để kiểm realtime.
 
 Đánh dấu khi đã thử; nếu sai, ghi lại bước tái hiện.
 
+### Xác thực hai lớp
+
+- [ ] Mở hồ sơ (bấm avatar) → "Xác thực hai lớp" → **Thiết lập** → chuỗi bí mật
+      hiện ra; nhập chuỗi đó vào ứng dụng xác thực (hoặc bấm "Mở trong ứng dụng
+      xác thực") → nhập mã 6 số → hiện **10 mã khôi phục** đúng một lần, tải `.txt`
+      được.
+- [ ] Đăng xuất → đăng nhập lại: sau mật khẩu hiện ô **Mã xác thực** (không phải
+      lỗi "sai mật khẩu"); nhập mã trong app → vào được.
+- [ ] Dùng một **mã khôi phục** để đăng nhập → vào được, có banner báo mã đã dùng;
+      thử lại chính mã đó → bị từ chối.
+- [ ] Sai mã vài lần → bị chặn tạm (429) sau 10 lần/15 phút.
+- [ ] Tắt 2FA cần **mật khẩu**; tắt xong đăng nhập không hỏi mã nữa.
+
 ### Đăng nhập & khung chat
 
 - [ ] Đăng nhập `demo@example.com` → vào thẳng server "Umaru Demo", thấy kênh

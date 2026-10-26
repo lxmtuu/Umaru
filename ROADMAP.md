@@ -49,7 +49,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 | Avatar, banner, bio, pronouns | Hồ sơ hiển thị — ✅ đã có **avatar** (tải/gỡ ảnh ≤5MB, magic bytes, `USER_UPDATE` realtime); banner/bio/pronouns chưa | P1 |
 | Trạng thái: Online / Idle / DND / Invisible + custom status | Presence là "linh hồn" Discord | P0 (online/offline), P1 (các loại còn lại) |
 | Rich Presence (đang chơi game/đang nghe nhạc) | Cần SDK tích hợp game bên thứ ba | P3 |
-| Xác thực 2 yếu tố (TOTP) | Bảo mật | P1 |
+| Xác thực 2 yếu tố (TOTP) | ✅ đã có: RFC 6238 (SHA-1, 6 số, 30s), mã khôi phục dùng một lần, chống replay theo bước, tắt cần mật khẩu | P1 |
 | Thông tin thiết bị đã đăng nhập, đăng xuất từ xa | Bảo mật | P2 |
 | Cài đặt client: giao diện, ngôn ngữ, thông báo, phím tắt, quyền riêng tư | Settings center | P1 (từng phần) |
 | Hồ sơ theo từng server (profile per-guild) | 2025 Discord có profile card nhiều hoạt động đồng thời | P3 |

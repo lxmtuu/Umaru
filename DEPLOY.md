@@ -121,6 +121,12 @@ object storage trước (§7), nếu không node nào upload thì node khác 404
 - [ ] Sao lưu thử một lần và **phục hồi thử** — backup chưa restore thử là chưa
       có backup.
 - [ ] Giới hạn `WEB_PORT` bằng firewall nếu đặt Caddy trên cùng máy.
+- [ ] Nhắc người dùng bật **2FA** (hồ sơ → Xác thực hai lớp). Bí mật TOTP nằm
+      trong `user_totp` dạng base32 **không mã hoá thêm**: ai đọc được DB thì đọc
+      được bí mật. Đây là đánh đổi có chủ ý (khoá mã hoá cũng phải nằm trong env
+      của cùng server, chỉ dời chỗ giấu) — nghĩa là **quyền truy cập DB là quyền
+      truy cập tài khoản**, phải hạn chế như mật khẩu. Mã khôi phục thì chỉ lưu
+      sha256.
 
 ## 7. Lưu tệp: đĩa cục bộ hay S3/R2
 

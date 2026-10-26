@@ -4,6 +4,7 @@ import { mapUser, type UserRow } from "../mappers.js";
 import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import {
+  HttpError,
   badRequest,
   conflict,
   readString,
@@ -11,6 +12,7 @@ import {
   unauthorized,
 } from "../http.js";
 import type { Mailer } from "../mail.js";
+import { checkSecondFactor } from "./secondFactor.js";
 import { hashVerificationToken, issueVerificationToken } from "./verification.js";
 import { createAuthGuard, requireUserId } from "./guard.js";
 import { hashPassword, verifyPassword } from "./password.js";
@@ -175,8 +177,34 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
     }
     // Mật khẩu đúng → hết lý do để giữ bộ đếm (người dùng vừa gõ đúng).
     authByEmail.clear(`login:${email}`);
+
+    /**
+     * Xác thực hai lớp. Mật khẩu đúng **chưa** đủ để cấp token khi user đã bật.
+     *
+     * Không có mã → 401 `TOTP_REQUIRED` (mã riêng, không phải `UNAUTHORIZED`) để
+     * client biết cần hỏi thêm mã chứ không phải báo "sai mật khẩu" — hai tình
+     * huống này người dùng phải thấy khác nhau. Có mã nhưng sai → 401
+     * `INVALID_TOTP` và **vẫn** tính vào bộ đếm dò của email.
+     */
+    const second = await checkSecondFactor(pool, user.id, {
+      code: typeof body?.totpCode === "string" ? body.totpCode : undefined,
+      recoveryCode: typeof body?.recoveryCode === "string" ? body.recoveryCode : undefined,
+    });
+    if (!second.ok) {
+      if (second.reason === "required") {
+        throw new HttpError(401, "TOTP_REQUIRED", "Tài khoản này có xác thực hai lớp — nhập mã 6 số");
+      }
+      throw new HttpError(401, "INVALID_TOTP", "Mã xác thực hai lớp không đúng hoặc đã dùng");
+    }
+
     const tokensPayload = await issueTokens(user.id, request);
-    return reply.send({ user: mapUser(user), ...tokensPayload });
+    return reply.send({
+      user: mapUser(user),
+      ...tokensPayload,
+      // Cho client biết lần đăng nhập này đã tiêu một mã khôi phục — người dùng
+      // cần biết mã đó không dùng lại được nữa.
+      ...(second.method === "recovery" ? { usedRecoveryCode: true } : {}),
+    });
   });
 
   app.post("/auth/refresh", async (request, reply) => {
