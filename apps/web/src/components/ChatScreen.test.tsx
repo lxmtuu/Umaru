@@ -191,6 +191,8 @@ function seedChat() {
     friends: [],
     blocks: [],
     admin: false,
+    // Mỗi test bắt đầu ở mật độ mặc định — test thu gọn không được rò sang test sau.
+    displaySettings: { compact: false },
     error: null,
     notice: null,
     banner: null,
@@ -590,5 +592,36 @@ describe("ChatScreen — menu chuột phải ở sidebar (kênh & thành viên)"
     expect(screen.getByRole("menu")).toBeTruthy();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+});
+
+describe("ChatScreen — chế độ thu gọn (compact)", () => {
+  it("mặc định là cozy: có avatar, tên chỉ hiện ở tin đầu cụm", () => {
+    render(<ChatScreen />);
+    const rows = document.querySelectorAll("article[data-density]");
+    expect(rows.length).toBe(3);
+    expect(rows[0]?.getAttribute("data-density")).toBe("cozy");
+    // "Minh" = 1 lần ở danh sách thành viên + 1 lần ở tin đầu cụm.
+    expect(screen.getAllByText("Minh")).toHaveLength(2);
+  });
+
+  it("bật thu gọn: mọi tin đều ghi tên (không còn avatar để dò theo)", () => {
+    useChat.setState({ displaySettings: { compact: true } } as never);
+    render(<ChatScreen />);
+    const rows = document.querySelectorAll("article[data-density]");
+    expect(rows.length).toBe(3);
+    expect(rows[0]?.getAttribute("data-density")).toBe("compact");
+    // 2 tin của Minh trong khung chat + 1 lần ở danh sách thành viên.
+    expect(screen.getAllByText("Minh")).toHaveLength(3);
+    // Nội dung vẫn hiện đủ, không bị cắt khi đổi mật độ.
+    expect(screen.getByText("Tin thứ hai cùng người, trong 5 phút")).toBeTruthy();
+  });
+
+  it("đổi qua store thì lưu xuống localStorage của máy này", () => {
+    localStorage.clear();
+    useChat.getState().setCompactMode(true);
+    expect(JSON.parse(localStorage.getItem("umaru.display") ?? "{}")).toEqual({ compact: true });
+    useChat.getState().setCompactMode(false);
+    expect(JSON.parse(localStorage.getItem("umaru.display") ?? "{}")).toEqual({ compact: false });
   });
 });

@@ -105,6 +105,9 @@ mở ở **hai cửa sổ riêng tư khác nhau** để kiểm realtime.
 - [ ] Đăng nhập bằng `demo_user` → vào `/admin/reports` thấy hàng đợi báo cáo;
       tài khoản thường không thấy mục này.
 - [ ] Đổi ngôn ngữ EN ⇄ VI ở hồ sơ → không còn chuỗi tiếng Việt sót lại.
+- [ ] Hồ sơ → "Chế độ thu gọn": bật → tin nhắn mất ảnh đại diện, giờ nằm ở
+      lề trái, tên tác giả cùng dòng với nội dung; F5 (hoặc mở tab mới) vẫn giữ
+      lựa chọn vì cài đặt nằm ở `localStorage` của máy.
 - [ ] Đăng xuất rồi F5 → vẫn ở màn đăng nhập (không tự vào lại).
 
 

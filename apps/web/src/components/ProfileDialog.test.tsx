@@ -171,3 +171,21 @@ describe("ProfileDialog — trạng thái hiển thị", () => {
     );
   });
 });
+
+describe("ProfileDialog — tuỳ chọn hiển thị", () => {
+  it("hộp kiểm 'Chế độ thu gọn' phản ánh state và bấm thì gọi setCompactMode", () => {
+    const setCompactMode = vi.fn();
+    setup("off", { displaySettings: { compact: false }, setCompactMode } as never);
+    const box = screen.getByRole("checkbox", { name: /Chế độ thu gọn/ });
+    expect((box as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(box);
+    expect(setCompactMode).toHaveBeenCalledWith(true);
+  });
+
+  it("đang bật sẵn thì hộp kiểm đã tick (không hiển thị sai trạng thái)", () => {
+    setup("off", { displaySettings: { compact: true }, setCompactMode: vi.fn() } as never);
+    expect(
+      (screen.getByRole("checkbox", { name: /Chế độ thu gọn/ }) as HTMLInputElement).checked,
+    ).toBe(true);
+  });
+});

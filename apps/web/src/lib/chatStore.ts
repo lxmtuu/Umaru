@@ -58,6 +58,11 @@ import {
   showDesktopNotification,
   type NotificationSettings,
 } from "./notifications.js";
+import {
+  readDisplaySettings,
+  saveDisplaySettings,
+  type DisplaySettings,
+} from "./displayPrefs.js";
 import { readVerificationToken, withoutVerificationToken } from "./verification.js";
 import {
   api,
@@ -194,6 +199,8 @@ interface ChatState {
   messageRequestsLoading: boolean;
   /** Bật/tắt thông báo (lưu trong localStorage, không cần server). */
   notificationSettings: NotificationSettings;
+  /** Tuỳ chọn hiển thị theo máy — hiện có mật độ tin (`compact`). */
+  displaySettings: DisplaySettings;
   /** Quyền thông báo của trình duyệt; `unsupported` = không có Notification API. */
   notificationPermission: NotificationPermission | "unsupported";
   /**
@@ -422,6 +429,8 @@ interface ChatState {
   setPresence(status: PresenceStatus): void;
   /** Bật/tắt số chưa đọc trên tiêu đề tab. */
   setTabTitleNotifications(enabled: boolean): void;
+  /** Mật độ tin kiểu Discord "compact" — lưu ở localStorage của máy này. */
+  setCompactMode(enabled: boolean): void;
   /** Bật thông báo đẩy khi đóng tab (phải gọi từ thao tác người dùng). */
   enablePush(): Promise<void>;
   disablePush(): Promise<void>;
@@ -819,6 +828,7 @@ const initialState = {
   notificationSettings: parseNotificationSettings(
     typeof localStorage === "undefined" ? null : localStorage.getItem(NOTIFICATION_SETTINGS_KEY),
   ),
+  displaySettings: readDisplaySettings(),
   notificationPermission: notificationPermission(),
   voiceStates: [],
   voiceAudio: null,
@@ -2682,6 +2692,14 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
   setTabTitleNotifications(enabled) {
     applyNotificationSettings({ ...get().notificationSettings, tabTitle: enabled });
+  },
+
+  setCompactMode(enabled) {
+    // Đổi một class Tailwind nhưng đổi cả cách đọc kênh → lưu ngay để lần mở
+    // sau (hoặc tab khác mở lại) không phải chọn lại.
+    const settings: DisplaySettings = { ...get().displaySettings, compact: enabled };
+    set({ displaySettings: settings });
+    saveDisplaySettings(settings);
   },
   /**
    * Đổi trạng thái hiển thị. Cập nhật lạc quan trước rồi mới gửi: nút chọn phải

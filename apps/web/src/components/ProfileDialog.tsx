@@ -34,6 +34,8 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
   const testPush = useChat((state) => state.testPush);
   const selfStatus = useChat((state) => state.selfStatus);
   const setPresence = useChat((state) => state.setPresence);
+  const display = useChat((state) => state.displaySettings);
+  const setCompactMode = useChat((state) => state.setCompactMode);
 
   // Thứ tự như Discord: Trực tuyến → Đang chờ → Không làm phiền → Ẩn.
   const statuses: Array<{ status: PresenceStatus; label: string }> = [
@@ -151,6 +153,28 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
               className="mt-0.5 accent-emerald-400"
             />
             <span className="flex-1">{t("notificationsTabTitle")}</span>
+          </label>
+        </div>
+
+        {/*
+          Hiển thị: tuỳ chọn theo **máy** (localStorage), không phải theo tài
+          khoản — điện thoại thích gọn còn màn hình lớn thích thoáng.
+        */}
+        <div className="mb-4 rounded-lg border border-white/10 p-2.5">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            {t("display")}
+          </p>
+          <label className="flex items-start gap-2 text-xs text-slate-200">
+            <input
+              type="checkbox"
+              checked={display.compact}
+              onChange={(event) => setCompactMode(event.target.checked)}
+              className="mt-0.5 accent-emerald-400"
+            />
+            <span className="flex-1">
+              {t("compactMode")}
+              <span className="block text-[11px] text-slate-500">{t("compactModeHint")}</span>
+            </span>
           </label>
         </div>
 

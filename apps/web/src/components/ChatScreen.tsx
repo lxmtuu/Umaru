@@ -242,6 +242,8 @@ export function ChatScreen() {
       hasPermission(bits, Permission.MANAGE_CHANNELS),
     );
   }, [guildId, activeGuild, state.me, state.permissions]);
+  /** Mật độ tin kiểu Discord "compact" (ẩn avatar, giờ ở lề trái). */
+  const compact = state.displaySettings.compact;
   const messages = channelId === null ? [] : (state.messages[channelId] ?? []);
   const activeChannel = channels.find((channel) => channel.id === channelId) ?? null;
   const activeDm = home ? (state.dms.find((dm) => dm.channel.id === channelId) ?? null) : null;
@@ -1461,13 +1463,28 @@ export function ChatScreen() {
                         event.preventDefault();
                         setMessageMenu({ message, x: event.clientX, y: event.clientY });
                       }}
-                      className={`group flex scroll-mt-4 gap-3 px-4 py-1.5 hover:bg-white/[0.03] ${
+                      data-density={compact ? "compact" : "cozy"}
+                      className={`group flex scroll-mt-4 gap-3 px-4 ${
+                        compact ? "py-0.5" : "py-1.5"
+                      } hover:bg-white/[0.03] ${
                         state.highlightMessageId === message.id
                           ? "rounded-lg bg-amber-400/10 ring-1 ring-amber-300/40"
                           : ""
                       }`}
                     >
-                      {grouped ? (
+                      {compact ? (
+                        // Lề trái của chế độ thu gọn: giờ hiện **luôn** (không cần
+                        // hover), vì không còn avatar để dò theo.
+                        <time
+                          className="mt-0.5 w-10 shrink-0 text-right text-[10px] leading-5 text-slate-500"
+                          dateTime={message.createdAt}
+                        >
+                          {new Date(message.createdAt).toLocaleTimeString(locale, {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </time>
+                      ) : grouped ? (
                         <time
                           className="mt-0.5 w-8 shrink-0 text-right text-[10px] text-transparent group-hover:text-slate-500"
                           dateTime={message.createdAt}
@@ -1491,12 +1508,12 @@ export function ChatScreen() {
                       )}
                       <div className="min-w-0 flex-1">
                         <div className="flex items-baseline gap-2">
-                          {!grouped && (
+                          {!grouped && !compact && (
                             <span className="text-sm font-semibold text-slate-100">
                               {authorName(message)}
                             </span>
                           )}
-                          {mine && !grouped && (
+                          {mine && !grouped && !compact && (
                             <span className="rounded bg-emerald-400/10 px-1 text-[10px] text-emerald-300">
                               {t("you")}
                             </span>
@@ -1509,7 +1526,7 @@ export function ChatScreen() {
                               📌 {t("pinnedChip")}
                             </span>
                           )}
-                          {!grouped && (
+                          {!grouped && !compact && (
                             <time className="text-[11px] text-slate-500">
                               {new Date(message.createdAt).toLocaleTimeString(locale, {
                                 hour: "2-digit",
@@ -1685,11 +1702,25 @@ export function ChatScreen() {
                                 name={repliedTo === undefined ? null : authorName(repliedTo)}
                               />
                             )}
-                            {message.content.length > 0 && (
-                              <div className="text-sm text-slate-200">
-                                <MessageContent content={message.content} />
-                              </div>
-                            )}
+                            {message.content.length > 0 &&
+                              (compact ? (
+                                // Chế độ thu gọn: tên tác giả nằm **cùng dòng** với
+                                // nội dung. `[&>p:first-of-type]:inline` để đoạn văn
+                                // đầu tiên chảy tiếp ngay sau tên thay vì xuống
+                                // dòng; các đoạn sau vẫn xuống dòng như Discord.
+                                <div className="flex items-baseline gap-2 text-sm text-slate-200">
+                                  <span className="shrink-0 text-xs font-semibold text-slate-100">
+                                    {authorName(message)}
+                                  </span>
+                                  <div className="min-w-0 flex-1 [&>p:first-of-type]:inline">
+                                    <MessageContent content={message.content} />
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-sm text-slate-200">
+                                  <MessageContent content={message.content} />
+                                </div>
+                              ))}
                             <MessageAttachments attachments={message.attachments} />
                             {((message.reactions ?? []).length > 0 || reactionPickerFor === message.id) && (
                               <div className="mt-1 flex flex-wrap items-center gap-1">
