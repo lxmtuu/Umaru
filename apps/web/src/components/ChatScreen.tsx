@@ -17,8 +17,10 @@ import { SEARCH_MIN_LENGTH, useChat, type SearchScope } from "../lib/chatStore.j
 import { translate, useLocale, useT } from "../lib/i18n.js";
 import { ChannelSettings } from "./ChannelSettings.js";
 import { MessageAttachments } from "./MessageAttachments.js";
+import { MemberList } from "./MemberList.js";
 import { MessageContent } from "./MessageContent.js";
 import { legalPath } from "../lib/legalRoute.js";
+import { buildTimeline, dividerLabel } from "../lib/messageTimeline.js";
 import { resultText, snippetAround, splitHighlight } from "../lib/search.js";
 import { dmAvatarUrl, dmInitial, dmPeer, dmTitle, isGroupDm } from "../lib/dms.js";
 import { Avatar } from "./Avatar.js";
@@ -70,6 +72,7 @@ export function ChatScreen() {
   const home = guildId === null; // view Home: sidebar hiện danh sách DM
   const channels = useMemo(() => state.channels[guildId ?? ""] ?? [], [state.channels, guildId]);
   const members = useMemo(() => state.members[guildId ?? ""] ?? [], [state.members, guildId]);
+  const guildRoles = useMemo(() => state.roles[guildId ?? ""] ?? [], [state.roles, guildId]);
   // Trong DM, tên người gửi có thể không thuộc guild nào của tôi → tra cả danh sách DM.
   const memberById = useMemo(() => {
     const map = new Map<string, GuildMemberSummary>();
@@ -792,6 +795,35 @@ export function ChatScreen() {
 
       {/* Main */}
       <main className="relative flex min-w-0 flex-1 flex-col bg-slate-900/30">
+        {/*
+          Trước đây khi gateway không kết nối được, giao diện **im lặng**: sidebar
+          trống trơn như thể bạn không ở server nào. Đó chính là lý do người dùng
+          tưởng "mất server" và tạo server liên tục. Giờ nói thẳng và cho bấm lại.
+        */}
+        {state.gatewayStatus !== "ready" && (
+          <div
+            role="status"
+            className={`flex flex-wrap items-center gap-2 border-b px-4 py-1.5 text-xs ${
+              state.gatewayStatus === "connecting" || state.gatewayStatus === "reconnecting"
+                ? "border-amber-400/20 bg-amber-400/10 text-amber-200"
+                : "border-rose-400/20 bg-rose-400/10 text-rose-200"
+            }`}
+          >
+            <span aria-hidden>●</span>
+            <span className="flex-1">
+              {state.gatewayStatus === "connecting" || state.gatewayStatus === "reconnecting"
+                ? t("connecting")
+                : t("connectionLost")}
+            </span>
+            <button
+              type="button"
+              onClick={() => void state.connectGateway()}
+              className="rounded border border-current/40 px-2 py-0.5 font-medium hover:bg-white/10"
+            >
+              {t("retry")}
+            </button>
+          </div>
+        )}
         <header className="flex items-center justify-between border-b border-white/5 px-4 py-3">
           {activeDm !== null && isGroupDm(activeDm) && (
             <button
@@ -831,6 +863,14 @@ export function ChatScreen() {
                       ? `# ${activeTitle}`
                       : activeTitle}
           </h1>
+          {activeChannel?.topic !== null && activeChannel?.topic !== undefined && activeChannel.topic.length > 0 && (
+            <>
+              <span aria-hidden className="mx-2 h-5 w-px shrink-0 bg-white/10" />
+              <p className="hidden min-w-0 flex-1 truncate text-xs text-slate-400 md:block">
+                {activeChannel.topic}
+              </p>
+            </>
+          )}
           <div className="flex items-center gap-2 text-xs text-slate-400">
             {activeChannel?.type === "guild_text" && canManageChannelSettings && (
               <button
@@ -1030,9 +1070,41 @@ export function ChatScreen() {
               )}
             <div className="h-full overflow-y-auto py-3">
               {messages.length === 0 ? (
-                <p className="px-4 py-6 text-sm text-slate-500">{t("emptyChannel")}</p>
+                // Khung chào giống Discord: người vào kênh trống phải biết mình
+                // đang ở đâu và làm gì tiếp, thay vì một dòng xám lạc lõng.
+                <div className="px-6 py-12 text-center">
+                  <p
+                    aria-hidden
+                    className="mx-auto mb-3 grid size-14 place-items-center rounded-full bg-white/5 text-2xl text-slate-400"
+                  >
+                    {activeDm === null ? "#" : "@"}
+                  </p>
+                  <h2 className="text-lg font-semibold text-slate-200">
+                    {activeTitle.length > 0
+                      ? t("channelWelcome", { name: activeTitle })
+                      : t("emptyChannel")}
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">{t("emptyChannel")}</p>
+                </div>
               ) : (
-                messages.map((message) => {
+                buildTimeline(messages).map((item) => {
+                  if (item.kind === "divider") {
+                    return (
+                      <div key={item.key} className="flex items-center gap-3 px-4 py-3">
+                        <span className="h-px flex-1 bg-white/10" />
+                        <span className="text-[11px] font-semibold text-slate-400">
+                          {dividerLabel(item.timestamp, Date.now(), locale, {
+                            today: t("today"),
+                            yesterday: t("yesterday"),
+                          })}
+                        </span>
+                        <span className="h-px flex-1 bg-white/10" />
+                      </div>
+                    );
+                  }
+                  // Tin liền trước cùng người trong 5 phút → ẩn avatar/tên, chỉ
+                  // hiện nội dung như Discord (xem messageTimeline.ts).
+                  const { message, grouped } = item;
                   const mine = message.authorId === state.me?.id;
                   // Tin của mình thì luôn có nút; tin người khác chỉ khi có quyền quản lý tin.
                   const canModerate = mine || canManageMessages(channelId);
@@ -1052,22 +1124,36 @@ export function ChatScreen() {
                           : ""
                       }`}
                     >
-                      <Avatar
-                        avatarUrl={
-                          message.authorId === state.me?.id
-                            ? (state.me?.avatarUrl ?? null)
-                            : (memberById.get(message.authorId)?.avatarUrl ?? null)
-                        }
-                        name={authorName(message)}
-                        size="mt-0.5 size-8"
-                        textClass="text-xs"
-                      />
+                      {grouped ? (
+                        <time
+                          className="mt-0.5 w-8 shrink-0 text-right text-[10px] text-transparent group-hover:text-slate-500"
+                          dateTime={message.createdAt}
+                        >
+                          {new Date(message.createdAt).toLocaleTimeString(locale, {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </time>
+                      ) : (
+                        <Avatar
+                          avatarUrl={
+                            message.authorId === state.me?.id
+                              ? (state.me?.avatarUrl ?? null)
+                              : (memberById.get(message.authorId)?.avatarUrl ?? null)
+                          }
+                          name={authorName(message)}
+                          size="mt-0.5 size-8"
+                          textClass="text-xs"
+                        />
+                      )}
                       <div className="min-w-0 flex-1">
                         <div className="flex items-baseline gap-2">
-                          <span className="text-sm font-semibold text-slate-100">
-                            {authorName(message)}
-                          </span>
-                          {mine && (
+                          {!grouped && (
+                            <span className="text-sm font-semibold text-slate-100">
+                              {authorName(message)}
+                            </span>
+                          )}
+                          {mine && !grouped && (
                             <span className="rounded bg-emerald-400/10 px-1 text-[10px] text-emerald-300">
                               {t("you")}
                             </span>
@@ -1080,12 +1166,14 @@ export function ChatScreen() {
                               📌 {t("pinnedChip")}
                             </span>
                           )}
-                          <time className="text-[11px] text-slate-500">
-                            {new Date(message.createdAt).toLocaleTimeString(locale, {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </time>
+                          {!grouped && (
+                            <time className="text-[11px] text-slate-500">
+                              {new Date(message.createdAt).toLocaleTimeString(locale, {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </time>
+                          )}
                           {message.editedAt !== null && (
                             <span className="text-[10px] text-slate-600">{t("edited")}</span>
                           )}
@@ -1389,6 +1477,23 @@ export function ChatScreen() {
           </>
         )}
       </main>
+
+      {/*
+        Danh sách thành viên — chỉ ở server (DM không có khái niệm thành viên)
+        và ẩn dưới `lg` để không bóp khung chat trên màn hẹp.
+      */}
+      {!home && guildId !== null && (
+        <MemberList
+          members={members}
+          roles={guildRoles}
+          ownerId={(activeGuild?.ownerId as string | undefined) ?? null}
+          meId={(state.me?.id as string | undefined) ?? null}
+          defaultSectionLabel={t("members")}
+          countLabel={(count) => `${t("members")} — ${count}`}
+          youLabel={t("you")}
+          ownerLabel={t("serverOwner")}
+        />
+      )}
 
       {(showCreateGuild || showCreateChannel) && (
         <Modal
