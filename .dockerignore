@@ -1,0 +1,17 @@
+# Chỉ chép thứ cần để build. `node_modules` của host có symlink trỏ vào store
+# pnpm và binary khác kiến trúc — chép vào image là build hỏng một cách khó hiểu.
+node_modules
+**/node_modules
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+coverage
+.git
+.github
+.env
+.env.*
+!.env.example
+**/.data
+*.log
+screenshots
+docs

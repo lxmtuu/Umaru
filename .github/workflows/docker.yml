@@ -1,0 +1,183 @@
+name: Docker
+
+# Build image `api` + `web` và **chạy thử container**.
+#
+# Vì sao tách khỏi `ci.yml`: job verify (typecheck/build/test) chạy trên code
+# trong workspace, còn ở đây là image cuối cùng — thứ thật sự được deploy. Rất
+# nhiều lỗi chỉ tồn tại trong image: `pnpm deploy --prod` thiếu dependency,
+# migration không nằm trong image, `USER node` không đọc được `/data/uploads`,
+# nginx thiếu `try_files`/proxy WebSocket. Tách ra để job verify vẫn nhanh.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: build · chạy thử image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Cần để đẩy image lên GHCR bằng GITHUB_TOKEN (không dùng PAT).
+      packages: write
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: umaru
+          POSTGRES_PASSWORD: umaru
+          POSTGRES_DB: umaru_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U umaru -d umaru_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bật Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Đăng nhập GHCR
+        # Chỉ cần khi push thật; PR từ fork không có quyền ghi packages.
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tính tên image (chữ thường)
+        id: names
+        # `github.repository` là `lxmtuu/Umaru` — GHCR **bắt buộc** chữ thường,
+        # tag có chữ hoa bị từ chối với lỗi khó đoán.
+        run: echo "repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Metadata api
+        id: meta-api
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ steps.names.outputs.repo }}/api
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,format=long
+
+      - name: Metadata web
+        id: meta-web
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ steps.names.outputs.repo }}/web
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,format=long
+
+      # Cố ý **không** `push: true` ở bước build: build-push-action push mọi tag
+      # trong `tags`, kể cả tag tạm `umaru-api:ci`, và sẽ push **trước** khi
+      # smoke chạy. Push ở bước riêng sau khi smoke xanh ⇒ registry không bao giờ
+      # nhận một image chưa từng chạy được.
+      - name: Build api
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: api
+          load: true
+          tags: ${{ steps.meta-api.outputs.tags }},umaru-api:ci
+          labels: ${{ steps.meta-api.outputs.labels }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build web
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: web
+          load: true
+          tags: ${{ steps.meta-web.outputs.tags }},umaru-web:ci
+          labels: ${{ steps.meta-web.outputs.labels }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Chạy thử image
+        # Điều kiện `if` để khi build hỏng thì bước này bị **bỏ qua** chứ không
+        # báo thêm một lỗi thứ hai khó đọc (mặc định các bước vẫn chạy khi bước
+        # trước đó fail? Không — nhưng `if` này giữ ý định rõ ràng).
+        if: success()
+        run: |
+          set -euo pipefail
+          docker network create umaru-ci
+          docker run -d --name api --network umaru-ci \
+            --add-host host.docker.internal:host-gateway \
+            -e NODE_ENV=production \
+            -e DATABASE_URL=postgres://umaru:umaru@host.docker.internal:55432/umaru_test \
+            -e JWT_SECRET=ci-only-secret-khong-dung-o-production \
+            -p 4100:4000 \
+            umaru-api:ci
+          docker run -d --name web --network umaru-ci -p 8080:80 umaru-web:ci
+          ./scripts/ci-image-smoke.sh
+
+      - name: Log container khi thất bại
+        if: failure()
+        run: |
+          docker ps -a || true
+          docker logs api 2>&1 | tail -60 || true
+          docker logs web 2>&1 | tail -40 || true
+
+      - name: Push GHCR
+        # Chỉ push khi: đã qua smoke **và** đây là push thật (main/tag), không
+        # phải PR. PR từ fork cũng không có quyền ghi packages.
+        if: success() && github.event_name == 'push'
+        env:
+          API_TAGS: ${{ steps.meta-api.outputs.tags }}
+          WEB_TAGS: ${{ steps.meta-web.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # metadata-action có thể trả nhiều tag (nhánh, semver, sha) trên nhiều
+          # dòng — mỗi dòng một tag.
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "→ $tag"
+            docker tag umaru-api:ci "$tag"
+            docker push "$tag"
+          done <<< "$API_TAGS"
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "→ $tag"
+            docker tag umaru-web:ci "$tag"
+            docker push "$tag"
+          done <<< "$WEB_TAGS"
+
+      - name: Dọn container
+        if: always()
+        run: |
+          docker rm -f api web 2>/dev/null || true
+          docker network rm umaru-ci 2>/dev/null || true
+
+      - name: Tóm tắt
+        if: always()
+        run: |
+          {
+            echo "## Image"
+            echo
+            echo '| target | kết quả |'
+            echo '| --- | --- |'
+            echo "| api | \`${{ job.status }}\` |"
+            echo "| web | \`${{ job.status }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

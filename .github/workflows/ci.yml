@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # pnpm 10 không tự chạy build script của dependency (argon2 là native module).
+  PNPM_CONFIG_DANGEROUSLY_ALLOW_ALL_BUILDS: "true"
+
+jobs:
+  verify:
+    name: typecheck · build · test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        # Test backend chạy trên PostgreSQL thật, không mock (xem services/api/test/helpers.ts).
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: umaru
+          POSTGRES_PASSWORD: umaru
+          POSTGRES_DB: umaru_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U umaru -d umaru_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgres://umaru:umaru@127.0.0.1:55432/umaru_test
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.34.7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Cài dependency
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Lint
+        # Chưa có ESLint; bước này tự bỏ qua cho tới khi thêm script `lint`
+        # vào một package nào đó (dùng để không phải sửa lại workflow sau).
+        run: pnpm run -r --if-present lint

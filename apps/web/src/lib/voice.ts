@@ -1,0 +1,488 @@
+import { ApiError, computeBackoffMs } from "@umaru/sdk";
+
+/**
+ * Âm thanh kênh thoại — lớp mỏng bọc `livekit-client`.
+ *
+ * Tách khỏi store để phần **quyết định** (báo lỗi gì, khi nào thử lại, thứ tự
+ * gắn thẻ audio) test được mà không cần WebRTC thật: môi trường test không có
+ * `RTCPeerConnection` và mạng ra LiveKit cũng không mở.
+ *
+ * Nguyên tắc: **âm thanh hỏng không được làm hỏng phòng thoại**. Trạng thái
+ * (ai ở phòng nào) đi qua gateway và vẫn đúng dù SFU không kết nối được — chỉ
+ * là không có tiếng, và UI phải nói rõ như vậy thay vì im lặng.
+ */
+
+export type VoiceAudioStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  /** Mất kết nối tới SFU, đang tự nối lại — **vẫn đang ở trong phòng**. */
+  | "reconnecting"
+  | "unavailable"
+  | "error";
+
+export interface VoiceAudioState {
+  channelId: string | null;
+  status: VoiceAudioStatus;
+  /** Khoá i18n của lỗi (không phải câu tiếng Việt) — UI tự dịch. */
+  errorKey: VoiceAudioErrorKey | null;
+  /**
+   * Có quyền nói trong phòng này không — lấy từ `canPublish` của token server
+   * cấp (tức quyền `SPEAK`). Client phải tôn trọng cờ này: bật mic khi server
+   * đã từ chối chỉ tạo ra luồng media bị SFU chặn, người dùng tưởng mình nói được.
+   */
+  canPublish: boolean;
+}
+
+export type VoiceAudioErrorKey =
+  | "voiceErrorNotConfigured"
+  | "voiceErrorNotInChannel"
+  | "voiceErrorMicDenied"
+  | "voiceErrorConnect"
+  | "voiceErrorUnknown";
+
+/**
+ * Dịch lỗi thành khoá i18n. Phân biệt rất quan trọng:
+ * - **503** = server chưa cấu hình SFU → không phải lỗi của người dùng.
+ * - **404** = chưa join phòng → gọi sai thứ tự, không phải "phòng hỏng".
+ * - `NotAllowedError` = người dùng chưa cho quyền mic → chỉ cần bấm cho phép.
+ * - còn lại = lỗi mạng/SFU → thử lại.
+ */
+export function classifyVoiceError(error: unknown): VoiceAudioErrorKey {
+  if (error instanceof ApiError) {
+    if (error.status === 503) return "voiceErrorNotConfigured";
+    if (error.status === 404) return "voiceErrorNotInChannel";
+    return "voiceErrorConnect";
+  }
+  const name = (error as { name?: unknown } | null)?.name;
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") return "voiceErrorMicDenied";
+  if (name === "NotSupportedError") return "voiceErrorConnect";
+  return "voiceErrorUnknown";
+}
+
+/**
+ * Có nên thử kết nối lại không. Lỗi cấu hình/quyền thì thử lại chỉ tổ spam log và
+ * xin quyền nhiều lần (trình duyệt sẽ chặn hẳn); lỗi mạng thì nên thử.
+ */
+export function shouldRetryVoice(errorKey: VoiceAudioErrorKey): boolean {
+  return errorKey === "voiceErrorConnect" || errorKey === "voiceErrorUnknown";
+}
+
+/** Trạng thái audio khởi tạo cho một lần vào phòng. */
+export function beginVoiceAudio(channelId: string): VoiceAudioState {
+  return { channelId, status: "connecting", errorKey: null, canPublish: false };
+}
+
+export function voiceAudioError(
+  channelId: string | null,
+  errorKey: VoiceAudioErrorKey,
+): VoiceAudioState {
+  return { channelId, status: "error", errorKey, canPublish: false };
+}
+
+/**
+ * Mic có được bật không: phải còn quyền nói (`canPublish`) **và** không tự mute
+ * **và** không deafen. Deafen tự mute luôn mic giống Discord — người không nghe
+ * được gì mà vẫn nói thì họ không biết mình đang nói một mình.
+ */
+export function shouldPublishMicrophone(input: {
+  canPublish: boolean;
+  selfMute: boolean;
+  selfDeaf: boolean;
+}): boolean {
+  return input.canPublish && !input.selfMute && !input.selfDeaf;
+}
+
+/**
+ * Nguồn phát của người khác có nên kêu không: deafen là tắt hết, kể cả khi
+ * người kia không mute.
+ */
+export function shouldPlayRemote(selfDeaf: boolean): boolean {
+  return !selfDeaf;
+}
+
+/** Trần số lần **tự** nối lại sau khi SFU ngắt; quá thì để người dùng bấm. */
+export const MAX_VOICE_RECONNECT_ATTEMPTS = 5;
+
+/**
+ * Nhịp thử lại khi mất kết nối SFU: 1s, 2s, 4s, 8s… tối đa 15s (kèm jitter để
+ * cả phòng rớt mạng cùng lúc không dồn lên server). Lần đầu cố ý nhanh — rớt
+ * Wi-Fi một nhịp thì tiếng phải quay lại gần như tức thì, không để người dùng
+ * kịp nghĩ là app hỏng.
+ */
+export function voiceReconnectDelayMs(attempt: number, random: () => number = Math.random): number {
+  return computeBackoffMs({ attempt, baseMs: 1_000, maxMs: 15_000, jitter: 0.2, random });
+}
+
+/** Còn nên tự nối lại không (hết lượt thì hiện lỗi + nút Thử lại). */
+export function shouldRetryVoiceConnection(attempt: number): boolean {
+  return attempt < MAX_VOICE_RECONNECT_ATTEMPTS;
+}
+
+/** Việc phải làm sau khi SFU ngắt hẳn. */
+export type VoiceDropAction =
+  | { kind: "cleanup" }
+  | { kind: "retry"; attempt: number; delayMs: number }
+  | { kind: "giveup" };
+
+/**
+ * Quyết định sau khi mất kết nối SFU — hàm thuần để test được đúng chỗ dễ sai
+ * nhất: **khi nào còn hồi sinh phiên, khi nào phải nói thật là đã mất tiếng**.
+ *
+ * - Không còn trong phòng (tab khác rời, mất `VIEW_CHANNEL`) → dọn im lặng,
+ *   không hồi sinh một phòng mình đã rời.
+ * - Còn lượt → nối lại kèm backoff (đây là trường hợp thường gặp: rớt Wi-Fi).
+ * - Hết lượt → thôi tự thử, hiện lỗi + nút Thử lại; thử mãi trong im lặng là
+ *   kiểu hỏng tệ nhất vì người dùng tưởng mic vẫn mở.
+ */
+export function decideVoiceDrop(input: {
+  inChannel: boolean;
+  attempt: number;
+  random?: () => number;
+}): VoiceDropAction {
+  if (!input.inChannel) return { kind: "cleanup" };
+  if (!shouldRetryVoiceConnection(input.attempt)) return { kind: "giveup" };
+  return {
+    kind: "retry",
+    attempt: input.attempt,
+    delayMs: voiceReconnectDelayMs(input.attempt, input.random),
+  };
+}
+
+/** Trạng thái kết nối SFU báo lên từ `livekit-client`. */
+export type VoiceConnectionEvent = "reconnecting" | "reconnected" | "disconnected";
+
+/**
+ * Trạng thái audio sau một sự kiện kết nối, hoặc `null` khi phải **quyết định
+ * thêm** (ngắt hẳn thì còn phải xem người dùng còn ở trong phòng không, còn
+ * lượt thử lại không — việc đó thuộc store).
+ */
+export function voiceStatusAfterConnectionEvent(
+  event: VoiceConnectionEvent,
+): VoiceAudioStatus | null {
+  if (event === "reconnecting") return "reconnecting";
+  if (event === "reconnected") return "connected";
+  return null;
+}
+
+/** Trần số người "đang nói" giữ trong state — chặn phòng đông làm phình state. */
+export const MAX_SPEAKERS = 32;
+
+/**
+ * Chuẩn hoá danh sách identity của người đang nói.
+ *
+ * LiveKit phát `identity` chính là `userId` (server ký như vậy), nhưng payload
+ * đến từ mạng nên vẫn phải lọc: bỏ phần tử không phải chuỗi/rỗng, bỏ trùng, và
+ * **sắp xếp** — thứ tự trong `ActiveSpeakersChanged` đổi theo âm lượng, giữ
+ * nguyên thứ tự đó sẽ làm state và React re-render liên tục dù tập người nói
+ * không đổi.
+ */
+export function normalizeSpeakers(identities: readonly unknown[], max = MAX_SPEAKERS): string[] {
+  const unique = new Set<string>();
+  for (const identity of identities) {
+    if (typeof identity !== "string") continue;
+    const trimmed = identity.trim();
+    if (trimmed === "") continue;
+    unique.add(trimmed);
+    if (unique.size >= max) break;
+  }
+  return [...unique].sort();
+}
+
+/** Hai danh sách người nói có thực sự khác nhau không (để bỏ qua set thừa). */
+export function sameSpeakers(prev: readonly string[], next: readonly string[]): boolean {
+  if (prev.length !== next.length) return false;
+  return prev.every((id, index) => id === next[index]);
+}
+
+/**
+ * Người này có đang nói không. `userId` rỗng (chưa biết mình là ai) luôn là
+ * "không", tránh trường hợp mọi người cùng sáng đèn khi `me` chưa tải xong.
+ */
+export function isSpeaking(speakers: readonly string[], userId: string | null | undefined): boolean {
+  if (typeof userId !== "string" || userId === "") return false;
+  return speakers.includes(userId);
+}
+
+/**
+ * Một luồng chia sẻ màn hình đang xem được.
+ *
+ * `element` là thẻ `<video>` do LiveKit tạo và gắn luồng media vào. React không
+ * sở hữu nó — component chỉ đưa nó vào DOM (xem `VoiceScreens`). Giữ nguyên thẻ
+ * thay vì tạo mới mỗi lần render để không phải subscribe lại track.
+ */
+export interface VoiceScreenShare {
+  /** Khoá ổn định cho React: `identity:trackSid`. */
+  id: string;
+  userId: string;
+  label: string;
+  element: HTMLVideoElement;
+}
+
+/**
+ * Có được bật chia sẻ màn hình không: cần **quyền publish** (tức `SPEAK`) và
+ * phiên đã kết nối. Deafen **không** chặn: người không nghe vẫn có thể đang
+ * thuyết trình cho người khác xem.
+ */
+export function canShareScreen(input: {
+  canPublish: boolean;
+  status: string;
+}): boolean {
+  return input.canPublish && (input.status === "connected" || input.status === "reconnecting");
+}
+
+/**
+ * Chia sẻ màn hình có tiếng tab hay không — mặc định **có**, vì im lặng khi
+ * đang chiếu video là điều người dùng không mong đợi. Trình duyệt không hỗ trợ
+ * thì `getDisplayMedia` tự bỏ qua phần âm thanh.
+ */
+export function screenShareOptions(): {
+  audio: boolean;
+  selfBrowserSurface: "exclude";
+  surfaceSwitching: "include";
+  systemAudio: "include";
+  video: { width: { max: number }; height: { max: number }; frameRate: { max: number } };
+} {
+  return {
+    audio: true,
+    // Chặn chia sẻ chính tab Umaru: người xem sẽ thấy một màn hình lồng chính nó
+    // (hiệu ứng "gương vô hạn") và tốn băng thông vô ích.
+    selfBrowserSurface: "exclude",
+    surfaceSwitching: "include",
+    systemAudio: "include",
+    // Trần 1080p30: chia sẻ màn hình 4K làm nghẽn đường lên của người chia sẻ
+    // mà chữ trên slide cũng không nét hơn ở cỡ hiển thị này.
+    video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 30 } },
+  };
+}
+
+/**
+ * Một phiên âm thanh sống. Chỉ tạo được sau khi đã `PUT /channels/:id/voice`
+ * thành công và đã có token từ server.
+ *
+ * `import("livekit-client")` là **động**: người chỉ chat chữ không phải tải
+ * ~300KB WebRTC client, và nếu gói đó lỗi thì app vẫn dùng được.
+ */
+export class VoiceAudioSession {
+  private room: {
+    connect: (url: string, token: string) => Promise<void>;
+    disconnect: () => Promise<void> | void;
+    localParticipant: {
+      setMicrophoneEnabled: (enabled: boolean) => Promise<unknown>;
+      setScreenShareEnabled: (enabled: boolean, options?: unknown) => Promise<unknown>;
+    };
+    remoteParticipants: Map<
+      string,
+      { audioTrackPublications: Map<string, { track?: { attach: () => HTMLMediaElement | undefined } }> }
+    >;
+    on: (event: string, handler: (payload: unknown) => void) => void;
+    off?: (event: string, handler: (payload: unknown) => void) => void;
+  } | null = null;
+  /** Thẻ <audio> của người khác, giữ để deafen/mute toàn bộ một lần. */
+  private readonly elements = new Set<HTMLMediaElement>();
+  /** Danh sách người đang nói gần nhất — cần để bỏ một người khi họ rời phòng. */
+  private speakers: string[] = [];
+  /** Đang trong `disconnect()` do người dùng: đừng báo "mất kết nối" nữa. */
+  private closing = false;
+  private connectionState: VoiceConnectionEvent | "connected" = "connected";
+  private speakersListener: ((userIds: string[]) => void) | null = null;
+  /** Chia sẻ màn hình đang xem được, theo thứ tự ổn định để UI không nhảy. */
+  private screens: VoiceScreenShare[] = [];
+  private screensListener: ((screens: VoiceScreenShare[]) => void) | null = null;
+
+  private emitScreens(): void {
+    this.screensListener?.([...this.screens]);
+  }
+
+  /** Chỉ báo khi danh sách **thực sự** đổi, tránh React re-render mỗi 100ms. */
+  private emitSpeakers(next: string[]): void {
+    if (sameSpeakers(this.speakers, next)) return;
+    this.speakers = next;
+    this.speakersListener?.(next);
+  }
+
+  async connect(input: {
+    url: string;
+    token: string;
+    canPublish: boolean;
+    selfMute: boolean;
+    selfDeaf: boolean;
+    /**
+     * Ai đang nói. Việc này **không** đi qua gateway: nó đổi vài lần mỗi giây,
+     * đẩy lên server chỉ tốn băng thông và làm state của người khác nhấp nháy
+     * theo độ trễ mạng. SFU đã tính sẵn mức âm thanh, client chỉ hiển thị.
+     */
+    onSpeakers?: (userIds: string[]) => void;
+    /**
+     * Mất kết nối / nối lại được. LiveKit tự nối lại vài lần trước khi bỏ cuộc;
+     * chỉ khi nó phát `Disconnected` mới là mất hẳn — lúc đó store phải **hoặc**
+     * nối lại (kèm backoff), **hoặc** nói thật là đã mất tiếng. Im lặng chờ đợi
+     * là kiểu hỏng tệ nhất: UI vẫn ghi "Đang thông" trong khi mic đã chết.
+     */
+    onConnection?: (event: VoiceConnectionEvent) => void;
+    /** Ai đang chia sẻ màn hình (kèm thẻ `<video>` đã gắn luồng media). */
+    onScreens?: (screens: VoiceScreenShare[]) => void;
+    /** Chia sẻ của **chính mình** đã dừng (kể cả khi dừng bằng trình duyệt). */
+    onScreenShareEnded?: () => void;
+  }): Promise<void> {
+    const { Room, RoomEvent, Track } = await import("livekit-client");
+    const room = new Room({ adaptiveStream: true, dynacast: true });
+    this.room = room as unknown as VoiceAudioSession["room"];
+
+    this.screensListener = input.onScreens ?? null;
+    this.screens = [];
+    this.emitScreens();
+
+    // Người khác vào/ra: gắn hoặc bỏ track ngay, không đợi gateway.
+    room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+      if (track.kind === Track.Kind.Audio) {
+        const element = track.attach();
+        // Không đưa vào layout: chỉ để phát tiếng. `playsInline` cho iOS.
+        element.style.display = "none";
+        document.body.append(element);
+        this.elements.add(element);
+        void element.play().catch(() => undefined);
+        element.muted = !shouldPlayRemote(input.selfDeaf);
+        return;
+      }
+      if (track.kind !== Track.Kind.Video) return;
+      // Chỉ nhận **chia sẻ màn hình**: camera không được cấp trong token, nhưng
+      // kiểm ở đây để một client tự viết không chen được video vào khung của ta.
+      const source = (publication as { source?: unknown } | undefined)?.source;
+      if (typeof source === "string" && source !== "screen_share" && source !== "screen_share_audio") {
+        return;
+      }
+      const element = track.attach() as HTMLVideoElement;
+      element.autoplay = true;
+      element.playsInline = true;
+      element.muted = true; // tiếng tab đi qua track audio riêng ở trên
+      element.style.maxWidth = "100%";
+      element.style.maxHeight = "100%";
+      element.style.objectFit = "contain";
+      element.style.background = "#000";
+      const identity = String((participant as { identity?: unknown } | undefined)?.identity ?? "");
+      const sid = String((publication as { trackSid?: unknown } | undefined)?.trackSid ?? identity);
+      const name = (participant as { name?: unknown } | undefined)?.name;
+      this.screens = [
+        ...this.screens.filter((entry) => entry.id !== `${identity}:${sid}`),
+        {
+          id: `${identity}:${sid}`,
+          userId: identity,
+          label: typeof name === "string" && name.length > 0 ? name : identity,
+          element,
+        },
+      ];
+      this.emitScreens();
+    });
+    room.on(RoomEvent.TrackUnsubscribed, (track) => {
+      const detached = track.detach();
+      const removed = new Set<HTMLMediaElement>(detached);
+      for (const element of detached) {
+        element.remove();
+        this.elements.delete(element);
+      }
+      const next = this.screens.filter((entry) => !removed.has(entry.element));
+      if (next.length !== this.screens.length) {
+        this.screens = next;
+        this.emitScreens();
+      }
+    });
+    // Người dùng bấm "Stop sharing" của chính trình duyệt (thanh nổi của Chrome/
+    // Firefox) — không phải qua nút của app. Không nghe sự kiện này thì nút 🖥
+    // vẫn hiện "đang chia sẻ" trong khi luồng đã tắt.
+    room.on(RoomEvent.LocalTrackUnpublished, (publication) => {
+      const source = (publication as { source?: unknown } | undefined)?.source;
+      if (source === "screen_share") input.onScreenShareEnded?.();
+    });
+
+    // Ai đang nói: lấy từ SFU, không phải từ mic của mình — nên người deafen
+    // vẫn thấy đèn (họ không nghe được, nhưng vẫn cần biết ai đang nói).
+    this.speakersListener = input.onSpeakers ?? null;
+    this.closing = false;
+    this.connectionState = "connected";
+    // Chỉ báo khi **đổi** trạng thái: LiveKit phát `Reconnecting` cho từng lần thử
+    // (signal rồi media), báo hết thì UI nhấp nháy và backoff của mình bị đếm sai.
+    const reportConnection = (event: VoiceConnectionEvent): void => {
+      if (this.closing || this.connectionState === event) return;
+      this.connectionState = event;
+      input.onConnection?.(event);
+    };
+    room.on(RoomEvent.Reconnecting, () => reportConnection("reconnecting"));
+    room.on(RoomEvent.SignalReconnecting, () => reportConnection("reconnecting"));
+    room.on(RoomEvent.Reconnected, () => reportConnection("reconnected"));
+    room.on(RoomEvent.Disconnected, () => reportConnection("disconnected"));
+    room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      const list = Array.isArray(speakers) ? speakers : [];
+      this.emitSpeakers(
+        normalizeSpeakers(list.map((participant) => (participant as { identity?: unknown }).identity)),
+      );
+    });
+    // Người rời phòng phải tắt đèn ngay, kể cả khi SFU chậm phát lại danh sách.
+    room.on(RoomEvent.ParticipantDisconnected, (participant) => {
+      const identity = (participant as { identity?: unknown }).identity;
+      if (typeof identity !== "string") return;
+      this.emitSpeakers(this.speakers.filter((id) => id !== identity));
+    });
+
+    await room.connect(input.url, input.token);
+    await room.localParticipant.setMicrophoneEnabled(
+      shouldPublishMicrophone({
+        canPublish: input.canPublish,
+        selfMute: input.selfMute,
+        selfDeaf: input.selfDeaf,
+      }),
+    );
+  }
+
+  async setMicrophone(enabled: boolean): Promise<void> {
+    if (this.room === null) return;
+    try {
+      await this.room.localParticipant.setMicrophoneEnabled(enabled);
+    } catch {
+      // Mất quyền mic giữa cuộc (rút tai nghe, thu hồi quyền): không ném lỗi —
+      // người dùng vẫn nghe được, chỉ không nói được.
+    }
+  }
+
+  setDeafened(deafened: boolean): void {
+    for (const element of this.elements) element.muted = !shouldPlayRemote(deafened);
+  }
+
+  /**
+   * Bật/tắt chia sẻ màn hình. Trả `false` khi trình duyệt từ chối hoặc người
+   * dùng đóng hộp chọn màn hình — đó **không** phải lỗi mạng, nên không được
+   * hiện "không kết nối được phòng".
+   *
+   * Tắt chia sẻ khi chính người dùng bấm "Stop sharing" của trình duyệt: LiveKit
+   * phát `LocalTrackUnpublished`, store nghe để đồng bộ nút bấm.
+   */
+  async setScreenShare(enabled: boolean): Promise<boolean> {
+    if (this.room === null) return false;
+    try {
+      await this.room.localParticipant.setScreenShareEnabled(enabled, screenShareOptions());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    this.closing = true;
+    for (const element of this.elements) element.remove();
+    this.elements.clear();
+    for (const screen of this.screens) screen.element.remove();
+    this.screens = [];
+    this.emitScreens();
+    this.screensListener = null;
+    this.emitSpeakers([]);
+    this.speakersListener = null;
+    const room = this.room;
+    this.room = null;
+    if (room === null) return;
+    try {
+      await room.disconnect();
+    } catch {
+      // Đóng phiên đã chết không phải lỗi người dùng cần thấy.
+    }
+  }
+}

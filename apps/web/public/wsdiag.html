@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Umaru — kiểm tra WebSocket</title>
+    <style>
+      body {
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        margin: 0;
+        padding: 2rem;
+        line-height: 1.6;
+      }
+      h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+      .big { font-size: 1.5rem; font-weight: 700; margin: 1rem 0; }
+      .ok { color: #34d399; }
+      .bad { color: #fb7185; }
+      .warn { color: #fbbf24; }
+      pre {
+        background: #1e293b;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        overflow-x: auto;
+        font-size: 0.8rem;
+        white-space: pre-wrap;
+      }
+      ol { padding-left: 1.2rem; }
+      code { background: #1e293b; padding: 0.1rem 0.3rem; border-radius: 0.25rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Kiểm tra WebSocket tới gateway</h1>
+    <p>
+      Trang này thử mở đúng kết nối mà app dùng, nhưng <strong>không cần đăng nhập</strong>
+      và không phụ thuộc code của app. Kết quả hiện ngay bên dưới.
+    </p>
+
+    <div id="result" class="big">Đang thử…</div>
+    <pre id="detail"></pre>
+
+    <ol>
+      <li><strong class="ok">XANH</strong> — WebSocket OK, lỗi nằm trong code app (báo tớ).</li>
+      <li><strong class="warn">VÀNG</strong> — mở được socket nhưng gateway không chào (HELLO): lỗi phía server.</li>
+      <li><strong class="bad">ĐỎ</strong> — trình duyệt/proxy chặn: dán dòng chi tiết cho tớ.</li>
+    </ol>
+
+    <script>
+      const out = document.getElementById("result");
+      const detail = document.getElementById("detail");
+      const lines = [];
+      function log(line) {
+        lines.push(line);
+        detail.textContent = lines.join("\n");
+      }
+
+      const secure = location.protocol === "https:";
+      const url = `${secure ? "wss" : "ws"}://${location.host}/api/v1/gateway/ws`;
+      log(`trang      : ${location.href}`);
+      log(`an toàn    : ${secure ? "https (bắt buộc wss)" : "http"}`);
+      log(`đích tới   : ${url}`);
+
+      let settled = false;
+      function finish(kind, text) {
+        if (settled) return;
+        settled = true;
+        out.className = `big ${kind}`;
+        out.textContent = text;
+        clearTimeout(timer);
+        try {
+          ws.close();
+        } catch {}
+      }
+
+      const started = Date.now();
+      let ws;
+      try {
+        ws = new WebSocket(url);
+      } catch (error) {
+        log(`ngoại lệ   : ${error && error.message}`);
+        finish("bad", "ĐỎ — không tạo được WebSocket");
+      }
+
+      const timer = setTimeout(() => {
+        if (!settled) finish("bad", "ĐỎ — quá 8 giây không có HELLO");
+      }, 8000);
+
+      ws.onopen = () => {
+        log(`mở socket  : OK sau ${Date.now() - started} ms`);
+        out.className = "big warn";
+        out.textContent = "Đang chờ HELLO…";
+      };
+      ws.onmessage = (event) => {
+        let frame;
+        try {
+          frame = JSON.parse(event.data);
+        } catch {
+          log(`frame lạ   : ${String(event.data).slice(0, 120)}`);
+          return;
+        }
+        log(`nhận frame : op=${frame.op} t=${frame.t ?? "-"}`);
+        if (frame.op === 10) {
+          finish("ok", "XANH — WebSocket và gateway đều OK");
+        }
+      };
+      ws.onerror = () => {
+        // Trình duyệt cố tình không cho biết lý do cụ thể vì lý do bảo mật.
+        log("onerror    : trình duyệt không tiết lộ chi tiết (thường là bị chặn)");
+        finish("bad", "ĐỎ — trình duyệt/proxy từ chối kết nối");
+      };
+      ws.onclose = (event) => {
+        log(`đóng       : code=${event.code} lý do=${event.reason || "(trống)"} sạch=${event.wasClean}`);
+        if (!settled) finish("bad", `ĐỎ — bị đóng ngay (code ${event.code})`);
+      };
+    </script>
+  </body>
+</html>

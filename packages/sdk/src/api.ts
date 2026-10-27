@@ -1,14 +1,40 @@
 import type {
+  AdminReport,
+  AdminReportPage,
   Channel,
   ChannelOverwrite,
   DmChannelSummary,
   Guild,
   Message,
+  ReactionSummary,
   MessageMention,
+  MessageSearchHit,
+  ReportInput,
+  ReportResult,
+  ReportStatus,
   ReadState,
   Role,
   User,
+  GuildMemberSummary,
+  VoiceState,
+  VoiceToken,
+  FriendList,
+  FriendSummary,
+  FriendRequestSummary,
+  MessageRequestSummary,
+  UserSettings,
+  ThreadSummary,
+  PublicProfile,
+  Sticker,
+  StickerPack,
 } from "@umaru/protocol";
+
+function buildSearchParams(query: string, options: { before?: string; limit?: number }): string {
+  const params = new URLSearchParams({ q: query });
+  if (options.before !== undefined) params.set("before", options.before);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  return `?${params.toString()}`;
+}
 
 export class ApiError extends Error {
   override readonly name = "ApiError";
@@ -35,6 +61,71 @@ export interface AuthResult {
   refreshToken: string;
   tokenType: "Bearer";
   expiresIn: number;
+  /** Đăng nhập bằng mã khôi phục: mã đó đã bị tiêu, không dùng lại được. */
+  usedRecoveryCode?: boolean;
+}
+
+/** Nhà cung cấp đăng nhập ngoài (OAuth2). */
+export type OAuthProviderId = "google" | "github";
+
+export interface OAuthProviderSummary {
+  id: OAuthProviderId;
+  label: string;
+}
+
+/** Dữ liệu để tạo bình chọn khi gửi tin (server kiểm lại toàn bộ). */
+export interface PollInput {
+  question: string;
+  /** 2–10 lựa chọn, mỗi lựa chọn 1–55 ký tự, không trùng nhau. */
+  options: string[];
+  /** Cho chọn nhiều đáp án; mặc định một. */
+  allowMultiple?: boolean;
+  /** Tự kết thúc sau N giờ (1–168); bỏ trống = không hết hạn. */
+  durationHours?: number;
+}
+
+/** Tài khoản ngoài đang liên kết với user hiện tại. */
+export interface LinkedOAuthAccount {
+  provider: OAuthProviderId;
+  label: string;
+  linkedAt: string;
+}
+
+export interface OAuthAccountsResult {
+  accounts: LinkedOAuthAccount[];
+  /** Tài khoản đã có mật khẩu chưa — chưa có thì không gỡ được provider cuối. */
+  hasPassword: boolean;
+}
+
+/** Kết quả đổi mã đăng nhập OAuth — như `AuthResult`, kèm provider vừa dùng. */
+export interface OAuthExchangeResult extends AuthResult {
+  provider: OAuthProviderId | null;
+}
+
+/** Trạng thái xác thực hai lớp của tài khoản đang đăng nhập. */
+export interface SecurityStatus {
+  totpEnabled: boolean;
+  recoveryCodesLeft: number;
+}
+
+export interface TotpSetup {
+  secret: string;
+  /** URI `otpauth://` để authenticator quét/đọc. */
+  otpauthUrl: string;
+  /** Bí mật chia nhóm 4 ký tự — cho người không quét QR. */
+  secretGroups: string;
+}
+
+/** Kết quả đăng ký: như `AuthResult`, kèm dấu hiệu đã gửi mail xác thực. */
+export interface RegisterResult extends AuthResult {
+  emailVerificationSent?: boolean;
+  /** Chỉ có ở dev/test (`EMAIL_VERIFICATION_ECHO`) — production không trả về. */
+  devVerificationToken?: string;
+}
+
+export interface ResendVerificationResult {
+  sent: boolean;
+  devVerificationToken?: string;
 }
 
 export interface RegisterInput {
@@ -42,9 +133,18 @@ export interface RegisterInput {
   displayName: string;
   email: string;
   password: string;
+  /**
+   * Đồng ý Điều khoản & Chính sách quyền riêng tư — server **bắt buộc** `true`,
+   * nên để required ở đây để không quên khi gọi.
+   */
+  acceptedTerms: true;
 }
 
 const API_PREFIX = "/api/v1";
+
+function isFormData(value: unknown): boolean {
+  return typeof FormData !== "undefined" && value instanceof FormData;
+}
 
 /** REST client — phản chiếu services/api. Mọi path tính từ gốc API. */
 export class UmaruApi {
@@ -66,8 +166,16 @@ export class UmaruApi {
       headers: {
         // Chỉ khai content-type khi thực sự có body: Fastify từ chối
         // `content-type: application/json` mà body rỗng (typing, DELETE...).
-        ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
-        ...(token !== null ? { authorization: `Bearer ${token}` } : {}),
+        // FormData phải để trình duyệt tự đặt kèm `boundary`.
+        ...(init.body !== undefined && !isFormData(init.body)
+          ? { "content-type": "application/json" }
+          : {}),
+        // Gửi token ở cả hai header: `Authorization` là chuẩn, `x-umaru-token`
+        // là đường dự phòng vì nhiều reverse proxy bỏ header `Authorization`
+        // (xem services/api/src/auth/guard.ts).
+        ...(token !== null
+          ? { authorization: `Bearer ${token}`, "x-umaru-token": token }
+          : {}),
         ...init.headers,
       },
     });
@@ -90,24 +198,205 @@ export class UmaruApi {
 
   // ---------- auth ----------
 
-  register(input: RegisterInput): Promise<AuthResult> {
-    return this.request<AuthResult>(`${API_PREFIX}/auth/register`, {
+  register(input: RegisterInput): Promise<RegisterResult> {
+    return this.request<RegisterResult>(`${API_PREFIX}/auth/register`, {
       method: "POST",
       body: JSON.stringify(input),
     });
   }
 
-  login(email: string, password: string): Promise<AuthResult> {
+  /**
+   * Đăng nhập. Khi tài khoản đã bật 2FA, lần gọi đầu **không** kèm mã sẽ nhận
+   * lỗi 401 `TOTP_REQUIRED` — gọi lại cùng email/mật khẩu kèm `totp.code`
+   * hoặc `totp.recoveryCode`.
+   */
+  login(
+    email: string,
+    password: string,
+    totp: { code?: string; recoveryCode?: string } = {},
+  ): Promise<AuthResult> {
     return this.request<AuthResult>(`${API_PREFIX}/auth/login`, {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({
+        email,
+        password,
+        ...(totp.code === undefined ? {} : { totpCode: totp.code }),
+        ...(totp.recoveryCode === undefined ? {} : { recoveryCode: totp.recoveryCode }),
+      }),
     });
+  }
+
+/**
+   * Provider đang bật trên server (thiếu id hoặc secret thì không xuất hiện).
+   * SPA dùng để biết vẽ nút nào — gọi được cả khi chưa đăng nhập.
+   */
+  oauthProviders(): Promise<{ providers: OAuthProviderSummary[] }> {
+    return this.request<{ providers: OAuthProviderSummary[] }>(
+      `${API_PREFIX}/auth/oauth/providers`,
+    );
+  }
+
+  /**
+   * Lấy URL đồng ý của provider. `acceptedTerms` phải là `true` khi đăng ký tài
+   * khoản mới qua OAuth — server giữ cờ này qua redirect và kiểm lại.
+   */
+  oauthStart(
+    provider: OAuthProviderId,
+    options: { acceptedTerms?: boolean; redirect?: string } = {},
+  ): Promise<{ url: string }> {
+    const params = new URLSearchParams();
+    if (options.acceptedTerms === true) params.set("acceptedTerms", "1");
+    if (options.redirect !== undefined) params.set("redirect", options.redirect);
+    const query = params.toString();
+    return this.request<{ url: string }>(
+      `${API_PREFIX}/auth/oauth/${provider}/start${query === "" ? "" : `?${query}`}`,
+    );
+  }
+
+  /** Đổi mã một lần (từ `?oauth_code=`) lấy token — 2FA được kiểm ở đây. */
+  oauthExchange(
+    code: string,
+    totp: { code?: string; recoveryCode?: string } = {},
+  ): Promise<OAuthExchangeResult> {
+    return this.request<OAuthExchangeResult>(`${API_PREFIX}/auth/oauth/exchange`, {
+      method: "POST",
+      body: JSON.stringify({
+        code,
+        ...(totp.code === undefined ? {} : { totpCode: totp.code }),
+        ...(totp.recoveryCode === undefined ? {} : { recoveryCode: totp.recoveryCode }),
+      }),
+    });
+  }
+
+  /** Các provider đang liên kết với tài khoản hiện tại. */
+  oauthAccounts(): Promise<OAuthAccountsResult> {
+    return this.request<OAuthAccountsResult>(`${API_PREFIX}/users/@me/oauth`);
+  }
+
+  /**
+   * Đặt/đổi mật khẩu. Tài khoản OAuth-only (`password_hash = NULL`) không cần
+   * `currentPassword`; tài khoản đã có mật khẩu thì **bắt buộc**.
+   */
+  setPassword(password: string, currentPassword?: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/password`, {
+      method: "POST",
+      body: JSON.stringify({
+        password,
+        ...(currentPassword === undefined ? {} : { currentPassword }),
+      }),
+    });
+  }
+
+  /** Gỡ liên kết provider khỏi chính mình (server chặn gỡ cách đăng nhập cuối). */
+  unlinkOAuth(provider: OAuthProviderId): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/oauth/${provider}`, {
+      method: "DELETE",
+    });
+  }
+
+  /** Trạng thái 2FA của chính mình (dùng cho phần cài đặt bảo mật). */
+  security(): Promise<SecurityStatus> {
+    return this.request<SecurityStatus>(`${API_PREFIX}/users/@me/security`);
+  }
+
+  /** Sinh bí mật mới (chưa có hiệu lực cho tới `enableTotp`). */
+  setupTotp(): Promise<TotpSetup> {
+    return this.request<TotpSetup>(`${API_PREFIX}/users/@me/security/totp/setup`, {
+      method: "POST",
+    });
+  }
+
+  /** Xác nhận mã đầu tiên; trả bộ mã khôi phục **chỉ hiện một lần**. */
+  enableTotp(code: string): Promise<{ recoveryCodes: string[] }> {
+    return this.request<{ recoveryCodes: string[] }>(
+      `${API_PREFIX}/users/@me/security/totp/enable`,
+      { method: "POST", body: JSON.stringify({ code }) },
+    );
+  }
+
+  /** Tắt 2FA — cần mật khẩu hiện tại. */
+  disableTotp(password: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/security/totp/disable`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    });
+  }
+
+  /** Sinh lại bộ mã khôi phục (cần mật khẩu). */
+  regenerateRecoveryCodes(password: string): Promise<{ recoveryCodes: string[] }> {
+    return this.request<{ recoveryCodes: string[] }>(
+      `${API_PREFIX}/users/@me/security/recovery-codes`,
+      { method: "POST", body: JSON.stringify({ password }) },
+    );
   }
 
   refresh(refreshToken: string): Promise<AuthResult> {
     return this.request<AuthResult>(`${API_PREFIX}/auth/refresh`, {
       method: "POST",
       body: JSON.stringify({ refreshToken }),
+    });
+  }
+
+  /** Xác thực email bằng token trong link (không cần đăng nhập). */
+  verifyEmail(token: string): Promise<{ user: User }> {
+    return this.request<{ user: User }>(`${API_PREFIX}/auth/verify-email`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  }
+
+  /** Gửi lại mail xác thực (cần đăng nhập; server có cooldown). */
+  resendVerification(): Promise<ResendVerificationResult> {
+    return this.request<ResendVerificationResult>(`${API_PREFIX}/auth/verify-email/resend`, {
+      method: "POST",
+    });
+  }
+
+  /** Danh sách người tôi đã chặn. */
+  listBlocks(): Promise<GuildMemberSummary[]> {
+    return this.request<GuildMemberSummary[]>(`${API_PREFIX}/users/@me/blocks`);
+  }
+
+  /** Chặn một người (idempotent). Chặn cắt DM cả hai chiều. */
+  blockUser(userId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/blocks/${userId}`, { method: "PUT" });
+  }
+
+  unblockUser(userId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/blocks/${userId}`, { method: "DELETE" });
+  }
+
+  /** Gửi báo cáo vi phạm: `messageId` (một tin) hoặc `userId` (một người). */
+  createReport(input: ReportInput): Promise<ReportResult> {
+    return this.request<ReportResult>(`${API_PREFIX}/reports`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * Người vận hành nền tảng: xem hàng đợi báo cáo vi phạm.
+   * Thiếu quyền → `ApiError` 403 (client ẩn lối vào, nhưng quyền luôn kiểm ở server).
+   */
+  getAdminStatus(): Promise<{ admin: boolean }> {
+    return this.request<{ admin: boolean }>(`${API_PREFIX}/admin/status`);
+  }
+
+  listAdminReports(
+    options: { status?: ReportStatus; before?: string; limit?: number } = {},
+  ): Promise<AdminReportPage> {
+    const params = new URLSearchParams();
+    if (options.status !== undefined) params.set("status", options.status);
+    if (options.before !== undefined) params.set("before", options.before);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<AdminReportPage>(`${API_PREFIX}/admin/reports${query}`);
+  }
+
+  setReportStatus(reportId: string, status: ReportStatus): Promise<AdminReport> {
+    return this.request<AdminReport>(`${API_PREFIX}/admin/reports/${reportId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
     });
   }
 
@@ -169,6 +458,8 @@ export class UmaruApi {
       topic?: string | null;
       parentId?: string | null;
       position?: number;
+      /** Slowmode 0..21600 giây; 0 hoặc `null` = tắt. */
+      slowmodeSeconds?: number | null;
     },
   ): Promise<Channel> {
     return this.request<Channel>(`${API_PREFIX}/channels/${channelId}`, {
@@ -188,6 +479,38 @@ export class UmaruApi {
     return this.request<DmChannelSummary>(`${API_PREFIX}/users/@me/channels`, {
       method: "POST",
       body: JSON.stringify({ recipientId }),
+    });
+  }
+
+  /** Tạo group DM mới với 2–9 người khác (tối đa 10 người tính cả mình). */
+  createGroupDm(recipientIds: string[], name?: string): Promise<DmChannelSummary> {
+    return this.request<DmChannelSummary>(`${API_PREFIX}/users/@me/channels`, {
+      method: "POST",
+      body: JSON.stringify(name === undefined ? { recipientIds } : { recipientIds, name }),
+    });
+  }
+
+  /** Thêm người vào group DM (mọi thành viên đều mời được). */
+  addGroupRecipient(channelId: string, userId: string): Promise<DmChannelSummary> {
+    return this.request<DmChannelSummary>(`${API_PREFIX}/channels/${channelId}/recipients`, {
+      method: "POST",
+      body: JSON.stringify({ userId }),
+    });
+  }
+
+  /** Rời nhóm (`userId` = "@me") hoặc mời người khác ra (chỉ chủ nhóm). */
+  removeGroupRecipient(channelId: string, userId: string): Promise<void> {
+    return this.request<void>(
+      `${API_PREFIX}/channels/${channelId}/recipients/${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /** Đổi tên nhóm; `null`/rỗng = bỏ tên, quay lại ghép tên thành viên. */
+  renameGroupDm(channelId: string, name: string | null): Promise<DmChannelSummary> {
+    return this.request<DmChannelSummary>(`${API_PREFIX}/channels/${channelId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
     });
   }
 
@@ -222,10 +545,15 @@ export class UmaruApi {
     });
   }
 
+  /**
+   * Sửa role. `position` là **thứ hạng kéo-thả** (0 = trên cùng, không tính
+   * `@everyone`) — server renumber lại cả dãy và phát `ROLE_UPDATE` cho những
+   * role đổi chỗ.
+   */
   editRole(
     guildId: string,
     roleId: string,
-    input: { name?: string; color?: number; permissions?: string },
+    input: { name?: string; color?: number; permissions?: string; position?: number },
   ): Promise<Role> {
     return this.request<Role>(`${API_PREFIX}/guilds/${guildId}/roles/${roleId}`, {
       method: "PATCH",
@@ -302,10 +630,81 @@ export class UmaruApi {
     return this.request<Message[]>(`${API_PREFIX}/channels/${channelId}/messages${query}`);
   }
 
-  sendMessage(channelId: string, content: string, replyToId?: string): Promise<Message> {
-    return this.request<Message>(`${API_PREFIX}/channels/${channelId}/messages`, {
+  /**
+   * Tìm tin nhắn trong một kênh (kênh server hoặc DM).
+   * `q` tối thiểu 2 ký tự; kết quả mới nhất trước, phân trang bằng `before`.
+   */
+  searchChannelMessages(
+    channelId: string,
+    query: string,
+    options: { before?: string; limit?: number } = {},
+  ): Promise<MessageSearchHit[]> {
+    return this.request<MessageSearchHit[]>(
+      `${API_PREFIX}/channels/${channelId}/messages/search${buildSearchParams(query, options)}`,
+    );
+  }
+
+  /** Tìm tin nhắn trong toàn server (chỉ những kênh user được xem). */
+  searchGuildMessages(
+    guildId: string,
+    query: string,
+    options: { before?: string; limit?: number } = {},
+  ): Promise<MessageSearchHit[]> {
+    return this.request<MessageSearchHit[]>(
+      `${API_PREFIX}/guilds/${guildId}/messages/search${buildSearchParams(query, options)}`,
+    );
+  }
+
+  /**
+   * Gửi tin. Có `files` → dùng `multipart/form-data` (cùng đường dẫn API); không
+   * có file → JSON như cũ. Tham số thứ ba nhận cả chuỗi `replyToId` (kiểu cũ)
+   * lẫn object tuỳ chọn để không phải sửa mọi chỗ gọi.
+   *
+   * `stickerId` chỉ đi đường JSON: sticker không trộn với tệp hay poll.
+   */
+  sendMessage(
+    channelId: string,
+    content: string,
+    options:
+      | string
+      | { replyToId?: string; files?: File[]; poll?: PollInput; stickerId?: string } = {},
+  ): Promise<Message> {
+    const settings = typeof options === "string" ? { replyToId: options } : options;
+    const path = `${API_PREFIX}/channels/${channelId}/messages`;
+
+    if (settings.files !== undefined && settings.files.length > 0) {
+      const form = new FormData();
+      if (content.length > 0) form.set("content", content);
+      if (settings.replyToId !== undefined && settings.replyToId !== "") {
+        form.set("replyToId", settings.replyToId);
+      }
+      for (const file of settings.files) {
+        form.append("files", file, file.name);
+      }
+      return this.request<Message>(path, { method: "POST", body: form });
+    }
+
+    // Poll chỉ đi đường JSON: tin có tệp thì không trộn poll (giống Discord), và
+    // multipart không mang được object lồng nhau.
+    return this.request<Message>(path, {
       method: "POST",
-      body: JSON.stringify({ content, replyToId }),
+      body: JSON.stringify({
+        content,
+        replyToId: settings.replyToId,
+        ...(settings.poll === undefined ? {} : { poll: settings.poll }),
+        ...(settings.stickerId === undefined ? {} : { stickerId: settings.stickerId }),
+      }),
+    });
+  }
+
+  /**
+   * Bỏ phiếu trong poll: gửi **toàn bộ** lựa chọn của mình (mảng rỗng = rút
+   * phiếu). Một lời gọi thay cả trạng thái nên không có lúc lửng lơ hai phiếu.
+   */
+  votePoll(messageId: string, optionIds: string[]): Promise<Message> {
+    return this.request<Message>(`${API_PREFIX}/messages/${messageId}/poll/votes`, {
+      method: "POST",
+      body: JSON.stringify({ optionIds }),
     });
   }
 
@@ -316,8 +715,345 @@ export class UmaruApi {
     });
   }
 
+  // ---------- sticker ----------
+
+  /** Gói sticker của một server, kèm sticker bên trong. */
+  listStickerPacks(guildId: string): Promise<StickerPack[]> {
+    return this.request<StickerPack[]>(`${API_PREFIX}/guilds/${guildId}/sticker-packs`);
+  }
+
+  createStickerPack(guildId: string, name: string): Promise<StickerPack> {
+    return this.request<StickerPack>(`${API_PREFIX}/guilds/${guildId}/sticker-packs`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  renameStickerPack(packId: string, name: string): Promise<StickerPack> {
+    return this.request<StickerPack>(`${API_PREFIX}/sticker-packs/${packId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  deleteStickerPack(packId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/sticker-packs/${packId}`, { method: "DELETE" });
+  }
+
+  /**
+   * Tải sticker lên. `FormData` gửi `name` + file; không tự đặt `content-type`
+   * để trình duyệt tự thêm `boundary`.
+   */
+  uploadSticker(packId: string, name: string, file: File): Promise<Sticker> {
+    const form = new FormData();
+    form.set("name", name);
+    form.append("file", file, file.name);
+    return this.request<Sticker>(`${API_PREFIX}/sticker-packs/${packId}/stickers`, {
+      method: "POST",
+      body: form,
+    });
+  }
+
+  deleteSticker(stickerId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/stickers/${stickerId}`, { method: "DELETE" });
+  }
+
+  /**
+   * Tải nội dung ảnh sticker. Nhận đúng `Sticker.imageUrl`; trả `Blob` để client
+   * dựng object URL — token không nằm trong `<img src>`.
+   */
+  async fetchSticker(imageUrl: string): Promise<Blob> {
+    const url = imageUrl.startsWith("http") ? imageUrl : `${this.baseUrl}${imageUrl}`;
+    const token = this.getToken();
+    const response = await this.fetchImpl(url, {
+      headers:
+        token !== null ? { authorization: `Bearer ${token}`, "x-umaru-token": token } : {},
+    });
+    if (!response.ok) {
+      throw new ApiError(response.status, `API ${url} thất bại: ${response.status}`);
+    }
+    return response.blob();
+  }
+
+  /**
+   * Tải nội dung tệp đính kèm. Trả `Blob` để client tự dựng object URL —
+   * không đặt token vào query string / `<img src>` (tránh lộ token qua log,
+   * referrer, cache của trình duyệt).
+   */
+  async fetchAttachment(attachmentId: string): Promise<Blob> {
+    const url = `${this.baseUrl}${API_PREFIX}/attachments/${attachmentId}`;
+    const token = this.getToken();
+    const response = await this.fetchImpl(url, {
+      headers:
+        token !== null
+          ? { authorization: `Bearer ${token}`, "x-umaru-token": token }
+          : {},
+    });
+    if (!response.ok) {
+      throw new ApiError(response.status, `API ${url} thất bại: ${response.status}`);
+    }
+    return response.blob();
+  }
+
+  /**
+   * Đặt ảnh đại diện. Dùng `FormData` để trình duyệt tự đặt `boundary` —
+   * **không** tự gắn `content-type`.
+   */
+  updateAvatar(file: File): Promise<User> {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return this.request<User>(`${API_PREFIX}/users/@me/avatar`, { method: "PUT", body: form });
+  }
+
+  /** Gỡ ảnh đại diện (quay lại chữ cái đầu). */
+  removeAvatar(): Promise<User> {
+    return this.request<User>(`${API_PREFIX}/users/@me/avatar`, { method: "DELETE" });
+  }
+
+  /**
+   * Sửa hồ sơ công khai. Trường vắng mặt = giữ nguyên, `null` = xoá.
+   */
+  updateProfile(patch: {
+    bio?: string | null;
+    pronouns?: string | null;
+    bannerColor?: string | null;
+  }): Promise<User> {
+    return this.request<User>(`${API_PREFIX}/users/@me/profile`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  /**
+   * Hồ sơ một người khác. Chỉ trả khi có liên hệ (chung server/bạn/DM), nếu
+   * không là 404 — đừng coi 404 là "người này không tồn tại".
+   */
+  getPublicProfile(userId: string): Promise<PublicProfile> {
+    return this.request<PublicProfile>(`${API_PREFIX}/users/${userId}/profile`);
+  }
+
+  /**
+   * Tải nội dung avatar. Nhận đúng giá trị `User.avatarUrl`
+   * (`/api/v1/users/:id/avatar/:uploadId`). Trả `Blob` để client dựng object
+   * URL — không đặt token vào URL.
+   */
+  async fetchAvatar(avatarUrl: string): Promise<Blob> {
+    const url = avatarUrl.startsWith("http")
+      ? avatarUrl
+      : `${this.baseUrl}${avatarUrl}`;
+    const token = this.getToken();
+    const response = await this.fetchImpl(url, {
+      headers:
+        token !== null ? { authorization: `Bearer ${token}`, "x-umaru-token": token } : {},
+    });
+    if (!response.ok) {
+      throw new ApiError(response.status, `API ${url} thất bại: ${response.status}`);
+    }
+    return response.blob();
+  }
+
+  /**
+   * Ghim một tin (cần `MANAGE_MESSAGES` trong server; DM ai trong cuộc cũng
+   * ghim được). Trả về tin sau khi ghim (`pinned: true`).
+   */
+  pinMessage(messageId: string): Promise<Message> {
+    return this.request<Message>(`${API_PREFIX}/messages/${messageId}/pin`, { method: "PUT" });
+  }
+
+  /** Bỏ ghim (idempotent). */
+  unpinMessage(messageId: string): Promise<Message> {
+    return this.request<Message>(`${API_PREFIX}/messages/${messageId}/pin`, {
+      method: "DELETE",
+    });
+  }
+
+  /** Danh sách tin đã ghim của kênh, mới ghim trước (tối đa 50). */
+  /** Thread đang mở của kênh (`archived` để xem kho lưu trữ). */
+  listThreads(channelId: string, options: { archived?: boolean } = {}): Promise<ThreadSummary[]> {
+    const query = options.archived === true ? "?archived=1" : "";
+    return this.request<ThreadSummary[]>(`${API_PREFIX}/channels/${channelId}/threads${query}`);
+  }
+
+  /**
+   * Tạo thread trong kênh. `messageId` = tạo từ tin gốc (một tin chỉ một thread
+   * đang mở); bỏ trống = thread rỗng, đặt tên bằng `name`.
+   */
+  createThread(
+    channelId: string,
+    input: { messageId?: string; name?: string } = {},
+  ): Promise<ThreadSummary> {
+    return this.request<ThreadSummary>(`${API_PREFIX}/channels/${channelId}/threads`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Đổi tên / lưu trữ / mở lại thread (chủ thread hoặc `MANAGE_CHANNELS`). */
+  updateThread(
+    threadId: string,
+    input: { name?: string; archived?: boolean },
+  ): Promise<ThreadSummary> {
+    return this.request<ThreadSummary>(`${API_PREFIX}/channels/${threadId}/thread`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Xoá hẳn thread cùng tin nhắn của nó. */
+  deleteThread(threadId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/channels/${threadId}/thread`, { method: "DELETE" });
+  }
+
+  listPinnedMessages(channelId: string, limit?: number): Promise<Message[]> {
+    const query = limit === undefined ? "" : `?limit=${limit}`;
+    return this.request<Message[]>(`${API_PREFIX}/channels/${channelId}/pins${query}`);
+  }
+
+  /**
+   * Vào phòng thoại của kênh voice (idempotent; đổi kênh thì tự rời kênh cũ).
+   * Chưa truyền âm thanh — đây là lớp trạng thái "ai đang ở phòng nào".
+   */
+  joinVoice(channelId: string): Promise<VoiceState> {
+    return this.request<VoiceState>(`${API_PREFIX}/channels/${channelId}/voice`, {
+      method: "PUT",
+    });
+  }
+
+  /** Rời phòng thoại (idempotent). */
+  leaveVoice(channelId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/channels/${channelId}/voice`, { method: "DELETE" });
+  }
+
+  /** Tự mute/deafen trong phòng thoại đang ở. */
+  updateVoiceState(
+    guildId: string,
+    patch: { selfMute?: boolean; selfDeaf?: boolean },
+  ): Promise<VoiceState> {
+    return this.request<VoiceState>(`${API_PREFIX}/guilds/${guildId}/voice-state`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  /** Bạn bè + lời mời (hai chiều) + quyền riêng tư DM của mình. */
+  listFriends(): Promise<FriendList> {
+    return this.request<FriendList>(`${API_PREFIX}/users/@me/friends`);
+  }
+
+  /**
+   * Gửi lời mời kết bạn bằng `username`. Nếu người kia đã mời mình trước thì
+   * lời gọi này **đồng ý luôn** (server trả `FriendSummary` thay vì lời mời).
+   */
+  addFriend(username: string): Promise<FriendRequestSummary | FriendSummary> {
+    return this.request<FriendRequestSummary | FriendSummary>(`${API_PREFIX}/users/@me/friends`, {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    });
+  }
+
+  /** Yêu cầu nhắn tin đang chờ mình duyệt (người lạ mở DM khi mình đặt "chỉ bạn bè"). */
+  listMessageRequests(): Promise<MessageRequestSummary[]> {
+    return this.request<MessageRequestSummary[]>(`${API_PREFIX}/users/@me/message-requests`);
+  }
+
+  /** Đồng ý → cuộc trò chuyện thành DM bình thường (trả summary để client mở luôn). */
+  acceptMessageRequest(channelId: string): Promise<DmChannelSummary> {
+    return this.request<DmChannelSummary>(
+      `${API_PREFIX}/users/@me/message-requests/${channelId}/accept`,
+      { method: "POST" },
+    );
+  }
+
+  /** Từ chối → cuộc trò chuyện bị xoá với cả hai bên (không giữ nội dung). */
+  declineMessageRequest(channelId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/message-requests/${channelId}/decline`, {
+      method: "POST",
+    });
+  }
+
+  acceptFriendRequest(userId: string): Promise<FriendSummary> {
+    return this.request<FriendSummary>(`${API_PREFIX}/users/@me/friends/${userId}/accept`, {
+      method: "POST",
+    });
+  }
+
+  /**
+   * Token vào phòng **âm thanh** của kênh thoại đang ở (LiveKit).
+   *
+   * Server trả 404 nếu chưa join phòng bằng `joinVoice`, 503 nếu server chưa
+   * cấu hình SFU — client hiểu 503 là "chỉ có trạng thái, chưa có tiếng".
+   */
+  getVoiceToken(channelId: string): Promise<VoiceToken> {
+    return this.request<VoiceToken>(`${API_PREFIX}/channels/${channelId}/voice/token`);
+  }
+
+  // ---------- thông báo đẩy (Web Push) ----------
+
+  /** Khoá công khai VAPID để trình duyệt tạo subscription. 503 = server chưa bật. */
+  getPushPublicKey(): Promise<{ publicKey: string }> {
+    return this.request<{ publicKey: string }>(`${API_PREFIX}/push/public-key`);
+  }
+
+  /** Đăng ký một subscription của trình duyệt (idempotent theo endpoint). */
+  savePushSubscription(input: {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+  }): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/push/subscriptions`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Huỷ subscription (idempotent — không có cũng không lỗi). */
+  deletePushSubscription(endpoint: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/push/subscriptions`, {
+      method: "DELETE",
+      body: JSON.stringify({ endpoint }),
+    });
+  }
+
+  /** Gửi một thông báo thử tới chính mình; trả số subscription đã gửi được. */
+  sendTestPush(channelId?: string): Promise<{ delivered: number; failed: number }> {
+    return this.request<{ delivered: number; failed: number }>(`${API_PREFIX}/push/test`, {
+      method: "POST",
+      body: JSON.stringify(channelId === undefined ? {} : { channelId }),
+    });
+  }
+
+  /** Huỷ kết bạn / từ chối lời mời / huỷ lời mời đã gửi (idempotent). */
+  removeFriend(userId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/users/@me/friends/${userId}`, { method: "DELETE" });
+  }
+
+  updateSettings(patch: { dmPrivacy?: "everyone" | "friends" }): Promise<UserSettings> {
+    return this.request<UserSettings>(`${API_PREFIX}/users/@me/settings`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
   deleteMessage(messageId: string): Promise<void> {
     return this.request<void>(`${API_PREFIX}/messages/${messageId}`, { method: "DELETE" });
+  }
+
+  /**
+   * Thả emoji vào tin. Emoji nằm trong đường dẫn nên phải `encodeURIComponent`
+   * (Fastify giải mã lại); gọi lại nhiều lần là idempotent.
+   */
+  addReaction(messageId: string, emoji: string): Promise<{ reactions: ReactionSummary[] }> {
+    return this.request<{ reactions: ReactionSummary[] }>(
+      `${API_PREFIX}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
+      { method: "PUT" },
+    );
+  }
+
+  /** Bỏ emoji khỏi tin (idempotent: bỏ cái chưa thả vẫn 200). */
+  removeReaction(messageId: string, emoji: string): Promise<{ reactions: ReactionSummary[] }> {
+    return this.request<{ reactions: ReactionSummary[] }>(
+      `${API_PREFIX}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
+      { method: "DELETE" },
+    );
   }
 
   /** Đánh dấu đã đọc tới `messageId` (bỏ trống = tin mới nhất của kênh). */

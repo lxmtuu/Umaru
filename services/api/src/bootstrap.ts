@@ -12,9 +12,12 @@ import {
   type ReadState,
   type Role,
   type Snowflake,
+  type ThreadSummary,
+  type VoiceState,
 } from "@umaru/protocol";
 import type { Pool } from "./db.js";
 import { mapChannel, mapGuild, mapRole, type ChannelRow, type GuildRow } from "./mappers.js";
+import { listActiveThreadsForGuilds } from "./threads/store.js";
 
 export interface GuildBootstrap {
   guild: Guild;
@@ -35,6 +38,13 @@ export interface Bootstrap {
   guildIds: Set<string>;
   /** channelId → quyền hiệu dụng của user (chuỗi thập phân) — gửi kèm READY. */
   channelPermissions: Record<string, string>;
+  /** Ai đang ở phòng thoại nào, **chỉ** trong các kênh user xem được. */
+  voiceStates: VoiceState[];
+  /**
+   * Thread **đang mở** trong các server user là thành viên. Thread đã lưu trữ
+   * không gửi kèm (tải khi mở kho lưu trữ) để READY không phình theo thời gian.
+   */
+  threads: ThreadSummary[];
 }
 
 /** DM không có role/overwrite: hai người trong cuộc đều có đúng ba quyền này. */
@@ -61,46 +71,107 @@ interface OverwriteRow {
 
 interface DmRow {
   id: string;
-  recipient_id: string;
-  username: string;
-  display_name: string;
-  avatar_url: string | null;
+  request_pending: boolean;
+  type: "dm" | "group_dm";
+  group_name: string | null;
+  owner_id: string | null;
+  /**
+   * Gộp từ `string_agg`: mỗi người là `id\x1eusername\x1edisplayName\x1eavatarUrl`,
+   * các người cách nhau `\x1f`.
+   */
+  members: string;
 }
 
 /**
- * DM 1-1 của một user kèm thông tin người ở đầu bên kia.
- * DM luôn có đúng 2 channel_member → JOIN ra 1 dòng/người.
+ * Cuộc trò chuyện riêng của một user (DM 1-1 **và** group DM), mới nhất trước.
+ *
+ * Một truy vấn gộp cho cả hai loại: `string_agg` gom mọi người **khác mình** trong
+ * kênh thành một chuỗi, client tách ra. Tránh N+1 khi sidebar có nhiều nhóm.
+ *
+ * DM 1-1 mà một trong hai đã chặn thì biến khỏi danh sách của **cả hai** (giữ
+ * nguyên hành vi cũ). Group DM **không** bị ẩn vì block là chuyện giữa hai
+ * người — một người chặn không được làm cả nhóm biến mất với người kia.
  */
 export async function loadDms(pool: Pool, userId: Snowflake): Promise<DmChannelSummary[]> {
   const result = await pool.query<DmRow>(
-    `SELECT c.id, u.id AS recipient_id, u.username, u.display_name, u.avatar_url
+    `SELECT c.id,
+            c.type,
+            g.name AS group_name,
+            g.owner_id,
+            -- Yêu cầu chờ duyệt: chỉ **người gửi** thấy kênh trong danh sách (kèm
+            -- cờ này); người nhận bị lọc ở WHERE bên dưới cho tới khi họ đồng ý.
+            EXISTS (SELECT 1 FROM dm_requests dr WHERE dr.channel_id = c.id) AS request_pending,
+            -- Hai ký tự điều khiển làm phân cách: tên hiển thị có thể chứa dấu
+            -- hai chấm hoặc dấu phẩy nên không dùng ký tự in được.
+            coalesce(string_agg(
+              concat_ws(chr(30), u.id, u.username, u.display_name, coalesce(u.avatar_url, '')),
+              chr(31) ORDER BY u.id
+            ), '') AS members
        FROM channels c
        JOIN channel_members mine ON mine.channel_id = c.id AND mine.user_id = $1
-       JOIN channel_members theirs ON theirs.channel_id = c.id AND theirs.user_id <> $1
-       JOIN users u ON u.id = theirs.user_id
-      WHERE c.type = 'dm' AND c.guild_id IS NULL
+       -- LEFT JOIN vì group DM có thể còn **đúng một** thành viên (mọi người khác
+       -- đã rời). Nếu INNER JOIN thì nhóm đó biến mất khỏi danh sách của người
+       -- cuối cùng → họ không thể rời nốt và kênh thành rác vĩnh viễn.
+       LEFT JOIN channel_members theirs ON theirs.channel_id = c.id AND theirs.user_id <> $1
+       LEFT JOIN users u ON u.id = theirs.user_id
+       LEFT JOIN group_dms g ON g.channel_id = c.id
+      WHERE c.type IN ('dm', 'group_dm') AND c.guild_id IS NULL
+        -- Yêu cầu nhắn tin chưa được duyệt: người nhận **không** thấy kênh, nên
+        -- không nhận được fan-out tin nhắn (visibleChannels dựng từ đây) — người
+        -- gửi vẫn thấy bình thường, kèm cờ requestPending.
+        AND NOT EXISTS (
+          SELECT 1 FROM dm_requests dr WHERE dr.channel_id = c.id AND dr.recipient_id = $1
+        )
+        -- DM 1-1 luôn phải có người bên kia; group DM thì không.
+        AND (c.type = 'group_dm' OR theirs.user_id IS NOT NULL)
+        AND (
+          c.type = 'group_dm'
+          -- DM 1-1: ẩn nếu có block theo bất kỳ chiều nào giữa hai người.
+          OR NOT EXISTS (
+            SELECT 1 FROM relationships rb
+             WHERE rb.type = 'blocked'
+               AND ((rb.user_id = $1 AND rb.target_id = theirs.user_id)
+                 OR (rb.user_id = theirs.user_id AND rb.target_id = $1))
+          )
+        )
+      GROUP BY c.id, c.type, g.name, g.owner_id
       ORDER BY c.id DESC`,
     [userId],
   );
-  return result.rows.map((row) => ({
-    channel: {
-      id: row.id as Snowflake,
-      guildId: null,
-      type: "dm",
-      name: null,
-      topic: null,
-      categoryId: null,
-      position: 0,
-    },
-    recipient: {
-      userId: row.recipient_id as Snowflake,
-      username: row.username,
-      displayName: row.display_name,
-      avatarUrl: row.avatar_url,
-      // Người nhận DM không thuộc guild nào của mình → không có role để hiện.
-      roleIds: [],
-    },
-  }));
+  return result.rows.map((row) => {
+    const recipients = row.members
+      .split("\x1f")
+      .filter((part) => part.length > 0)
+      .map((part) => {
+        const [id = "", username = "", displayName = "", avatarUrl = ""] = part.split("\x1e");
+        return {
+          userId: id as Snowflake,
+          username,
+          displayName,
+          avatarUrl: avatarUrl === "" ? null : avatarUrl,
+          // Người trong DM không thuộc guild nào của mình → không có role để hiện.
+          roleIds: [],
+        } satisfies GuildMemberSummary;
+      });
+    const isGroup = row.type === "group_dm";
+    return {
+      channel: {
+        id: row.id as Snowflake,
+        guildId: null,
+        type: row.type,
+        name: isGroup ? row.group_name : null,
+        topic: null,
+        categoryId: null,
+        position: 0,
+        slowmodeSeconds: 0,
+      },
+      recipient: isGroup ? null : (recipients[0] ?? null),
+      recipients,
+      ownerId: row.owner_id === null ? null : (row.owner_id as Snowflake),
+      name: isGroup ? row.group_name : null,
+      requestPending: row.request_pending,
+    };
+  });
 }
 
 /**
@@ -171,6 +242,8 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
       visibleChannels,
       guildIds: new Set(),
       channelPermissions,
+      voiceStates: [],
+      threads: [],
     };
   }
 
@@ -183,7 +256,7 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
     memberResult,
   ] = await Promise.all([
     pool.query<ChannelRow>(
-      `SELECT id, guild_id, type, name, topic, parent_id, position
+      `SELECT id, guild_id, type, name, topic, parent_id, position, slowmode_seconds
          FROM channels WHERE guild_id = ANY($1::bigint[])
         ORDER BY position, id`,
       [guildIds],
@@ -281,7 +354,10 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
       });
       if (!hasPermission(permissions, Permission.VIEW_CHANNEL)) continue;
       channelPermissions[channel.id] = serializePermissions(permissions);
-      channels.push(mapChannel(channel));
+      // Thread **không** thuộc sidebar: client nhận qua `threads` + `THREAD_CREATE`.
+      // Nhưng vẫn vào `visibleChannels` thì tin trong thread mới fan-out tới
+      // người đang mở kênh cha — đúng lý do thread dùng chung `channels`.
+      if (channel.type !== "guild_thread") channels.push(mapChannel(channel));
       // Category không nhận message nên không cần nằm trong tập fan-out.
       if (channel.type !== "category") visibleChannels.add(channel.id);
     }
@@ -309,7 +385,44 @@ export async function loadBootstrap(pool: Pool, userId: Snowflake): Promise<Boot
     visibleChannels,
     guildIds: new Set(guildIds),
     channelPermissions,
+    // Lọc theo `visibleChannels` **trong SQL**: người không có VIEW_CHANNEL của
+    // phòng thoại không được biết ai đang ở trong đó (cùng tiêu chí §8 với tin
+    // nhắn). Lọc ở tầng này nên không có đường nào lọt qua READY.
+    voiceStates: await loadVoiceStates(pool, [...visibleChannels]),
+    threads: await listActiveThreadsForGuilds(pool, guildIds),
   };
+}
+
+interface VoiceStateRow {
+  guild_id: string;
+  channel_id: string;
+  user_id: string;
+  self_mute: boolean;
+  self_deaf: boolean;
+  joined_at: Date;
+}
+
+/** Trạng thái phòng thoại của một tập kênh (đã kiểm quyền xem ở nơi gọi). */
+export async function loadVoiceStates(
+  pool: Pool,
+  channelIds: string[],
+): Promise<VoiceState[]> {
+  if (channelIds.length === 0) return [];
+  const result = await pool.query<VoiceStateRow>(
+    `SELECT guild_id, channel_id, user_id, self_mute, self_deaf, joined_at
+       FROM voice_states
+      WHERE channel_id = ANY($1::bigint[])
+      ORDER BY joined_at, user_id`,
+    [channelIds],
+  );
+  return result.rows.map((row) => ({
+    guildId: row.guild_id as Snowflake,
+    channelId: row.channel_id as Snowflake,
+    userId: row.user_id as Snowflake,
+    selfMute: row.self_mute,
+    selfDeaf: row.self_deaf,
+    joinedAt: row.joined_at.toISOString(),
+  }));
 }
 
 interface ReadStateRow {

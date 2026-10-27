@@ -43,13 +43,13 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 
 | Chức năng | Mô tả | ƯU TIÊN |
 |-----------|-------|---------|
-| Đăng ký/đăng nhập email + xác thực email | Credential cơ bản, gửi mail xác minh | P0 |
+| Đăng ký/đăng nhập email + xác thực email | Credential cơ bản, gửi mail xác minh — ✅ đã có (SMTP qua `SMTP_URL`, dev ghi mail ra log) | P0 |
 | Đăng nhập OAuth2 (Google, Apple, GitHub...) | Giảm ma sát đăng ký | P1 |
 | Username + Display name (hệ thống mới, không còn `#0001`) | Discord đã bỏ discriminator | P0 |
-| Avatar, banner, bio, pronouns | Hồ sơ hiển thị | P1 |
+| Avatar, banner, bio, pronouns | Hồ sơ hiển thị — ✅ đã có **avatar** (tải/gỡ ảnh ≤5MB, magic bytes, `USER_UPDATE` realtime); banner/bio/pronouns chưa | P1 |
 | Trạng thái: Online / Idle / DND / Invisible + custom status | Presence là "linh hồn" Discord | P0 (online/offline), P1 (các loại còn lại) |
 | Rich Presence (đang chơi game/đang nghe nhạc) | Cần SDK tích hợp game bên thứ ba | P3 |
-| Xác thực 2 yếu tố (TOTP) | Bảo mật | P1 |
+| Xác thực 2 yếu tố (TOTP) | ✅ đã có: RFC 6238 (SHA-1, 6 số, 30s), mã khôi phục dùng một lần, chống replay theo bước, tắt cần mật khẩu | P1 |
 | Thông tin thiết bị đã đăng nhập, đăng xuất từ xa | Bảo mật | P2 |
 | Cài đặt client: giao diện, ngôn ngữ, thông báo, phím tắt, quyền riêng tư | Settings center | P1 (từng phần) |
 | Hồ sơ theo từng server (profile per-guild) | 2025 Discord có profile card nhiều hoạt động đồng thời | P3 |
@@ -58,13 +58,14 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 
 | Chức năng | Mô tả | ƯU TIÊN |
 |-----------|-------|---------|
-| Thêm bạn bằng username (không phải mã) | Mô hình add-friend hiện đại | P1 |
-| Danh sách bạn, lời mời chờ, đã chặn | Core social | P1 |
-| DM 1-1 | Bắt buộc | P0 |
-| Group DM (tới 10 người, không thuộc server nào) | Rất hay dùng | P1 |
+| Thêm bạn bằng username (không phải mã) | Mô hình add-friend hiện đại — ✅ đã có (gửi chéo = đồng ý luôn) | P1 |
+| Danh sách bạn, lời mời chờ, đã chặn | Core social — ✅ đã có (panel 3 tab + realtime hai phía) | P1 |
+| DM 1-1 | Bắt buộc | P0 — ✅ đã có (kèm chặn/bỏ chặn) |
+| Group DM (tới 10 người, không thuộc server nào) | Rất hay dùng — ✅ đã có (thêm/mời ra, đổi tên, rời nhóm, realtime) | P1 |
 | Cuộc gọi thoại/video trong DM | Dùng chung hạ tầng voice | P1 (sau khi có voice channels) |
 | "Bạn chung", "Server chung" | Mutuals | P2 |
-| Tin nhắn yêu cầu (Message Requests) từ người lạ | An toàn cho người dùng nữ/bị làm phiền | P1 |
+| Tin nhắn yêu cầu (Message Requests) từ người lạ | An toàn cho người dùng nữ/bị làm phiền — ✅ đã có (kênh chờ duyệt không lộ vào danh sách/không đẩy tin, đồng ý/từ chối, tự duyệt khi kết bạn) | P1 |
+| Thông báo desktop + badge tiêu đề tab | ✅ đã có (Notification API, cooldown theo kênh, mention/DM bỏ qua cooldown) | P1 |
 | DM folders, ghim tin nhắn DM | Organization | P3 |
 
 ### 1.3 Server (Guild)
@@ -96,17 +97,18 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 | Emoji tùy chỉnh theo server + sticker | P1 (emoji), P3 (sticker/GIF picker) |
 | Ghim tin nhắn (pin limit 250 trên Discord 2025) | P1 |
 | Tải file lên (10MB free / 50MB Nitro Basic / 1GB Nitro; preview ảnh, AV1 2025) | P0 (→10MB), P1 (giới hạn theo gói) |
-| Embed link preview (OG metadata) | P1 |
-| **Threads** (tin nhắn thành luồng, tự archive) | P1 |
+| Embed link preview (OG metadata) | ✅ đã có: `og:*`/`twitter:*` + `<title>`, ảnh tương đối, chặn SSRF, `MESSAGE_UPDATE` sau khi tải xong | P1 |
+| **Threads** (tin nhắn thành luồng, tự archive) | ✅ đã có: thread là kênh `guild_thread` (không vào sidebar, kế thừa overwrite kênh cha), 1 thread mở/tin gốc, lưu trữ = chỉ đọc, tự lưu trữ theo `THREAD_ARCHIVE_MINUTES`; `THREAD_CREATE/UPDATE/DELETE` + `READY.threads` | P1 |
 | **Polls** (10 đáp án, chọn nhiều, tối đa 1 tuần, không ẩn danh) | P2 |
 | **Voice message** (tối đa 20 phút, chỉ ghi trên mobile) | P2 |
 | **Forum channel** (channel kiểu diễn đàn, có tag, layout list/gallery) | P2 |
 | **Announcement channel** (kênh phát thanh, follow/crosspost, 10 lần/giờ) | P2 |
-| Tìm kiếm tin nhắn (toàn server, lọc theo người/loại file) | P1 (cơ bản), P2 (ngữ pháp tìm kiếm phong phú) |
+| Tìm kiếm tin nhắn (toàn server, lọc theo người/loại file) | ✅ P1 cơ bản đã có (keyword trong kênh/toàn server, cursor); P2 (lọc theo người/loại file, ngữ pháp tìm kiếm phong phú) |
 | Slowmode, quyền gửi tin theo role | P1 |
 | Nháp tin nhắn (drafts), gửi theo lịch | P2 / P3 |
 | Kho tin đã gửi (Library: ảnh, file, link) | P2 |
 | Đánh dấu chưa đọc (mark unread), tab Mentions, badge | P0 (badge), P1 (mentions inbox) |
+| Ghim tin nhắn (pin) | ✅ đã có: ghim/bỏ ghim (tối đa 50/kênh), panel tin ghim, `MESSAGE_PIN_UPDATE` realtime | P1 |
 | Giới hạn độ dài: 2000 ký tự (free) / 4000 (Nitro) | P1 |
 
 ### 1.5 Thoại & Video (Voice/Video) — *khó nhất*
@@ -142,7 +144,7 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 
 | Chức năng | Mô tả | ƯU TIÊN |
 |-----------|-------|---------|
-| Block, report (gửi tới team Umaru + report về server admin) | P0 |
+| Block, report (gửi tới team Umaru + report về server admin) | P0 — ✅ đã có: block + report, hàng đợi `/admin/reports` cho người vận hành (env `ADMIN_USERNAMES`/`ADMIN_USER_IDS`). Còn thiếu: gửi mail báo cho team, report riêng cho admin server (hiện chỉ có hàng đợi nền tảng) |
 | Timeout (60 giây → 1 tuần), kick, ban + lý do ghi audit log | P1 |
 | Audit log (ai làm gì, khi nào) | P1 |
 | **AutoMod**: block từ cấm, chống spam, chống mention spam, chặn link, lọc ML, channel cảnh báo mod riêng | P1 (keyword + spam), P2 (ML) |
@@ -234,10 +236,10 @@ Chú thích cột **ƯU TIÊN (Umaru)**:
 - [x] Thiết kế **realtime protocol**: sự kiện server→client (`MESSAGE_CREATE`, `PRESENCE_UPDATE`, `VOICE_STATE_UPDATE`...), thứ tự, idempotency, resume sau reconnect → [docs/gateway-protocol.md](docs/gateway-protocol.md) (opcode, close code, session TTL, replay log, fan-out, rate limit, 8 tiêu chí nghiệm thu).
 - [x] Chọn wire format (JSON cho phase 1 → xem xét MessagePack/CBOR sau), thứ tự tin nhắn bằng snowflake ID (timestamp+worker+sequence — như Discord) → [ADR-0002](docs/adr/0002-json-wire-format.md) + `packages/protocol/src/snowflake.ts` (42-bit ms | 10-bit worker | 12-bit seq).
 - [x] Skeleton monorepo (xem §4) → pnpm + Turborepo, `packages/protocol`, `packages/sdk`, `apps/web` (React 19 + Vite + Tailwind 4); typecheck/build/test đều xanh.
-- [ ] CI/CD + môi trường dev/staging (chưa làm: repo chưa `git init`, chưa có pipeline).
-- [ ] Soạn **Terms/Privacy song ngữ EN/VI** cho hai thị trường: Luật An ninh mạng 2018 + Nghị định 72/2013 (VN: lưu trữ, gỡ bỏ, báo cáo cơ quan chức năng) và **GDPR** (EU/quốc tế), độ tuổi tối thiểu — hoàn thành trước bản public đầu tiên.
+- [x] CI/CD: [.github/workflows/ci.yml](.github/workflows/ci.yml) — GitHub Actions `install --frozen-lockfile` → `typecheck` → `build` → `test` trên Node 22 + **PostgreSQL 16 service**, chạy khi push `main` và mọi PR. *(Môi trường staging vẫn chưa có — deploy thử lên Vercel/Neon là việc của G1.)*
+- [x] Soạn **Terms/Privacy song ngữ EN/VI** cho hai thị trường: Luật An ninh mạng 2018 + Nghị định 72/2013 + Nghị định 13/2023/NĐ-CP (VN) và **GDPR** (EU/quốc tế), độ tuổi tối thiểu 13 — nội dung ở [apps/web/src/lib/legal.ts](apps/web/src/lib/legal.ts), trang `/terms` + `/privacy`, phiên bản ở `LEGAL_VERSION`, đăng ký bắt buộc tick đồng ý và lưu `users.terms_accepted_at/terms_version`. **Bản nháp đã xong phần kỹ thuật; còn luật sư rà soát + danh sách việc phải làm trước public ở [docs/legal/README.md](docs/legal/README.md).**
 
-**Nghiệm thu:** ✅ 4 ADR ([docs/adr/](docs/adr/README.md)) + data model + protocol nháp + repo build được. Còn mở: CI/CD và Terms/Privacy (không chặn G1 về mặt kỹ thuật, nhưng Terms/Privacy **phải xong trước bản public đầu tiên**).
+**Nghiệm thu:** ✅ 4 ADR ([docs/adr/](docs/adr/README.md)) + data model + protocol nháp + repo build được + Terms/Privacy EN/VI (bản nháp kỹ thuật, cần luật sư rà soát trước public — xem [docs/legal/README.md](docs/legal/README.md)). **G0 hoàn tất phần kỹ thuật.**
 
 ### Giai đoạn 1 — MVP nhắn tin *(Tháng 1–3)*
 
@@ -257,7 +259,7 @@ Scope:
 - Block/report cơ bản.
 - **i18n ngay từ G1**: Tiếng Anh là default, toggle Tiếng Việt, toàn bộ string nằm trong file localization — không hardcode.
 
-**Tiến độ (10/2026):** đã chạy end-to-end trong [services/api](services/api) — auth email/password + JWT xoay vòng, guild + role `@everyone` + kênh mặc định, invite, message CRUD + cursor + typing, **DM 1-1** (`GET/POST /users/@me/channels`) dùng lại nguyên kênh message + fan-out, **badge chưa đọc + badge mention** theo bảng `read_states` + `message_mentions` (`POST /channels/:id/read`, `readStates` gồm `unread`/`mentions` trong `READY`, badge đỏ khi bị @) + **mentions inbox** (`GET /users/@me/mentions`, cursor `before`, lọc `VIEW_CHANNEL` trong SQL trước `LIMIT`), gateway ws (READY/fan-out/`RESUME`) và lọc quyền dùng chung `resolvePermissions`, **quản lý role qua API** (`GET/POST/PATCH/DELETE /guilds/:id/roles` + `PUT/DELETE /guilds/:id/members/:userId/roles/:roleId` — phân cấp `position`, mask quyền không cho cấp/giao ngoài tầm mình có, `@everyone` không xoá/gán được, fan-out `ROLE_CREATE/UPDATE/DELETE` + `PERMISSIONS_UPDATE` cho session đang mở, gán/thu role phát `GUILD_MEMBER_UPDATE` kèm `roleIds` để mọi client đổi chip ngay), **permission overwrite theo kênh** (`GET/PUT/DELETE /channels/:id/overwrites[/:targetType/:targetId]` — allow/deny không chồng bit, mask quyền actor, phân cấp target, `allow=deny=0` = xoá dòng; đổi quyền xem phát `CHANNEL_CREATE`/`CHANNEL_DELETE` + `PERMISSIONS_UPDATE` cho session đang mở; **kế thừa overwrite từ category** — `inheritedOverwrites` áp trước, kênh đè sau — và `PATCH /channels/:id { parentId }` di chuyển kênh giữa category, tính lại quyền ngay), **kéo-thả sắp xếp sidebar** (`PATCH /channels/:id { position }` = chỉ số trong nhóm kênh cùng category; server renumber lại 0..n rồi phát `CHANNEL_UPDATE` cho từng kênh đổi vị trí, chỉ số sai → 400, thiếu `MANAGE_CHANNELS` → 403; UI kéo hàng kênh/tiêu đề danh mục với vạch xanh chỉ vị trí thả, kéo danh mục đổi thứ tự giữa các danh mục, kéo kênh vào/ra category không cần mở dropdown); `READY` mang `roles` của từng server + `roleIds` trong mỗi member summary; **66 test backend** với PostgreSQL thật (+ 29 protocol, 16 SDK). Web ([apps/web](apps/web)) đã có UI chat thật: đăng nhập, rail server, kênh, **view Home + sidebar DM + badge chưa đọc/mention**, **tab Mentions** (nút 🔔 trên rail, danh sách tin `@mình` từ `listMentions()` của SDK, bấm là nhảy đúng kênh + ack), **UI quản lý role** (panel Server Settings → Roles: ⚙ cạnh tên server khi có `MANAGE_ROLES`, danh sách role theo cấp, tạo/sửa tên-màu-10 quyền/xoá có xác nhận, `@everyone` không xoá được, bảng thành viên bấm chip để gán/thu role, lỗi server hiện tại chỗ), **UI ghi đè quyền theo kênh** (panel Channel Settings: chọn role/thành viên, bấm từng quyền xoay vòng theo role → cho phép → từ chối, lưu ngay + đặt lại; kênh trong category hiện phần kế thừa chỉ đọc + đổi category bằng dropdown; tạo được category từ nút ➕ và có ⚙ riêng trên sidebar), gửi tin realtime qua WebSocket, **sửa/xoá tin trong khung chat** (ô soạn tại chỗ + xác nhận xoá, nhãn `(đã sửa)`; moderator có `MANAGE_MESSAGES` sửa/xoá được tin người khác nhờ `channelPermissions` gửi kèm READY), typing, i18n EN/VI. **Chưa có:** verify email, group DM, upload file, search, block/report, kéo-thả đổi **cấp** role (thứ tự kênh/category đã kéo-thả được; di chuyển kênh vào category vẫn làm thêm qua dropdown trong Channel Settings).
+**Tiến độ (10/2026):** đã chạy end-to-end trong [services/api](services/api) — auth email/password + JWT xoay vòng, guild + role `@everyone` + kênh mặc định, invite, message CRUD + cursor + typing, **DM 1-1** (`GET/POST /users/@me/channels`) dùng lại nguyên kênh message + fan-out, **badge chưa đọc + badge mention** theo bảng `read_states` + `message_mentions` (`POST /channels/:id/read`, `readStates` gồm `unread`/`mentions` trong `READY`, badge đỏ khi bị @) + **mentions inbox** (`GET /users/@me/mentions`, cursor `before`, lọc `VIEW_CHANNEL` trong SQL trước `LIMIT`), gateway ws (READY/fan-out/`RESUME`) và lọc quyền dùng chung `resolvePermissions`, **quản lý role qua API** (`GET/POST/PATCH/DELETE /guilds/:id/roles` + `PUT/DELETE /guilds/:id/members/:userId/roles/:roleId` — phân cấp `position`, mask quyền không cho cấp/giao ngoài tầm mình có, `@everyone` không xoá/gán được, fan-out `ROLE_CREATE/UPDATE/DELETE` + `PERMISSIONS_UPDATE` cho session đang mở, gán/thu role phát `GUILD_MEMBER_UPDATE` kèm `roleIds` để mọi client đổi chip ngay), **permission overwrite theo kênh** (`GET/PUT/DELETE /channels/:id/overwrites[/:targetType/:targetId]` — allow/deny không chồng bit, mask quyền actor, phân cấp target, `allow=deny=0` = xoá dòng; đổi quyền xem phát `CHANNEL_CREATE`/`CHANNEL_DELETE` + `PERMISSIONS_UPDATE` cho session đang mở; **kế thừa overwrite từ category** — `inheritedOverwrites` áp trước, kênh đè sau — và `PATCH /channels/:id { parentId }` di chuyển kênh giữa category, tính lại quyền ngay), **kéo-thả sắp xếp sidebar** (`PATCH /channels/:id { position }` = chỉ số trong nhóm kênh cùng category; server renumber lại 0..n rồi phát `CHANNEL_UPDATE` cho từng kênh đổi vị trí, chỉ số sai → 400, thiếu `MANAGE_CHANNELS` → 403; UI kéo hàng kênh/tiêu đề danh mục với vạch xanh chỉ vị trí thả, kéo danh mục đổi thứ tự giữa các danh mục, kéo kênh vào/ra category không cần mở dropdown); `READY` mang `roles` của từng server + `roleIds` trong mỗi member summary; **251 test backend** với PostgreSQL thật (+ 29 protocol, 46 SDK, 96 web). Web ([apps/web](apps/web)) đã có UI chat thật: đăng nhập, rail server, kênh, **view Home + sidebar DM + badge chưa đọc/mention**, **tab Mentions** (nút 🔔 trên rail, danh sách tin `@mình` từ `listMentions()` của SDK, bấm là nhảy đúng kênh + ack), **UI quản lý role** (panel Server Settings → Roles: ⚙ cạnh tên server khi có `MANAGE_ROLES`, danh sách role theo cấp, tạo/sửa tên-màu-10 quyền/xoá có xác nhận, `@everyone` không xoá được, bảng thành viên bấm chip để gán/thu role, lỗi server hiện tại chỗ), **UI ghi đè quyền theo kênh** (panel Channel Settings: chọn role/thành viên, bấm từng quyền xoay vòng theo role → cho phép → từ chối, lưu ngay + đặt lại; kênh trong category hiện phần kế thừa chỉ đọc + đổi category bằng dropdown; tạo được category từ nút ➕ và có ⚙ riêng trên sidebar), gửi tin realtime qua WebSocket, **sửa/xoá tin trong khung chat** (ô soạn tại chỗ + xác nhận xoá, nhãn `(đã sửa)`; moderator có `MANAGE_MESSAGES` sửa/xoá được tin người khác nhờ `channelPermissions` gửi kèm READY), **tệp đính kèm** (`POST /channels/:id/messages` nhận cả JSON lẫn multipart: tối đa 4 tệp × 10MB, tin chỉ có tệp vẫn hợp lệ; chặn `image/svg+xml`/`text/html` vì file phục vụ từ origin API; `GET /attachments/:id` kiểm `VIEW_CHANNEL`, người ngoài → 404, có `nosniff` + cache `immutable`; lưu trên đĩa cục bộ theo id snowflake, xoá tin là dọn file; server đọc `width`/`height` ảnh từ header PNG/GIF/JPEG/WebP; UI có nút 📎, kéo-thả tệp, dán ảnh từ clipboard, chip chờ gửi, ảnh inline + chip tải tệp, tải bằng fetch kèm token → blob URL), typing, **markdown render** (parser tự viết trong `apps/web/src/lib/markdown.ts`: fence/code/đậm/nghiêng/gạch chân/gạch ngang lồng nhau, quote, link tự động, highlight `@mention`; render bằng React element nên HTML thô hiện nguyên văn, có test chống XSS), **avatar người dùng** (magic bytes PNG/JPEG/WebP, trần 2MB, `USER_UPDATE`), **ghim tin nhắn** (trần 50/kênh, quyền `MANAGE_MESSAGES` hoặc chủ tin, DM được nếu còn là thành viên, `MESSAGE_PIN_UPDATE`), **group DM tới 10 người** (`POST /users/@me/channels` với `recipientIds`, `POST/DELETE /channels/:id/recipients[/:target]`, `PATCH /channels/:id { name }`; mọi thành viên mời được, chỉ chủ nhóm mời người khác ra, người cuối rời → xoá kênh + tin + tệp; `DM_CHANNEL_CREATE/UPDATE/DELETE`; UI chọn nhiều người trong hộp thoại "Tin nhắn mới" + panel 👥 đổi tên/thêm/mời ra/rời nhóm), **Rate limit theo spec §7** (token bucket trong bộ nhớ process, `now` injectable để test không phải `sleep`: `IDENTIFY`/`RESUME` 1 lần/5 s/socket, đếm **riêng** hai loại để không đóng `4004` oan cho luồng `INVALID_SESSION` → identify lại; 120 frame/phút/socket **tính cả frame rác** vì đếm trước khi parse; `HEARTBEAT` dư 2 frame thì bỏ qua + log chứ không đóng; 5 session/user, vượt thì đóng session **cũ nhất** `4003`; `POST /messages` 5/5 s/người/kênh + 30/phút/kênh, kiểm **trước** khi đọc multipart nên không ghi DB, không tạo tệp mồ côi, không phát `MESSAGE_CREATE`; SDK xử lý `4003` = xoá session để IDENTIFY lại, `4004` = chờ ≥ 5 s; tinh chỉnh bằng `RATE_LIMIT_*`, tắt bằng `RATE_LIMITS=off`), **Kênh thoại G2 — lớp state** (`voice_states`, `PUT/DELETE /channels/:id/voice`, `PATCH /guilds/:id/voice-state`, `VOICE_STATE_UPDATE`, `READY.voiceStates`: quyền `CONNECT` để vào + `VIEW_CHANNEL` để thấy ai trong phòng, lọc trong SQL; mất quyền xem bị đưa ra khỏi phòng ngay; hết session gateway thì rời phòng, dòng mồ côi dọn sau 30 phút; `@everyone` mặc định có `CONNECT`/`SPEAK`; UI bấm kênh để vào/ra, danh sách người trong phòng, thanh mic/tai nghe; **chưa có âm thanh** — cần LiveKit Cloud), **Client gateway chắc hơn** (jitter nhịp heartbeat đầu để không dồn "thundering herd" khi server restart; dedupe theo `s` — `READY` đặt lại bộ đếm, frame trùng bị bỏ nên resume replay chồng lấn không làm tin nhắn lặp; `4000` → hook `onAuthFailure` refresh token rồi resume session cũ, hỏng thì `closed` thay vì thử lại vô hạn; web nối hook vào `refreshSession()` dùng chung với REST), **Mail báo cáo cho admin** (fire-and-forget, chỉ gửi cho admin khai báo trong env, gộp + giãn cách `REPORT_NOTIFY_COOLDOWN_SEC`, tắt bằng `REPORT_NOTIFY_EMAIL=off`, không rò email người dùng), **kéo-thả đổi cấp role** (`PATCH /guilds/:id/roles/:roleId { position }` = thứ hạng **trên xuống**, 0 = trên cùng, không tính `@everyone`; server renumber cả dãy `position` rồi phát `ROLE_UPDATE` cho **đúng những role đổi chỗ**, `@everyone` luôn ở đáy → 400, non-admin không đẩy role lên trên cấp cao nhất của mình → 403 và rollback sạch; UI kéo hàng role trong Server Settings với vạch xanh chỉ vị trí thả, thả đúng chỗ cũ thì không gọi API), i18n EN/VI. **Chưa có:** di chuyển kênh vào category **bằng kéo-thả** (đã kéo được vào/ra category trên sidebar; panel Channel Settings vẫn đổi bằng dropdown). **Đã có thêm:** **tìm kiếm tin nhắn** (trong kênh + toàn server, cursor, tô sáng từ khoá — `GET /channels/:id/messages/search`, `GET /guilds/:id/messages/search`) và **xác thực email** (token sha256 dùng một lần hạn 24h, `SMTP_URL` hoặc ghi mail ra log ở dev, `POST /auth/verify-email` + `/resend`, thanh nhắc trong app).
 
 **Nghiệm thu (playtest thật):**
 - 100 user hoạt động đồng thời / 1 server 500 người không lag.
@@ -271,6 +273,7 @@ Scope:
 
 - **SFU: LiveKit Cloud (đã chốt)** — dùng SDK chính thức (web/iOS/Android), không tự vận hành SFU, region **Singapore**. Dev/test trên plan **Build ($0)**; xem quota free tier & ngưỡng nâng cấp ở §4.4.
 - Voice channel: join/leave, danh sách người trong kênh (voice state), speaking indicator, mute/deafen riêng.
+  - *(đã làm — lớp state, không cần SFU)* join/leave/mute/deafen + `VOICE_STATE_UPDATE` + `READY.voiceStates`, quyền `CONNECT`/`VIEW_CHANNEL`, tự rời phòng khi mất quyền hoặc hết session. **Còn lại:** âm thanh, speaking indicator, token phòng LiveKit.
 - Âm thanh: Opus, 64→128kbps, VAD/PTT, AEC/AGC/noise suppression.
 - Text chat đi kèm voice channel (Discord có sẵn).
 - DM call 1-1 (dùng lại hạ tầng).

@@ -152,4 +152,247 @@ describe("GatewayClient", () => {
     expect(sockets[0]!.readyState).toBe(3);
     expect(client.state).toBe("reconnecting");
   });
+
+  it("đóng 4003 → xoá session, lần sau IDENTIFY thay vì RESUME", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "sess-1", user: {} } });
+
+    // Server đóng 4003: session không còn resumable.
+    sockets[0]!.emitClose(4003);
+    expect(client.state).toBe("reconnecting");
+    vi.advanceTimersByTime(1_000);
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.emitOpen();
+    const first = parseSent(sockets[1]!, 0);
+    expect(first.op).toBe(2); // IDENTIFY
+    expect(client.getSession()).toBeNull();
+  });
+
+  it("đóng 4004 (rate limited) → chờ tối thiểu 5 giây mới nối lại", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0, // backoff thường chỉ 1 s
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "sess-9", user: {} } });
+
+    sockets[0]!.emitClose(4004);
+    vi.advanceTimersByTime(4_999);
+    expect(sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("dedupe theo `s`: frame trùng/`s` cũ không phát lại, READY đặt lại bộ đếm", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    const onMessage = vi.fn();
+    client.on("MESSAGE_CREATE", onMessage);
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "s1", user: {} } });
+
+    const msg = (id: string, s: number) => ({
+      op: 0,
+      t: "MESSAGE_CREATE",
+      s,
+      d: { id, channelId: "5", content: id },
+    });
+    sockets[0]!.emitMessage(msg("a", 2));
+    sockets[0]!.emitMessage(msg("a-lặp", 2)); // cùng `s` → trùng, bỏ
+    sockets[0]!.emitMessage(msg("cũ", 1)); // `s` cũ → bỏ
+    sockets[0]!.emitMessage(msg("c", 3));
+    expect(onMessage.mock.calls.map((call) => call[0].id)).toEqual(["a", "c"]);
+    expect(client.getSession()).toEqual({ sessionId: "s1", seq: 3 });
+
+    // READY mới (session mới) đặt lại bộ đếm → `s` thấp vẫn phải nhận.
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "s2", user: {} } });
+    sockets[0]!.emitMessage(msg("sau-ready", 2));
+    expect(onMessage.mock.calls.map((call) => call[0].id)).toEqual(["a", "c", "sau-ready"]);
+  });
+
+  it("heartbeat lệch ngẫu nhiên ở nhịp đầu rồi đều theo interval (jitter)", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0.5, // jitter = 0.5 × 1000ms = 500ms
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 10, d: { heartbeat_interval: 1_000 } });
+
+    // Chưa tới mốc jitter → chưa gửi heartbeat nào.
+    vi.advanceTimersByTime(499);
+    expect(sockets[0]!.sent).toHaveLength(1); // chỉ có IDENTIFY
+    vi.advanceTimersByTime(1);
+    expect(parseSent(sockets[0]!, 1).op).toBe(1);
+
+    // Ack rồi nhịp sau đúng chu kỳ, không cộng dồn jitter.
+    sockets[0]!.emitMessage({ op: 11, d: null });
+    vi.advanceTimersByTime(1_000);
+    expect(parseSent(sockets[0]!, 2).op).toBe(1);
+    expect(sockets[0]!.sent).toHaveLength(3);
+  });
+
+  it("đóng 4000 → gọi onAuthFailure, nối lại bằng token mới và resume session", async () => {
+    const sockets: FakeWs[] = [];
+    const onAuthFailure = vi.fn(async () => "token-mới");
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "token-cũ",
+      getToken: () => "token-cũ",
+      onAuthFailure,
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "s1", user: {} } });
+
+    sockets[0]!.emitClose(4000);
+    expect(onAuthFailure).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.emitOpen();
+    const resume = parseSent(sockets[1]!, 0);
+    expect(resume.op).toBe(6);
+    expect(resume.d.token).toBe("token-mới");
+    expect(resume.d.sessionId).toBe("s1");
+  });
+
+  it("đóng 4000 mà refresh thất bại → closed (đăng xuất mềm), không thử lại", async () => {
+    const sockets: FakeWs[] = [];
+    const onAuthFailure = vi.fn(async () => null);
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      onAuthFailure,
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "s1", user: {} } });
+
+    sockets[0]!.emitClose(4000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(onAuthFailure).toHaveBeenCalledOnce();
+    expect(client.state).toBe("closed");
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("không có onAuthFailure thì 4000 → closed luôn (không đốt backoff)", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "s1", user: {} } });
+    sockets[0]!.emitClose(4000);
+    expect(client.state).toBe("closed");
+    vi.advanceTimersByTime(60_000);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("updatePresence gửi op 3, và gửi lại sau khi nối lại (trạng thái không bị mất)", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "s1", user: {} } });
+
+    client.updatePresence("dnd");
+    const sent = sockets[0]!.sent.map((raw) => JSON.parse(raw) as Record<string, any>);
+    expect(sent.at(-1)).toMatchObject({ op: 3, d: { status: "dnd" } });
+
+    // Mất kết nối rồi resume: server quên trạng thái khi socket đóng, client phải
+    // gửi lại — nếu không người đang "Không làm phiền" lại hiện "Trực tuyến".
+    sockets[0]!.emitClose(1006);
+    vi.advanceTimersByTime(5_000);
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.emitOpen();
+    sockets[1]!.emitMessage({ op: 0, t: "RESUMED", s: 2, d: {} });
+
+    const resent = sockets[1]!.sent.map((raw) => JSON.parse(raw) as Record<string, any>);
+    expect(resent.some((frame) => frame.op === 3 && frame.d.status === "dnd")).toBe(true);
+  });
+
+  it("chưa chọn trạng thái thì không gửi frame op 3 thừa sau READY", () => {
+    const sockets: FakeWs[] = [];
+    const client = new GatewayClient({
+      url: "wss://gw.umaru.test/",
+      token: "t",
+      wsFactory: () => {
+        const ws = new FakeWs();
+        sockets.push(ws);
+        return ws;
+      },
+      random: () => 0,
+    });
+    client.connect();
+    sockets[0]!.emitOpen();
+    sockets[0]!.emitMessage({ op: 0, t: "READY", s: 1, d: { sessionId: "s1", user: {} } });
+    const frames = sockets[0]!.sent.map((raw) => JSON.parse(raw) as Record<string, any>);
+    expect(frames.some((frame) => frame.op === 3)).toBe(false);
+  });
 });

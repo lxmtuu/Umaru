@@ -14,9 +14,15 @@ export interface UserRow {
   username: string;
   display_name: string;
   email: string;
-  password_hash: string;
+  /** `null` với tài khoản tạo bằng OAuth (không có mật khẩu để băm). */
+  password_hash: string | null;
   avatar_url: string | null;
+  bio: string | null;
+  pronouns: string | null;
+  banner_color: string | null;
   email_verified_at: Date | null;
+  terms_accepted_at: Date | null;
+  terms_version: string | null;
   created_at: Date;
 }
 
@@ -46,6 +52,8 @@ export interface ChannelRow {
   topic: string | null;
   parent_id: string | null;
   position: number;
+  /** Giãn cách tối thiểu giữa hai tin của cùng một người (giây); 0 = tắt. */
+  slowmode_seconds: number;
 }
 
 export interface MessageRow {
@@ -68,7 +76,11 @@ export function mapUser(row: UserRow, status: PresenceStatus = "offline"): User 
     displayName: row.display_name,
     avatarUrl: row.avatar_url,
     status,
+    emailVerified: row.email_verified_at !== null,
     createdAt: row.created_at.toISOString(),
+    bio: row.bio,
+    pronouns: row.pronouns,
+    bannerColor: row.banner_color,
   };
 }
 
@@ -103,6 +115,7 @@ export function mapChannel(row: ChannelRow): Channel {
     topic: row.topic,
     categoryId: row.parent_id === null ? null : snowflake(row.parent_id),
     position: row.position,
+    slowmodeSeconds: row.slowmode_seconds,
   };
 }
 
@@ -118,5 +131,13 @@ export function mapMessage(row: MessageRow): Message {
     // Upload file chưa có ở bước này (G1 sẽ thêm R2 presign) — luôn [] thay vì undefined.
     attachments: [],
     pinned: row.pinned,
+    // Reaction nạp riêng theo lô (`mapMessagesWithAttachments`) vì cần `viewerId`.
+    reactions: [],
+    // Embed cũng nạp riêng theo lô — gửi tin xong mới có (tải trang là việc nền).
+    embeds: [],
+    // Poll nạp riêng theo lô: cần `viewerId` cho cờ `me` và đếm phiếu.
+    poll: null,
+    // Sticker nạp riêng theo lô (join `stickers`/`sticker_packs`).
+    sticker: null,
   };
 }

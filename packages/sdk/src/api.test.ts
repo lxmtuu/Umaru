@@ -186,4 +186,534 @@ describe("UmaruApi", () => {
     expect((error as ApiError).status).toBe(403);
     expect((error as ApiError).body).toEqual({ error: { code: "FORBIDDEN", message: "Không có quyền" } });
   });
+  it("sendMessage không có file vẫn là JSON (tương thích cũ)", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "1" } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.sendMessage("42", "chào", "99");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ content: "chào", replyToId: "99" });
+    expect((calls[0]?.init?.headers as Record<string, string>)["content-type"]).toBe(
+      "application/json",
+    );
+  });
+
+  it("sendMessage có file dùng FormData và KHÔNG tự đặt content-type", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "1", attachments: [] } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const file = new File([new Uint8Array([1, 2, 3])], "anh.png", { type: "image/png" });
+    await api.sendMessage("42", "kèm ảnh", { files: [file] });
+
+    const body = calls[0]?.init?.body;
+    expect(body).toBeInstanceOf(FormData);
+    const form = body as FormData;
+    expect(form.get("content")).toBe("kèm ảnh");
+    const uploaded = form.get("files") as File;
+    expect(uploaded.name).toBe("anh.png");
+    // Trình duyệt tự sinh `content-type` kèm boundary; SDK không được ghi đè.
+    expect((calls[0]?.init?.headers as Record<string, string>)["content-type"]).toBeUndefined();
+  });
+
+  it("fetchAttachment tải blob kèm Bearer token", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return new Response(new Uint8Array([7, 8, 9]), {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
+    }) as typeof fetch;
+    const api = new UmaruApi({ baseUrl: "http://api.test", getToken: () => "tok", fetchImpl });
+    const blob = await api.fetchAttachment("555");
+
+    expect(calls[0]?.url).toBe("http://api.test/api/v1/attachments/555");
+    expect((calls[0]?.init?.headers as Record<string, string>).authorization).toBe("Bearer tok");
+    expect(blob.size).toBe(3);
+    expect(blob.type).toBe("image/png");
+  });
+
+  it("fetchAttachment lỗi thì ném ApiError", async () => {
+    const fetchImpl = (async () => new Response("nope", { status: 404 })) as typeof fetch;
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const error = await api.fetchAttachment("1").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(404);
+  });
+
+  it("updateAvatar gửi PUT multipart, KHÔNG tự đặt content-type", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 200,
+      body: { id: "1", avatarUrl: "/api/v1/users/1/avatar/9" },
+    });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const file = new File([new Uint8Array([1, 2, 3])], "toi.png", { type: "image/png" });
+    const user = await api.updateAvatar(file);
+
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/avatar");
+    expect(calls[0]?.init?.method).toBe("PUT");
+    const form = calls[0]?.init?.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect((form.get("file") as File).name).toBe("toi.png");
+    expect((calls[0]?.init?.headers as Record<string, string>)["content-type"]).toBeUndefined();
+    expect(user.avatarUrl).toBe("/api/v1/users/1/avatar/9");
+  });
+
+  it("removeAvatar gọi DELETE tới cùng endpoint", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { id: "1", avatarUrl: null } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const user = await api.removeAvatar();
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/avatar");
+    expect(calls[0]?.init?.method).toBe("DELETE");
+    expect(user.avatarUrl).toBeNull();
+  });
+
+  it("updateProfile gửi PATCH với JSON (không phải [object Object])", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { id: "1", bio: "hi" } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.updateProfile({ bio: "hi", bannerColor: null });
+
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/profile");
+    expect(calls[0]?.init?.method).toBe("PATCH");
+    // Thiếu JSON.stringify thì body thành "[object Object]" và server trả 400.
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ bio: "hi", bannerColor: null });
+  });
+
+  it("getPublicProfile gọi GET /users/:id/profile", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { id: "7", bio: null } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const profile = await api.getPublicProfile("7");
+
+    expect(calls[0]?.url).toBe("/api/v1/users/7/profile");
+    // Không đặt `method` = GET mặc định của fetch; cũng không có body.
+    expect(calls[0]?.init?.body).toBeUndefined();
+    expect(profile.bio).toBeNull();
+  });
+
+  it("uploadSticker gửi multipart kèm name, không tự đặt content-type", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "3", name: "Mèo" } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const file = new File([new Uint8Array([1, 2, 3])], "meo.png", { type: "image/png" });
+    await api.uploadSticker("9", "Mèo cười", file);
+
+    expect(calls[0]?.url).toBe("/api/v1/sticker-packs/9/stickers");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.body).toBeInstanceOf(FormData);
+    const form = calls[0]?.init?.body as FormData;
+    expect(form.get("name")).toBe("Mèo cười");
+    // Trình duyệt tự đặt `content-type` kèm boundary — tự đặt là mất boundary.
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(headers["content-type"]).toBeUndefined();
+  });
+
+  it("listStickerPacks gọi GET theo guild", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.listStickerPacks("9");
+    expect(calls[0]?.url).toBe("/api/v1/guilds/9/sticker-packs");
+  });
+
+  it("sendMessage gửi stickerId trong JSON (không phải multipart)", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "5" } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.sendMessage("7", "", { stickerId: "3" });
+
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      content: "",
+      stickerId: "3",
+    });
+  });
+
+  it("fetchAvatar ghép baseUrl với avatarUrl và gửi Bearer", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return new Response(new Uint8Array([4, 5]), { status: 200 });
+    }) as typeof fetch;
+    const api = new UmaruApi({ baseUrl: "http://api.test", getToken: () => "tok", fetchImpl });
+    const blob = await api.fetchAvatar("/api/v1/users/7/avatar/77");
+
+    expect(calls[0]?.url).toBe("http://api.test/api/v1/users/7/avatar/77");
+    expect((calls[0]?.init?.headers as Record<string, string>).authorization).toBe("Bearer tok");
+    expect(blob.size).toBe(2);
+  });
+
+  it("createGroupDm gửi recipientIds + name (nếu có)", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { channel: { id: "9" } } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.createGroupDm(["2", "3"]);
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/channels");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ recipientIds: ["2", "3"] });
+
+    await api.createGroupDm(["2", "3"], "Nhóm");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({
+      recipientIds: ["2", "3"],
+      name: "Nhóm",
+    });
+  });
+
+  it("addGroupRecipient / removeGroupRecipient / renameGroupDm đúng đường dẫn", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { channel: { id: "9" } } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+
+    await api.addGroupRecipient("9", "5");
+    expect(calls[0]?.url).toBe("/api/v1/channels/9/recipients");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ userId: "5" });
+
+    await api.removeGroupRecipient("9", "@me");
+    // `@` được encode cho an toàn (server vẫn hiểu `@me` sau khi decode).
+    expect(calls[1]?.url).toBe("/api/v1/channels/9/recipients/%40me");
+    expect(calls[1]?.init?.method).toBe("DELETE");
+
+    await api.renameGroupDm("9", null);
+    expect(calls[2]?.url).toBe("/api/v1/channels/9");
+    expect(calls[2]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({ name: null });
+  });
+
+  it("pinMessage/unpinMessage gọi đúng method + đường dẫn", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { id: "5", pinned: true } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+
+    const pinned = await api.pinMessage("5");
+    expect(calls[0]?.url).toBe("/api/v1/messages/5/pin");
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(pinned.pinned).toBe(true);
+
+    await api.unpinMessage("5");
+    expect(calls[1]?.url).toBe("/api/v1/messages/5/pin");
+    expect(calls[1]?.init?.method).toBe("DELETE");
+  });
+
+  it("addReaction/removeReaction: emoji được encode trong đường dẫn, không gửi body", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 200,
+      body: { reactions: [{ emoji: "🔥", count: 1, me: true }] },
+    });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+
+    const result = await api.addReaction("5", "🔥");
+    expect(calls[0]?.url).toBe(`/api/v1/messages/5/reactions/${encodeURIComponent("🔥")}`);
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(calls[0]?.init?.body).toBeUndefined();
+    expect(result.reactions[0]).toEqual({ emoji: "🔥", count: 1, me: true });
+
+    await api.removeReaction("5", "👨‍👩‍👧‍👦");
+    expect(calls[1]?.url).toBe(
+      `/api/v1/messages/5/reactions/${encodeURIComponent("👨‍👩‍👧‍👦")}`,
+    );
+    expect(calls[1]?.init?.method).toBe("DELETE");
+    // Không body ⇒ không kèm content-type (Fastify từ chối JSON rỗng).
+    const headers = new Headers(calls[1]?.init?.headers as HeadersInit | undefined);
+    expect(headers.get("content-type")).toBeNull();
+  });
+
+  it("listPinnedMessages gọi kênh pins kèm limit", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.listPinnedMessages("42", 10);
+    expect(calls[0]?.url).toBe("/api/v1/channels/42/pins?limit=10");
+  });
+
+  it("searchChannelMessages mã hoá q và cursor trong query string", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+    await api.searchChannelMessages("42", "xin chào & tệp", { before: "100", limit: 10 });
+
+    const url = new URL(calls[0]?.url ?? "", "http://local");
+    expect(url.pathname).toBe("/api/v1/channels/42/messages/search");
+    expect(url.searchParams.get("q")).toBe("xin chào & tệp");
+    expect(url.searchParams.get("before")).toBe("100");
+    expect(url.searchParams.get("limit")).toBe("10");
+  });
+
+  it("searchGuildMessages không gửi before/limit khi không truyền", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.searchGuildMessages("7", "abc");
+
+    expect(calls[0]?.url).toBe("/api/v1/guilds/7/messages/search?q=abc");
+  });
+
+  it("verifyEmail gửi POST token tới /auth/verify-email", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { user: { id: "1" } } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const result = await api.verifyEmail("tok-abc");
+
+    expect(calls[0]?.url).toBe("/api/v1/auth/verify-email");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ token: "tok-abc" });
+    expect(result.user).toEqual({ id: "1" });
+  });
+
+  it("resendVerification trả devVerificationToken khi server echo", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 202,
+      body: { sent: true, devVerificationToken: "tok-dev" },
+    });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+    const result = await api.resendVerification();
+
+    expect(calls[0]?.url).toBe("/api/v1/auth/verify-email/resend");
+    expect(result).toEqual({ sent: true, devVerificationToken: "tok-dev" });
+  });
+
+  it("register trả emailVerificationSent kèm token dev", async () => {
+    const { fetchImpl } = fakeFetch({
+      status: 201,
+      body: {
+        user: { id: "1" },
+        accessToken: "a",
+        refreshToken: "r",
+        tokenType: "Bearer",
+        expiresIn: 900,
+        emailVerificationSent: true,
+        devVerificationToken: "tok-1",
+      },
+    });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const result = await api.register({
+      username: "an",
+      displayName: "An",
+      email: "an@example.com",
+      password: "mat-khau-123",
+      acceptedTerms: true,
+    });
+
+    expect(result.emailVerificationSent).toBe(true);
+    expect(result.devVerificationToken).toBe("tok-1");
+  });
+
+  it("blockUser/unblockUser dùng PUT và DELETE tới /users/@me/blocks/:id", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 204 });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    await api.blockUser("42");
+    await api.unblockUser("42");
+
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/blocks/42");
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(calls[1]?.init?.method).toBe("DELETE");
+  });
+
+  it("createReport gửi JSON kèm lý do và messageId", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "1", status: "open" } });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    const result = await api.createReport({ messageId: "99", reason: "spam", details: "quảng cáo" });
+
+    expect(calls[0]?.url).toBe("/api/v1/reports");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      messageId: "99",
+      reason: "spam",
+      details: "quảng cáo",
+    });
+    expect(result.status).toBe("open");
+  });
+
+  it("listBlocks trả danh sách summary", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [{ userId: "1" }] });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const blocks = await api.listBlocks();
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/blocks");
+    expect(blocks).toHaveLength(1);
+  });
+
+  it("listAdminReports dựng query status/before/limit và bỏ tham số không dùng", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { reports: [] } });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    await api.listAdminReports({ status: "open", limit: 50 });
+    await api.listAdminReports();
+
+    expect(calls[0]?.url).toBe("/api/v1/admin/reports?status=open&limit=50");
+    expect(calls[1]?.url).toBe("/api/v1/admin/reports");
+  });
+
+  it("setReportStatus gửi PATCH JSON và trả báo cáo đã cập nhật", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 200,
+      body: { id: "7", status: "closed" },
+    });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    const result = await api.setReportStatus("7", "closed");
+
+    expect(calls[0]?.url).toBe("/api/v1/admin/reports/7");
+    expect(calls[0]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ status: "closed" });
+    expect(result.status).toBe("closed");
+  });
+
+  it("getAdminStatus ném ApiError 403 khi không đủ quyền", async () => {
+    const { fetchImpl } = fakeFetch({ status: 403, body: {} });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+    const error = await api.getAdminStatus().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(403);
+  });
+
+  it("joinVoice/leaveVoice/updateVoiceState gọi đúng endpoint và method", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      status: 200,
+      body: {
+        guildId: "1",
+        channelId: "2",
+        userId: "3",
+        selfMute: true,
+        selfDeaf: false,
+        joinedAt: "2026-10-26T00:00:00.000Z",
+      },
+    });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    const state = await api.joinVoice("2");
+    expect(calls[0]?.url).toBe("/api/v1/channels/2/voice");
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(state.channelId).toBe("2");
+
+    await api.leaveVoice("2");
+    expect(calls[1]?.url).toBe("/api/v1/channels/2/voice");
+    expect(calls[1]?.init?.method).toBe("DELETE");
+
+    await api.updateVoiceState("1", { selfDeaf: true });
+    expect(calls[2]?.url).toBe("/api/v1/guilds/1/voice-state");
+    expect(calls[2]?.init?.method).toBe("PATCH");
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({ selfDeaf: true });
+  });
+
+  it("friends: listFriends/addFriend/accept/remove + updateSettings", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { dmPrivacy: "friends" } });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    await api.listFriends();
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/friends");
+    expect(calls[0]?.init?.method).toBeUndefined(); // GET
+
+    await api.addFriend("bob");
+    expect(calls[1]?.url).toBe("/api/v1/users/@me/friends");
+    expect(calls[1]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ username: "bob" });
+
+    await api.acceptFriendRequest("42");
+    expect(calls[2]?.url).toBe("/api/v1/users/@me/friends/42/accept");
+    expect(calls[2]?.init?.method).toBe("POST");
+
+    await api.removeFriend("42");
+    expect(calls[3]?.url).toBe("/api/v1/users/@me/friends/42");
+    expect(calls[3]?.init?.method).toBe("DELETE");
+
+    const settings = await api.updateSettings({ dmPrivacy: "friends" });
+    expect(calls[4]?.url).toBe("/api/v1/users/@me/settings");
+    expect(calls[4]?.init?.method).toBe("PATCH");
+    expect(settings.dmPrivacy).toBe("friends");
+  });
+
+  it("message requests: list/accept/decline", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    await api.listMessageRequests();
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/message-requests");
+    expect(calls[0]?.init?.method).toBeUndefined();
+
+    await api.acceptMessageRequest("77");
+    expect(calls[1]?.url).toBe("/api/v1/users/@me/message-requests/77/accept");
+    expect(calls[1]?.init?.method).toBe("POST");
+
+    await api.declineMessageRequest("77");
+    expect(calls[2]?.url).toBe("/api/v1/users/@me/message-requests/77/decline");
+    expect(calls[2]?.init?.method).toBe("POST");
+  });
+
+  it("getVoiceToken gọi đúng route và trả nguyên payload", async () => {
+    const payload = {
+      url: "wss://x.livekit.cloud",
+      token: "a.b.c",
+      room: "1",
+      identity: "2",
+      expiresAt: "2026-10-26T12:00:00.000Z",
+      canPublish: true,
+      canSubscribe: true,
+    };
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: payload });
+    const api = new UmaruApi({ baseUrl: "", getToken: () => "tok", fetchImpl });
+
+    const result = await api.getVoiceToken("42");
+    expect(calls[0]?.url).toBe("/api/v1/channels/42/voice/token");
+    expect(result).toEqual(payload);
+  });
+
+  it("thông báo đẩy: đăng ký POST, huỷ DELETE cùng endpoint, gửi thử POST rỗng", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = new UmaruApi({
+      baseUrl: "https://api.test",
+      getToken: () => "tok",
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return new Response(null, { status: 204 });
+      }) as unknown as typeof fetch,
+    });
+    await client.savePushSubscription({
+      endpoint: "https://push.test/1",
+      keys: { p256dh: "p", auth: "a" },
+    });
+    await client.deletePushSubscription("https://push.test/1");
+    expect(calls[0]!.url).toContain("/push/subscriptions");
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]!.init.body))).toMatchObject({
+      endpoint: "https://push.test/1",
+      keys: { p256dh: "p", auth: "a" },
+    });
+    expect(calls[1]!.init.method).toBe("DELETE");
+    expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ endpoint: "https://push.test/1" });
+  });
+
+  it("OAuth: start dựng query an toàn, exchange gửi mã + 2FA, unlink dùng DELETE", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = new UmaruApi({
+      baseUrl: "",
+      getToken: () => "tok",
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        const body = String(url).endsWith("/exchange")
+          ? { user: { id: "1" }, accessToken: "a", refreshToken: "r", provider: "github" }
+          : { url: "https://accounts.google.com/o/oauth2/v2/auth?x=1" };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    });
+
+    await client.oauthProviders();
+    expect(calls[0]!.url).toBe("/api/v1/auth/oauth/providers");
+    expect(calls[0]!.init.method ?? "GET").toBe("GET");
+
+    const started = await client.oauthStart("google", {
+      acceptedTerms: true,
+      redirect: "/channels/42",
+    });
+    expect(calls[1]!.url).toBe(
+      "/api/v1/auth/oauth/google/start?acceptedTerms=1&redirect=%2Fchannels%2F42",
+    );
+    expect(started.url).toContain("accounts.google.com");
+
+    // Không có 2FA: body chỉ có `code`, không gửi `totpCode` rỗng.
+    await client.oauthExchange("ma-mot-lan-ma-mot-lan");
+    expect(calls[2]!.url).toBe("/api/v1/auth/oauth/exchange");
+    expect(calls[2]!.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[2]!.init.body))).toEqual({ code: "ma-mot-lan-ma-mot-lan" });
+
+    const result = await client.oauthExchange("ma-mot-lan-ma-mot-lan", { code: "123456" });
+    expect(JSON.parse(String(calls[3]!.init.body))).toEqual({
+      code: "ma-mot-lan-ma-mot-lan",
+      totpCode: "123456",
+    });
+    expect(result.provider).toBe("github");
+
+    await client.unlinkOAuth("google");
+    expect(calls[4]!.url).toBe("/api/v1/users/@me/oauth/google");
+    expect(calls[4]!.init.method).toBe("DELETE");
+  });
 });

@@ -20,7 +20,17 @@ Trạng thái: **v1 đã được triển khai một phần trong [services/api]
 | **Permission kiểm tra ở server, không ở client** | Gateway lọc theo `VIEW_CHANNEL` **trước khi** gửi; client ẩn kênh chỉ là trang trí. |
 | **Client → server frames không được retry ngẫu nhiên** | Chỉ `RESUME` được gửi lại; hành động ghi (gửi tin) đi qua REST kèm `nonce`. |
 
-Giới hạn v1: frame ≤ **4 KiB**, tối đa **1 kết nối/session**, không sharding (single gateway node), không compression.
+Giới hạn v1: frame ≤ **4 KiB**, tối đa **1 kết nối/session**, không sharding (single gateway node).
+
+**Nén frame**: bật `permessage-deflate` mặc định (`services/api/src/gateway/compression.ts`).
+
+| Tham số | Giá trị | Vì sao |
+|---|---|---|
+| `threshold` | `GATEWAY_COMPRESS_THRESHOLD`, mặc định **1024 byte** | `HEARTBEAT`/`TYPING_START` chỉ 60–120 byte; nén chúng tốn CPU + cấp phát context zlib mà gần như không giảm byte |
+| `clientNoContextTakeover` / `serverNoContextTakeover` | **true** | Mỗi message nén độc lập, **không** dùng lại từ điển của message trước → không tạo kênh rò rỉ kiểu BREACH khi kẻ tấn công chèn được nội dung vào cùng luồng nén với dữ liệu riêng của người khác |
+| `maxPayload` | 4 KiB, tính trên dữ liệu **đã giải nén** | Nén không được nới trần frame |
+
+Đo thật trên gateway của Umaru: một `MESSAGE_CREATE` ~1.5 KB đi **1768 byte** khi không nén và **211 byte** khi nén (−88%). Client không phải đổi gì — trình duyệt và `ws` (Node) tự đàm phán; tắt bằng `GATEWAY_COMPRESS=off` khi cần soi frame bằng tay.
 
 ---
 
@@ -92,10 +102,10 @@ Validate (đã có trong `decodeGatewayPayload`): `op` phải thuộc tập trê
 
 ### 3.3 Heartbeat & phát hiện zombie
 
-- Client gửi `OP 1` mỗi `heartbeat_interval`. Nếu **ack trước chưa tới** mà đã tới lượt kế tiếp → coi kết nối đã chết, đóng socket và reconnect (SDK đã làm).
+- Client gửi `OP 1` mỗi `heartbeat_interval`. Nếu **ack trước chưa tới** mà đã tới lượt kế tiếp → coi kết nối đã chết, đóng socket và reconnect (SDK đã làm). Nội dung `d` là `s` gần nhất client đã nhận (hoặc `null` khi chưa có) — dùng để server biết client tụt lại bao xa.
 - Server phải trả `OP 11` trong **cùng interval**; trễ 2 interval liên tiếp → server đóng `4001`.
 - Server gửi `OP 1` (không kèm dữ liệu) khi cần heartbeat ngay (ví dụ sau khi resume replay xong) — client phản hồi tức thì.
-- v1 client heartbeat đều theo interval, **chưa jitter** (mục 9). Server phải chịu được "thundering herd" nhỏ khi restart.
+- **Nhịp đầu có jitter** (SDK đã làm): sau `HELLO`, client chờ ngẫu nhiên `[0, heartbeat_interval)` rồi mới gửi heartbeat đầu, sau đó đều theo interval. Hàng nghìn client nhận `HELLO` cùng lúc mà gửi đúng chu kỳ sẽ dồn thành "thundering herd" mỗi lần server restart; lệch ngẫu nhiên một interval là đủ tản tải. Jitter đặt nhịp đầu **muộn hơn**, không sớm hơn, nên không vượt trần 2 frame dư của bucket HEARTBEAT (§7).
 
 ---
 
@@ -104,12 +114,13 @@ Validate (đã có trong `decodeGatewayPayload`): `op` phải thuộc tập trê
 ### 4.1 Trạng thái session (server)
 
 ```
-gw:session:{session_id} = {
-  user_id, gateway_node, shard: 0,
-  last_seq, connected_at, status: "online" | "disconnected",
-  disconnected_at
+{prefix}:session:{session_id} = hash {
+  userId, node, seq, disconnectedAt   (disconnectedAt rỗng khi còn socket)
 }
 ```
+
+`{prefix}` mặc định `umaru`. Khi **không** đặt `REDIS_URL`, session chỉ nằm trong RAM
+của node đang giữ kết nối (chế độ một node, không cần Redis).
 
 - TTL **5 phút** kể từ lúc ngắt. Quá hạn → `INVALID_SESSION d=false`.
 - Một user có thể có nhiều session (web + desktop + mobile). Mọi session của user đều nhận dispatch của user đó; presence tính "online" khi **còn ≥ 1** session `online`.
@@ -117,13 +128,13 @@ gw:session:{session_id} = {
 
 ### 4.2 Replay log
 
-Mỗi session có một **Redis Stream** `gw:replay:{session_id}`:
+Mỗi session có một **Redis list** `{prefix}:replay:{session_id}` (xem [ADR-0006](adr/0006-session-replay-redis.md); ADR-0003 phác Stream, thực tế dùng list vì chỉ cần đọc phần đuôi):
 
-- `XADD` mỗi dispatch **được replay** (xem cột *Replay* ở §6), `MAXLEN ~ 2000`, `EXPIRE 300`.
-- Khi resume: `XRANGE gw:replay:{session_id} (seq +` … lấy các entry có `s > seq`, gửi tuần tự với **đúng `s` ban đầu**, rồi gửi `RESUMED` (cũng là dispatch, `s` = số mới).
+- `RPUSH` mỗi dispatch **được replay** (xem cột *Replay* ở §6) dạng `{"s":…,"payload":…}`, `LTRIM -MAX_REPLAY_EVENTS` và `PEXPIRE` theo `SESSION_TTL_MS` — một lượt pipeline.
+- Khi resume: đọc các frame có `s > seq`, gửi tuần tự với **đúng `s` ban đầu**, rồi gửi `RESUMED` (cũng là dispatch, `s` = số mới).
 - **Không** replay: `READY`, transient event, sự kiện người dùng không còn quyền xem.
-- Nếu `seq` nhỏ hơn entry cũ nhất trong stream (client offline quá lâu) → `INVALID_SESSION d=false`.
-- Nếu session thuộc node khác: node hiện tại đọc stream từ Redis (không cần gọi node cũ) — đây là lý do chọn Redis Streams thay vì buffer trong RAM (ADR-0003).
+- **Session ở node khác** (client đổi node, hoặc node cũ đã restart): node hiện tại đọc session + replay từ Redis, dựng lại quyền/guild từ Postgres, **đòi quyền sở hữu** rồi mới phát tiếp. Node cũ bỏ bản cục bộ và đóng socket cũ bằng `4003` (không phát `offline` — người dùng đang online ở node mới).
+- **Khoảng trống**: nếu server đã gán `s` mà replay không còn frame nào để bù (`seq` server > `seq` client, danh sách rỗng/cũ) → `INVALID_SESSION d=false`, client identify lại thay vì resume thiếu tin.
 - Client nhận `READY` mới thì **phải xoá cache channel/message cục bộ** và nạp lại qua REST; `RESUMED` thì giữ nguyên cache.
 
 ### 4.3 Quy tắc đồng bộ phía client
@@ -140,12 +151,13 @@ Mỗi session có một **Redis Stream** `gw:replay:{session_id}`:
 ```
 REST handler ──(1 transaction)──▶ Postgres
       │
-      └─(sau commit)─▶ NATS subject chan:{channel_id} / guild:{guild_id}
+      └─(sau commit)─▶ fan-out session cục bộ (node này)
+                       └─▶ Redis PUBLISH umaru:gateway  (khi có nhiều node)
                                   │
-                    gateway node (subscribe theo shard)
-                                  │  lọc quyền (cache 30s) + gán s
+                    node khác nhận → fan-out session của nó
+                                  │  lọc quyền theo visibleChannels
                                   ▼
-                    XADD gw:replay:{session}  +  WS send
+                    replay buffer (RAM) + WS send
 ```
 
 Quy tắc:
@@ -158,7 +170,23 @@ Quy tắc:
 6. **Backpressure**: nếu buffer gửi > 1 MiB, bỏ transient frame trước; vẫn tắc → đóng `4008`.
 7. **At-least-once, không exactly-once**: resume replay có thể lặp; client dedupe theo `s` và theo `id` của entity.
 
-### 5.1 Typing
+### 5.1 Nhiều node (`REDIS_URL`)
+
+Khi chạy từ hai instance API, bus Redis chở sự kiện giữa các node (ADR-0005). Điều
+quan trọng với client:
+
+- **Không đổi giao thức.** Client vẫn nhận đúng event, đúng `s`, không biết mình đang
+  nói chuyện với node nào.
+- **Mỗi node tự lọc.** Node nhận event từ node khác vẫn kiểm `VIEW_CHANNEL` theo
+  session của mình — không tin node gửi.
+- **Presence đi qua bus**: `PRESENCE_UPDATE` của người ở node A tới được người ở node
+  B; `READY.presences` gồm cả người đang nối ở node khác (node mới vào hỏi
+  `__PRESENCE_SYNC`).
+- **`RESUME` vẫn phải tới đúng node** đang giữ session (replay buffer trong RAM). Sai
+  node → `INVALID_SESSION` → client IDENTIFY lại và full resync. Vì vậy load balancer
+  nên **sticky** theo cookie/địa chỉ cho đường `/api/v1/gateway/ws`.
+
+### 5.2 Typing
 
 - Client gửi `POST /channels/{id}/typing`, throttle **1 lần/8 s/kênh** (server trả `429` nếu vượt).
 - Server phát `TYPING_START { channelId, userId, timestamp }` tới các session có `VIEW_CHANNEL`, trừ chính tác giả.
@@ -173,11 +201,53 @@ Quy tắc:
 
 ### 5.3 Voice state
 
-- Nguồn: webhook LiveKit `room_participant_joined/left` + `ActiveSpeakersChanged`.
-- `VOICE_STATE_UPDATE` có **2 loại**:
-  - *Bền*: join/leave kênh, `muted`, `deafened` → replay được, ghi Redis `voice:{channel_id}` (không ghi Postgres).
-  - *Transient*: chỉ đổi `speaking` → coalesce 100 ms, không replay.
-- Người mới vào kênh nhận snapshot đầy đủ qua `GUILD_CREATE.voiceStates` (G2 sẽ thêm field này — xem §9).
+**Đã hiện thực (G2 — phần state, chưa có âm thanh).** Nguồn sự thật là bảng
+`voice_states` trong Postgres (mỗi người **một** phòng thoại mỗi server, PK
+`(user_id, guild_id)`); REST `PUT/DELETE /channels/{id}/voice` và
+`PATCH /guilds/{id}/voice-state` là nơi duy nhất đổi trạng thái.
+
+- `VOICE_STATE_UPDATE` là event **bền** (vào replay log, resume được) cho cả
+  join/leave/`selfMute`/`selfDeaf`.
+- Payload dùng **cùng shape** với `VoiceState` trong `READY` để client chỉ cần một
+  mapper: `{ guildId, channelId, userId, selfMute, selfDeaf, joinedAt }`.
+  `channelId: null` = người đó đã rời phòng.
+- Người nhận: session có `VIEW_CHANNEL` của kênh + **chính người liên quan** (họ
+  phải biết mình đã bị đưa ra khỏi phòng khi mất quyền xem).
+- Snapshot đầy đủ nằm trong `READY.voiceStates` (lọc theo `visibleChannels`).
+- Mất quyền xem kênh thoại → bị đưa ra khỏi phòng ngay (`dropVoiceStates`), không
+  cần client tự kiểm.
+- Hết mọi session gateway của user (đóng app, resume quá TTL) → rời phòng; dòng
+  "mồ côi" (join qua REST rồi biến mất) bị `sweep` dọn sau 30 phút.
+- **Chưa có `speaking`**: chỉ có nghĩa khi có audio thật, tần suất cao nên sẽ đi
+  qua data channel của SFU khi cắm LiveKit, không qua gateway (§9).
+
+### 5.4 Friends & quyền riêng tư DM
+
+Quan hệ bạn bè dùng lại bảng `relationships` (migration 0001) theo quy ước có
+hướng: bạn bè = **hai dòng** `friend`, lời mời = `pending_out` (người gửi) +
+`pending_in` (người nhận), chặn = một dòng `blocked`. Không có bảng mới.
+
+- `FRIEND_REQUEST_CREATE` → người **nhận** lời mời; payload mang **người gửi**
+  (`FriendRequestSummary`). Response của `POST /users/@me/friends` thì mang
+  **người được mời** (khớp tab "đã gửi" của người gọi).
+- `FRIEND_ADD` → **cả hai** phía khi thành bạn (đồng ý, hoặc hai người gửi lời
+  mời chéo nhau — lần gửi thứ hai là đồng ý luôn).
+- `FRIEND_REMOVE` → **cả hai** phía khi huỷ kết bạn, từ chối/huỷ lời mời, hoặc
+  khi một bên **chặn** bên kia (chặn cắt luôn quan hệ bạn bè).
+- `USER_SETTINGS_UPDATE` → chỉ các session của chính mình (tab/thiết bị khác).
+
+Không cần replay: danh sách đầy đủ lấy bằng `GET /users/@me/friends`, event chỉ
+để cập nhật tại chỗ; client chưa mở panel thì bỏ qua event (`friends === null`)
+và tải lại khi mở.
+
+Cổng quyền riêng tư DM nằm ở server (`POST /users/@me/channels`): `dm_privacy =
+'friends'` chỉ áp cho việc **mở cuộc mới**, DM đã tồn tại vẫn mở và nhắn được
+(không cắt ngang cuộc đang có). Cuộc mở mới khi đó thành **yêu cầu nhắn tin**
+(bảng `dm_requests`): với người nhận, kênh không nằm trong `READY.dms` và không
+vào `visibleChannels` → không nhận `MESSAGE_CREATE`; họ thấy nó trong
+`GET /users/@me/message-requests` (người gửi + preview) và tự đồng ý/từ chối.
+Người gửi thấy kênh bình thường kèm `requestPending: true`. Block vẫn thắng
+(403 vì chặn). Mặc định `'everyone'` để không đổi hành vi sau deploy.
 
 ---
 
@@ -197,19 +267,34 @@ Quy tắc:
 | `PRESENCE_UPDATE` | guild + friends | ✗ | `{ userId, status }` |
 | `CHANNEL_CREATE` / `CHANNEL_UPDATE` | guild | ✓ | `Channel` — `CHANNEL_CREATE` cũng được gửi khi user **vừa được cấp quyền xem** một kênh (overwrite mới, vừa vào server) để sidebar hiện ra ngay. `CHANNEL_UPDATE` cũng là event **đổi thứ tự**: `PATCH /channels/:id { position }` renumber cả nhóm rồi gửi `CHANNEL_UPDATE` cho từng kênh đổi `position` (kể cả kênh không phải kênh vừa kéo), theo đúng thứ tự mới nên client chỉ việc sort lại |
 | `CHANNEL_DELETE` | guild | ✓ | `{ id, guildId }` — cũng dùng khi **mất quyền xem** |
-| `DM_CHANNEL_CREATE` | user | ✗ | `{ channel, recipient: { userId, username, displayName, avatarUrl } }` — `channel.type = "dm"`, `channel.guildId = null` — có người mở DM với mình (`recipient` là đối phương) |
+| `DM_CHANNEL_CREATE` | user | ✗ | `DmChannelSummary` — có người mở DM/group DM với mình. `channel.type` là `"dm"` hoặc `"group_dm"`; `recipients` là **mọi người khác trong cuộc** (góc nhìn của người nhận), `recipient` chỉ có ở DM 1-1, `ownerId`/`name` chỉ có ở group DM |
+| `DM_CHANNEL_UPDATE` | user | ✗ | `DmChannelSummary` — tên nhóm hoặc danh sách thành viên vừa đổi; gửi **toàn bộ** summary để client thay tại chỗ, không tự ghép diff |
+| `DM_CHANNEL_DELETE` | user | ✗ | `{ channelId }` — bị mời ra khỏi nhóm (hoặc nhóm bị xoá). Trên đường `CHANNEL_DELETE` thì `guildId = null`, client hiểu là bỏ DM khỏi sidebar |
 | `GUILD_CREATE` | session | ✗ | `{ guild, channels, roles, members }` — snapshot đầu tiên của guild mới/chưa cache |
 | `GUILD_MEMBER_ADD` | guild | ✓ | `{ guildId, member: { userId, username, displayName, avatarUrl, roleIds } }` — có người vào server qua invite |
 | `GUILD_MEMBER_UPDATE` | guild | ✓ | `{ guildId, member: { userId, username, displayName, avatarUrl, roleIds } }` — role của thành viên vừa được gán/thu; gửi **summary đầy đủ** để client chỉ việc thay thế, không tự ghép diff |
-| `ROLE_CREATE` / `ROLE_UPDATE` | guild | ✓ | `{ guildId, role: Role }` — role vừa tạo/sửa (kèm `isEveryone`); quyền **hiệu dụng** của từng user vẫn do `PERMISSIONS_UPDATE` đẩy riêng |
+| `THREAD_CREATE` | channel (**kênh cha**) | ✗ | `ThreadSummary` — có thread mới trong kênh. Phát vào kênh cha chứ không phải kênh của thread: người đang mở kênh cha cần thấy chỉ báo (và thread mới chưa nằm trong `visibleChannels` của ai cho tới khi tin đầu tiên) |
+| `THREAD_UPDATE` | channel (**kênh cha**) | ✗ | `ThreadSummary` — đổi tên / lưu trữ / mở lại / có tin mới (`messageCount`, `lastActivityAt`). Gửi **toàn bộ** summary để client thay tại chỗ, không tự ghép diff; `archived: true` là tín hiệu để client đóng khung soạn |
+| `THREAD_DELETE` | channel (**kênh cha**) | ✗ | `{ id, parentChannelId }` — thread bị xoá hẳn cùng tin nhắn của nó |
+| `MESSAGE_PIN_UPDATE` | channel | ✗ | `{ id, channelId, pinned }` — ghim/bỏ ghim. Tách khỏi `MESSAGE_UPDATE` vì sửa nội dung (quyền tác giả) và ghim (`MANAGE_MESSAGES`) là hai thao tác khác nhau; client chỉ cập nhật đúng trường `pinned` |
+| `MESSAGE_REACTION_UPDATE` | channel | ✗ | `{ messageId, channelId, emoji, count, userId, added }` — thả/bỏ một emoji. Gửi **delta** (`count` là số tuyệt đối, `userId` là người vừa thao tác) chứ không gửi cả danh sách, vì cờ "tôi đã thả chưa" (`me`) khác nhau theo từng người xem. Nhờ vậy client áp được idempotent kể cả khi event bị phát lại sau reconnect; thao tác lặp không đổi DB thì **không** phát event |
+| `USER_UPDATE` | guild + session của chính user | ✗ | `{ user: { id, username, displayName, avatarUrl, bio, pronouns, bannerColor } }` — hồ sơ công khai đổi (avatar, tên, giới thiệu, đại từ, màu banner). Trường hồ sơ **vắng mặt** thì client giữ nguyên giá trị đang có (bản phát cũ không có `bio`), không ghi thành `null`. Gửi tới **mọi guild mà user là thành viên** và tới các session của chính họ (tab/thiết bị khác). Không kèm `status`: presence vẫn đi qua `PRESENCE_UPDATE` để hai nguồn không ghi đè nhau |
+| `ROLE_CREATE` / `ROLE_UPDATE` | guild | ✓ | `{ guildId, role: Role }` — role vừa tạo/sửa (kèm `isEveryone`); quyền **hiệu dụng** của từng user vẫn do `PERMISSIONS_UPDATE` đẩy riêng. Kéo-thả đổi cấp (`PATCH /guilds/:id/roles/:roleId { position }`, `position` = thứ hạng **trên xuống**) renumber cả dãy nên phát `ROLE_UPDATE` cho **đúng những role đổi `position`**, theo thứ tự mới — client chỉ cần sort lại; kéo vào đúng chỗ cũ không phát gì |
 | `ROLE_DELETE` | guild | ✓ | `{ guildId, roleId }` — `member_roles` cascade theo FK nên client tự coi như role đã gán cho ai cũng biến mất |
-| `VOICE_STATE_UPDATE` | guild/channel | ✓ (bền) | `{ guildId, channelId, userId, sessionId, muted, deafened, speaking }` |
+| `FRIEND_REQUEST_CREATE` | user (người nhận) | ✗ | `FriendRequestSummary` = `{ user: { id, username, displayName, avatarUrl }, createdAt }` — mang **người gửi** lời mời |
+| `FRIEND_ADD` | user (cả hai phía) | ✗ | `FriendSummary` = `{ user, since }` — thành bạn (đồng ý, hoặc hai lời mời chéo nhau) |
+| `FRIEND_REMOVE` | user (cả hai phía) | ✗ | `{ userId }` — huỷ kết bạn, từ chối/huỷ lời mời, hoặc do một bên **chặn** (chặn cắt luôn quan hệ bạn bè) |
+| `USER_SETTINGS_UPDATE` | session của chính user | ✗ | `UserSettings` = `{ dmPrivacy: "everyone" \| "friends" }` — cài đặt của chính mình vừa đổi (tab/thiết bị khác cập nhật theo) |
+| `MESSAGE_REQUEST_CREATE` | user (người nhận) | ✗ | `MessageRequestSummary` = `{ channelId, sender, createdAt, preview, messageCount }` — người lạ vừa mở DM với mình trong khi mình đặt "chỉ bạn bè". Không kèm `DM_CHANNEL_CREATE` (họ chưa được thấy kênh) |
+| `MESSAGE_REQUEST_REMOVE` | user (người nhận) | ✗ | `{ channelId }` — yêu cầu đã xử lý xong: đồng ý, từ chối, kết bạn với người gửi, hoặc bị chặn |
+| `READ_STATE_UPDATE` | session của chính user | ✗ | `ReadState` = `{ channelId, lastReadMessageId, unread, mentions }` — sau mỗi lần ack; tính lại từ DB nên luôn khớp `GREATEST`. Client thay đúng ba con số, không tự suy luận |
+| `VOICE_STATE_UPDATE` | channel + chính người liên quan | ✓ (bền) | `{ guildId, channelId \| null, userId, selfMute, selfDeaf, joinedAt }` — `channelId: null` = rời phòng; cùng shape với `VoiceState` (xem §5.3). Chưa có `speaking` (đi qua SFU khi có audio) |
 
 Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake luôn là **string**; thời gian là ISO-8601 UTC (trừ `TYPING_START.timestamp` là epoch ms).
 
 ### 6.1 Sự kiện dự kiến thêm (không phải v1)
 
-`GUILD_UPDATE`, `GUILD_DELETE`, `GUILD_MEMBER_REMOVE`, `MESSAGE_REACTION_ADD/REMOVE`, `CHANNEL_PINS_UPDATE`, `READ_STATE_UPDATE`, `INVITE_CREATE/DELETE`, `VOICE_SPEAKING` (tách khỏi `VOICE_STATE_UPDATE` nếu tần suất gây nhiễu). Thêm event = thêm key vào `GatewayEventMap`, **không** tăng version (client bỏ qua event lạ).
+`GUILD_UPDATE`, `GUILD_DELETE`, `GUILD_MEMBER_REMOVE`, `CHANNEL_PINS_UPDATE`, `INVITE_CREATE/DELETE`, `VOICE_SPEAKING` (tách khỏi `VOICE_STATE_UPDATE` nếu tần suất gây nhiễu). Thêm event = thêm key vào `GatewayEventMap`, **không** tăng version (client bỏ qua event lạ).
 
 ---
 
@@ -223,7 +308,23 @@ Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake l
 | Frame size | 4 KiB | đóng `1009` |
 | `POST /channels/{id}/typing` | 1/8 s/user/channel | `429` + `retry_after` |
 | `POST /channels/{id}/messages` | 5/5 s/user/channel, 30/phút/kênh | `429` (không phát dispatch) |
+| `PUT/DELETE /channels/{id}/voice`, `PATCH /guilds/{id}/voice-state` | 10 lần/10 s/user | `429` + `retry_after` |
 | Kết nối/user | 5 session | session cũ nhất bị đóng `4003` |
+
+Bảng trên **đã được hiện thực** (`services/api/src/rateLimit.ts` + `gateway/hub.ts` + `messages/routes.ts`), có test riêng ở `services/api/test/rate-limit.test.ts` và `services/api/test/rate-limit-gateway.test.ts`.
+
+Cách đếm:
+
+- **Token bucket** chứ không phải "đếm trong cửa sổ cố định": cửa sổ cố định cho phép bắn 2× giới hạn ở ranh giới hai cửa sổ, bucket thì làm mượt theo thời gian thật. Body `429` luôn là `{ error: { code: "RATE_LIMITED", message }, retry_after }` với `retry_after` tính bằng **giây** (làm tròn lên, tối thiểu 1) để client hiện được "thử lại sau N giây".
+- **Frame/phút tính cả frame rác** (sai JSON, opcode lạ): đếm trước khi parse, nếu không kẻ tấn công chỉ cần gửi rác để ép server parse liên tục.
+- **HEARTBEAT** có bucket riêng (1 + 2 dư mỗi interval) vì client gửi dày thường do jitter — đóng kết nối sẽ tạo vòng reconnect vô ích. Vượt thì **im lặng bỏ qua**, không đóng; chỉ log lần đầu của mỗi chuỗi dư (log từng frame thì log lại thành kênh tấn công).
+- **`IDENTIFY` và `RESUME` đếm riêng**, mỗi loại 1 lần/5 s/socket. Gộp chung một bộ đếm sẽ đóng `4004` oan cho luồng hợp lệ `RESUME` → `INVALID_SESSION` → `IDENTIFY` ngay trên cùng kết nối (§2.1) — đúng lỗi một test có sẵn đã bắt được.
+- **Tin nhắn** kiểm *trước* khi đọc multipart/ghi đĩa, nên bị chặn thì không có tệp mồ côi, không ghi DB và **không phát `MESSAGE_CREATE`**. Hai bucket độc lập: người bình thường không chạm trần kênh, còn kênh bị nhiều tài khoản spam thì trần kênh (30/phút) mới là thứ cứu server.
+- **Trần session/user** đóng session **cũ nhất còn sống** (không phải session vừa mở) trước khi tạo session mới — đúng ca "mất mạng rồi mở lại nhiều lần".
+
+Tinh chỉnh bằng biến môi trường: `RATE_LIMITS=off` (mặc định bật), `RATE_LIMIT_MESSAGES_PER_USER` (5), `RATE_LIMIT_MESSAGES_PER_CHANNEL` (30), `RATE_LIMIT_GATEWAY_FRAMES_PER_MINUTE` (120), `RATE_LIMIT_SESSIONS_PER_USER` (5). Test dùng chung đặt các trần này rất cao để không phải chờ, test riêng của rate limit hạ thấp để kiểm hành vi chặn.
+
+> **Đa node**: bộ đếm nằm trong bộ nhớ từng process (§9), nên với N node thì giới hạn thực tế là N × cấu hình. Muốn đúng tuyệt đối phải chuyển sang Redis (`INCR` + `EXPIRE`) cùng lúc với replay log.
 
 ---
 
@@ -242,19 +343,29 @@ Quy ước payload: `camelCase` khớp type trong `@umaru/protocol`; snowflake l
 
 ## 9. Việc còn thiếu so với spec này (ghi nhận trung thực)
 
-- **Replay log đang nằm trong bộ nhớ một process** (`MAX_REPLAY_EVENTS`, TTL session), chưa phải Redis Streams như §4.2. Resume qua nhiều node và qua restart server chưa hoạt động — phải thay `GatewayHub` phần replay khi lên đa node (ADR-0003).
-- **Chưa có rate limit** cho `IDENTIFY`/frame (spec §7): hiện chỉ giới hạn kích thước frame 4 KiB và typing 1/8s ở REST.
-- `READY` đã có `guilds[]` (`{ guild, channels, roles, members }` — member kèm `roleIds`), `dms[]` (`{ channel, recipient }`), `readStates[]` (`{ channelId, lastReadMessageId, unread, mentions }`) và `channelPermissions` (channelId → bitfield của **chính user nhận**, server tính bằng `resolvePermissions`; gồm cả DM); `voiceStates[]` để G2.
+- **Session + replay đã nằm trong Redis** khi đặt `REDIS_URL` (ADR-0006): resume được khi client đổi node và khi API restart. Còn lại: **cửa sổ** khi node chết — frame chỉ được ghi bởi node đang sở hữu session, nên tin nhắn phát sinh trong lúc node đó chết không vào replay (và không phát hiện được để báo khoảng trống). Không đặt `REDIS_URL` thì replay vẫn trong RAM (một node).
+- **Rate limit đã có** cho `IDENTIFY`/`RESUME`/frame/session và cho `POST /messages` (spec §7), nhưng bộ đếm **nằm trong bộ nhớ từng process** — đa node thì giới hạn thực tế nhân lên theo số node, và restart server là mất trạng thái (chấp nhận được: cửa sổ ngắn). Chuyển sang Redis khi lên đa node.
+- Đóng `1009` (frame quá lớn) hiện **vẫn để client reconnect** theo backoff chung; spec §2.1 nói "không reconnect". Hành vi hiện tại an toàn hơn (client gửi frame lớn thường do bug, reconnect một lần rồi bỏ), nhưng chưa khớp câu chữ.
+- `READY` có thêm `threads[]` (`ThreadSummary`) = các thread **đang mở** trong mọi guild user là thành viên; thread **không** nằm trong `guilds[].channels` (không thuộc sidebar) nhưng vẫn có quyền trong `channelPermissions` và vẫn nhận fan-out tin.
+- `READY` đã có `guilds[]` (`{ guild, channels, roles, members }` — member kèm `roleIds`), `dms[]` (`DmChannelSummary`: `channel`, `recipients`, `recipient` (chỉ DM 1-1, group DM = `null`), `ownerId`/`name` cho group DM), `readStates[]` (`{ channelId, lastReadMessageId, unread, mentions }`), `channelPermissions` (channelId → bitfield của **chính user nhận**, server tính bằng `resolvePermissions`; gồm cả DM) và `voiceStates[]` (chỉ kênh user xem được).
+- **Voice mới có lớp state, chưa có âm thanh**: `PUT/DELETE /channels/{id}/voice` + `PATCH /guilds/{id}/voice-state`, `VOICE_STATE_UPDATE` / `READY.voiceStates`, quyền `CONNECT` (vào phòng) và `VIEW_CHANNEL` (thấy ai trong phòng). Chưa có SFU, chưa có `speaking`, chưa có token phòng — cắm LiveKit Cloud là bước tiếp theo của G2 và **không kiểm chứng được trong sandbox** này.
 - Thay đổi role của **thành viên** phát `GUILD_MEMBER_UPDATE` cho cả server; THAY ĐỔI role (tạo/sửa/xoá) phát `ROLE_CREATE/UPDATE/DELETE`. `ROLE_DELETE` không tự phát `GUILD_MEMBER_UPDATE` cho từng người — client dựa vào `member_roles` cascade và bỏ `roleId` khỏi chip của mọi member.
 - `channelPermissions` được đẩy lại qua `PERMISSIONS_UPDATE` mỗi khi `refreshUserVisibility`/`refreshGuildVisibility` chạy: tạo/sửa/xoá kênh, tạo guild, nhận invite, các thao tác role (`PATCH`/`DELETE` role, gán/thu role) và **mọi thay đổi overwrite theo kênh**. Cùng lúc đó gateway gửi `CHANNEL_DELETE` cho kênh vừa mất quyền xem và `CHANNEL_CREATE` cho kênh vừa được xem — client không cần reconnect. Client luôn coi đây là gợi ý UI: quyền thật vẫn do server kiểm tra ở REST/gateway.
 - Overwrite đặt trên **category** được kế thừa xuống channel con (category áp trước, kênh đè sau) — danh sách `CHANNEL_*` phản ánh đúng những gì server đã tính sẵn, client không tự suy luận. `PATCH /channels/:id` đổi `parentId` cũng phát `CHANNEL_UPDATE` + `PERMISSIONS_UPDATE` vì quyền hiệu dụng có thể đổi theo category mới; chỉ đổi `position` (kéo-thả) thì **không** gọi `refreshGuildVisibility` — chỉ phát `CHANNEL_UPDATE` cho các kênh đổi vị trí, vì tập kênh hiển thị không đổi.
 - Chỉ số `position` trong `Channel` là thứ tự **trong nhóm kênh cùng `parentId`**. Client gửi lại chính chỉ số này khi thả (`PATCH { parentId?, position }`), không gửi cả thứ tự; server kẹp chỉ số về 0..n nên client không cần đồng bộ danh sách đầy đủ trước khi thả.
-- **Badge chưa đọc không phát event qua gateway**: client tự tăng đếm khi nhận `MESSAGE_CREATE` (bỏ qua tin của chính mình) và gọi `POST /channels/:id/read` khi mở kênh. Đổi trạng thái đã đọc từ thiết bị khác chưa đồng bộ realtime — mở lại app (READY) mới cập nhật; event `READ_STATE_UPDATE` để P1.
+- **Badge chưa đọc**: client tự tăng đếm khi nhận `MESSAGE_CREATE` (bỏ qua tin của chính mình) và gọi `POST /channels/:id/read` khi mở kênh. Server phát **`READ_STATE_UPDATE`** (transient, tới **mọi** session của chính người đó) sau mỗi lần ack, mang state **đọc lại từ DB** chứ không phải giá trị client vừa gửi — `GREATEST` có thể đã bị tab khác đẩy mốc xa hơn. Nhờ vậy đọc trên điện thoại thì tab laptop tắt badge ngay, không phải chờ mở lại kênh hay reconnect.
 - Khi user tạo guild hoặc join invite, server đồng bộ lại quyền hiển thị cho session đang mở (`refreshUserVisibility`) vì READY đã chạy trước đó.
 - **DM** là `Channel` có `type: "dm"`, `guildId: null`; quyền xem suy ra từ bảng `channel_members` (không qua role/overwrite) và được nạp vào `visibleChannels` khi READY, khi tạo DM (`grantChannelAccess`) và khi resume. `DM_CHANNEL_CREATE` không vào replay log (transient) — client lấy lại danh sách qua `GET /users/@me/channels` nếu lỡ.
-- Client chưa **dedupe theo `s`** (chỉ ghi nhận `s`); server replay đã lọc `s > seq` nên chưa gây lỗi, nhưng nên thêm.
-- Client chưa tự **refresh token** khi gặp `4000`.
-- Chưa có sharding (`shard` luôn 0).
-- Heartbeat chưa jitter.
-- Chưa có nén frame; `OP 3`/`OP 4` (client → server) để trống có chủ đích ở v1.
-- Presence hiện là in-memory theo session của process; chưa đọc/ghi Redis.
+- **Client đã dedupe theo `s`**: `READY` (session mới) đặt lại bộ đếm, mọi dispatch khác phải có `s` lớn hơn `s` đã nhận, frame trùng/`s` cũ bị bỏ. Trước đây server replay đã lọc `s > seq` nên chưa lỗi, nhưng chồng lấn khi replay là chuyện có thể xảy ra và hậu quả thấy được (tin nhắn lặp).
+- **Client đã tự refresh token khi gặp `4000`**: SDK nhận hook `onAuthFailure` (web nối vào `refreshSession()` dùng chung với REST), refresh xong resume lại session cũ; refresh hỏng hoặc không có hook → `closed` (đăng xuất mềm) chứ không thử lại vô hạn (giới hạn 2 lần liên tiếp). Đã xử lý cả `4003` (xoá session để IDENTIFY lại) và `4004` (chờ ≥ 5 s).
+- Chưa có sharding (`shard` luôn 0). Có **nhiều node** (bus Redis, ADR-0005) nhưng
+  không chia shard: mỗi client tự chọn node qua load balancer, không có `GUILD_CREATE`
+  sharding như Discord.
+- Nén frame đã có (`permessage-deflate`, §1) — tắt bằng `GATEWAY_COMPRESS=off`.
+- Presence: nguồn sự thật vẫn là bộ nhớ của node đang giữ session; đa node thì **đồng
+  bộ qua bus** (thay đổi + snapshot lúc node mới vào), chưa đọc/ghi Redis. Node chết →
+  người trên node đó coi như offline cho tới khi nối lại.
+- **Rate limit và throttle typing đếm theo node**, chưa theo cụm (Redis) — hai node thì
+  giới hạn thực tế ×2.
+- `OP 3` (presence) đã dùng; `OP 4` (voice state client → server) để trống có chủ đích
+  ở v1 — trạng thái thoại đi qua REST.

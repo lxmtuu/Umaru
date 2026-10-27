@@ -16,6 +16,8 @@ export const Permission = {
   READ_HISTORY: 1n << 8n,
   CONNECT: 1n << 9n, // voice — G2
   SPEAK: 1n << 10n, // voice — G2
+  /** Quản lý sticker/emoji của server (tạo gói, tải sticker lên, xoá). */
+  MANAGE_EXPRESSIONS: 1n << 12n,
   /** Siêu quyền: bỏ qua mọi permission check khác (owner hoặc role admin). */
   ADMINISTRATOR: 1n << 11n,
 } as const;

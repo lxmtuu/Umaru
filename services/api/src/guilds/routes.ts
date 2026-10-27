@@ -26,6 +26,7 @@ import {
   type RoleRow,
 } from "../mappers.js";
 import { loadMemberSummary } from "../bootstrap.js";
+import { loadDmSummary, renameGroupDm } from "../dms/group.js";
 import type { Config } from "../config.js";
 import type { Pool } from "../db.js";
 import type { EventPublisher } from "../events.js";
@@ -40,8 +41,19 @@ export interface GuildDeps {
   publisher: EventPublisher;
 }
 
+/**
+ * Quyền mặc định của `@everyone` khi tạo server.
+ *
+ * Có `CONNECT`/`SPEAK` từ đầu (như Discord): kênh thoại mới tạo phải dùng được
+ * ngay, không bắt chủ server đi cấp quyền trước. Muốn hạn chế thì đặt overwrite
+ * theo kênh — đúng cách.
+ */
 const DEFAULT_EVERYONE_PERMISSIONS =
-  Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES | Permission.READ_HISTORY;
+  Permission.VIEW_CHANNEL |
+  Permission.SEND_MESSAGES |
+  Permission.READ_HISTORY |
+  Permission.CONNECT |
+  Permission.SPEAK;
 
 const CHANNEL_TYPES = new Set<ChannelType>(["guild_text", "guild_voice", "category"]);
 
@@ -49,6 +61,22 @@ const CHANNEL_TYPES = new Set<ChannelType>(["guild_text", "guild_voice", "catego
 function readPosition(raw: unknown): number {
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 100_000) {
     throw badRequest("position phải là số nguyên từ 0 đến 100000");
+  }
+  return raw;
+}
+
+/** Trần slowmode = 6 giờ (Discord cũng vậy; dài hơn là "khoá kênh", nên làm bằng quyền). */
+export const MAX_SLOWMODE_SECONDS = 21_600;
+
+/**
+ * `slowmodeSeconds` nhận 0..21600 (0 = tắt) hoặc `null` (= tắt).
+ * Chấp nhận số thực? Không: bán giây không có nghĩa với người dùng và chỉ làm
+ * client phải làm tròn.
+ */
+function readSlowmode(raw: unknown): number {
+  if (raw === null) return 0;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > MAX_SLOWMODE_SECONDS) {
+    throw badRequest(`slowmodeSeconds phải là số nguyên từ 0 đến ${MAX_SLOWMODE_SECONDS}`);
   }
   return raw;
 }
@@ -114,6 +142,77 @@ function requireCanGrant(context: GuildContext, bits: bigint): void {
   if (isAdmin(context.permissions)) return;
   if ((bits & ~context.permissions) !== 0n) {
     throw forbidden("Không thể cấp quyền ngoài tập quyền của bạn");
+  }
+}
+
+/**
+ * Kéo-thả đổi cấp role: chèn `role` vào chỉ số `index` (0 = trên cùng, **không
+ * tính** `@everyone`), rồi renumber toàn bộ role của server từ M (trên cùng)
+ * xuống 1 (dưới cùng). `@everyone` luôn giữ `position = 0` ở đáy nên không bao
+ * giờ bị đẩy lên/xuống theo.
+ *
+ * Trả về những role **thật sự đổi `position`**, theo đúng thứ tự mới, để
+ * fan-out `ROLE_UPDATE` — client khác xếp lại ngay mà không cần tải lại.
+ *
+ * Fail-closed: non-admin không được đẩy role lên trên cấp cao nhất của mình
+ * (làm vậy là tự nâng quyền qua phân cấp); khoá advisory theo guild để hai
+ * người kéo cùng lúc không renumber chồng nhau thành position trùng.
+ */
+async function reorderRoles(
+  pool: Pool,
+  context: GuildContext,
+  role: RoleRow,
+  index: number,
+  guildId: string,
+): Promise<RoleRow[]> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`roles:${guildId}`]);
+
+    const siblings = await client.query<{ id: string; position: number }>(
+      `SELECT id, position FROM roles
+        WHERE guild_id = $1 AND is_everyone = false AND id <> $2
+        ORDER BY position DESC, id DESC`,
+      [guildId, role.id],
+    );
+    const before = new Map<string, number>(siblings.rows.map((row) => [row.id, row.position]));
+    before.set(role.id, role.position);
+
+    const ids = siblings.rows.map((row) => row.id);
+    const at = Math.min(index, ids.length);
+    const ordered = [...ids.slice(0, at), role.id, ...ids.slice(at)];
+    const total = ordered.length;
+    // Chỉ số từ trên xuống 0..M-1 ↔ position M..1 (cao = mạnh hơn).
+    if (!isAdmin(context.permissions) && total - at > highestRolePosition(context)) {
+      throw forbidden("Không thể đưa role lên trên cấp cao nhất của bạn");
+    }
+
+    await client.query(
+      `UPDATE roles AS r
+          SET position = v.pos
+         FROM unnest($1::bigint[], $2::integer[]) AS v(id, pos)
+        WHERE r.id = v.id`,
+      [ordered, ordered.map((_, position) => total - position)],
+    );
+
+    const after = await client.query<RoleRow>(
+      `SELECT ${ROLE_COLUMNS} FROM roles WHERE id = ANY($1::bigint[])`,
+      [ordered],
+    );
+    const byId = new Map(after.rows.map((row) => [row.id, row]));
+    const changed: RoleRow[] = [];
+    for (const id of ordered) {
+      const row = byId.get(id);
+      if (row !== undefined && before.get(row.id) !== row.position) changed.push(row);
+    }
+    await client.query("COMMIT");
+    return changed;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
@@ -258,7 +357,7 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       const inserted = await pool.query<ChannelRow>(
         `INSERT INTO channels (id, guild_id, type, name, parent_id, position)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, guild_id, type, name, topic, parent_id, position`,
+         RETURNING id, guild_id, type, name, topic, parent_id, position, slowmode_seconds`,
         [
           channelId,
           request.params.guildId,
@@ -283,11 +382,28 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
     async (request, reply) => {
       const userId = requireUserId(request);
       const context = await loadChannelContext(pool, userId as Snowflake, request.params.channelId);
-      if (context.guild === null) throw notFound("Kênh không tồn tại");
+      if (context.guild === null) {
+        // `loadChannelContext` đã kiểm tư cách thành viên; chỉ group DM mới có
+        // tên để đổi (DM 1-1 luôn hiển thị theo tên người kia).
+        if (context.channel.type !== "group_dm") throw notFound("Kênh không tồn tại");
+        const body = request.body as Record<string, unknown> | undefined;
+        if (body === undefined || !("name" in body)) {
+          throw badRequest('Thiếu trường "name"');
+        }
+        await renameGroupDm(pool, publisher, request.params.channelId, body.name);
+        const summary = await loadDmSummary(pool, request.params.channelId, userId);
+        if (summary === null) throw notFound("Nhóm không tồn tại");
+        return reply.send(summary);
+      }
       if (!canManageChannels(context.permissions | context.guild.permissions)) {
         throw forbidden("Cần quyền MANAGE_CHANNELS");
       }
 
+      // Thread có route riêng (`PATCH /channels/:id/thread`): sửa bằng route kênh
+      // sẽ phát `CHANNEL_UPDATE` mà client không dùng để cập nhật danh sách thread.
+      if (context.channel.type === "guild_thread") {
+        throw badRequest("Đây là thread — dùng PATCH /channels/:id/thread");
+      }
       const body = request.body as Record<string, unknown> | undefined;
       const name = body?.name === undefined ? null : readString(body, "name", { min: 1, max: 100 });
       const topic = body?.topic === undefined ? undefined : readString(body, "topic", { min: 0, max: 1024 });
@@ -314,19 +430,34 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       // `position` = chỉ số trong nhóm kênh cùng category (0 = đầu nhóm) — cho kéo-thả.
       const movesPosition = body !== undefined && "position" in body && body.position !== null;
       const position = movesPosition ? readPosition(body?.position) : 0;
-      if (name === null && topic === undefined && !movesCategory && !movesPosition) {
+      // Slowmode: **0 = tắt**, 1..21600 giây. Gửi `null` cũng coi như tắt (UI có nút "Tắt").
+      const setsSlowmode = body !== undefined && "slowmodeSeconds" in body;
+      const slowmodeSeconds = setsSlowmode ? readSlowmode(body?.slowmodeSeconds) : 0;
+      if (
+        name === null &&
+        topic === undefined &&
+        !movesCategory &&
+        !movesPosition &&
+        !setsSlowmode
+      ) {
         throw badRequest("Không có gì để cập nhật");
       }
+      // Category không có tin nhắn nên slowmode ở đó là vô nghĩa — từ chối thay vì
+      // lưu một con số không bao giờ được đọc.
+      if (setsSlowmode && context.channel.type !== "guild_text" && context.channel.type !== "guild_voice") {
+        throw badRequest("Chỉ kênh chữ/kênh thoại mới đặt slowmode");
+      }
 
-      if (name !== null || topic !== undefined || movesCategory) {
+      if (name !== null || topic !== undefined || movesCategory || setsSlowmode) {
         await pool.query(
           `UPDATE channels
               SET name = COALESCE($2, name),
                   topic = COALESCE($3, topic),
                   parent_id = CASE WHEN $4 THEN $5 ELSE parent_id END,
+                  slowmode_seconds = CASE WHEN $6 THEN $7 ELSE slowmode_seconds END,
                   updated_at = now()
             WHERE id = $1`,
-          [request.params.channelId, name, topic ?? null, movesCategory, parentId],
+          [request.params.channelId, name, topic ?? null, movesCategory, parentId, setsSlowmode, slowmodeSeconds],
         );
       }
 
@@ -363,7 +494,7 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
         );
 
         const after = await pool.query<ChannelRow>(
-          `SELECT id, guild_id, type, name, topic, parent_id, position
+          `SELECT id, guild_id, type, name, topic, parent_id, position, slowmode_seconds
              FROM channels WHERE id = ANY($1::bigint[])`,
           [ordered],
         );
@@ -376,7 +507,7 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       }
 
       const updated = await pool.query<ChannelRow>(
-        `SELECT id, guild_id, type, name, topic, parent_id, position
+        `SELECT id, guild_id, type, name, topic, parent_id, position, slowmode_seconds
            FROM channels WHERE id = $1`,
         [request.params.channelId],
       );
@@ -386,7 +517,9 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
 
       // Chỉ đổi category thì tập kênh hiển thị mới đổi → tính lại quyền/visibility.
       if (movesCategory) await publisher.refreshGuildVisibility(guildId);
-      if (name !== null || topic !== undefined || movesCategory) changed.set(channel.id, channel);
+      if (name !== null || topic !== undefined || movesCategory || setsSlowmode) {
+        changed.set(channel.id, channel);
+      }
       for (const row of changed.values()) {
         publisher.publishToGuild(guildId, "CHANNEL_UPDATE", mapChannel(row));
       }
@@ -403,6 +536,9 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       if (context.guild === null) throw notFound("Kênh không tồn tại");
       if (!canManageChannels(context.permissions | context.guild.permissions)) {
         throw forbidden("Cần quyền MANAGE_CHANNELS");
+      }
+      if (context.channel.type === "guild_thread") {
+        throw badRequest("Đây là thread — dùng DELETE /channels/:id/thread");
       }
       await pool.query("DELETE FROM channels WHERE id = $1", [request.params.channelId]);
       const guildId = context.channel.guild_id ?? "";
@@ -495,35 +631,73 @@ export function registerGuildRoutes(app: FastifyInstance, deps: GuildDeps): void
       const name = body?.name === undefined ? null : readString(body, "name", { min: 1, max: 100 });
       const color = readRoleColor(body);
       const bits = readPermissionBits(body);
-      if (name === null && color === null && bits === null) {
+      // `position` ở đây là **thứ hạng kéo-thả** (0 = trên cùng), khác `Role.position`
+      // (cao = mạnh hơn) mà response trả về — đừng nhầm hai chiều.
+      const movesPosition = body !== undefined && "position" in body && body.position !== null;
+      if (name === null && color === null && bits === null && !movesPosition) {
         throw badRequest("Không có gì để cập nhật");
       }
       if (bits !== null) requireCanGrant(context, bits);
 
-      const updated = await pool.query<RoleRow>(
-        `UPDATE roles
-            SET name = COALESCE($3, name),
-                color = COALESCE($4, color),
-                permissions = COALESCE($5, permissions)
-          WHERE id = $1 AND guild_id = $2
-          RETURNING ${ROLE_COLUMNS}`,
-        [
-          request.params.roleId,
-          request.params.guildId,
-          name,
-          color,
-          bits === null ? null : serializePermissions(bits),
-        ],
-      );
-      const updatedRole = updated.rows[0];
-      if (updatedRole === undefined) throw notFound("Role không tồn tại");
+      let updatedRole = role;
+      if (name !== null || color !== null || bits !== null) {
+        const updated = await pool.query<RoleRow>(
+          `UPDATE roles
+              SET name = COALESCE($3, name),
+                  color = COALESCE($4, color),
+                  permissions = COALESCE($5, permissions)
+            WHERE id = $1 AND guild_id = $2
+            RETURNING ${ROLE_COLUMNS}`,
+          [
+            request.params.roleId,
+            request.params.guildId,
+            name,
+            color,
+            bits === null ? null : serializePermissions(bits),
+          ],
+        );
+        const row = updated.rows[0];
+        if (row === undefined) throw notFound("Role không tồn tại");
+        updatedRole = row;
+      }
 
+      const changedFields = name !== null || color !== null || bits !== null;
       // Quyền role đổi → hiệu dụng của mọi thành viên mang role đó đổi theo.
-      await publisher.refreshGuildVisibility(request.params.guildId);
-      publisher.publishToGuild(request.params.guildId, "ROLE_UPDATE", {
-        guildId: request.params.guildId as Snowflake,
-        role: mapRole(updatedRole),
-      });
+      // (Chỉ đổi tên/màu hoặc thứ hạng thì tập kênh hiển thị không đổi.)
+      if (bits !== null) await publisher.refreshGuildVisibility(request.params.guildId);
+
+      let published = false;
+      if (movesPosition) {
+        // Kéo-thả chỉ đổi **thứ hạng**: không ai được/mất quyền, nên không cần
+        // `refreshGuildVisibility` — chỉ fan-out role nào đổi chỗ, theo thứ tự mới.
+        if (updatedRole.is_everyone) throw badRequest("@everyone luôn ở dưới cùng");
+        const changed = await reorderRoles(
+          pool,
+          context,
+          updatedRole,
+          readPosition(body?.position),
+          request.params.guildId,
+        );
+        for (const row of changed) {
+          publisher.publishToGuild(request.params.guildId, "ROLE_UPDATE", {
+            guildId: request.params.guildId as Snowflake,
+            role: mapRole(row),
+          });
+          if (row.id === updatedRole.id) {
+            updatedRole = row;
+            published = true;
+          }
+        }
+      }
+      // Thả đúng chỗ cũ (không ai đổi position) vẫn phải phát nếu tên/quyền vừa
+      // sửa — và không bao giờ phát hai lần cho cùng một role trong một request.
+      if (changedFields && !published) {
+        publisher.publishToGuild(request.params.guildId, "ROLE_UPDATE", {
+          guildId: request.params.guildId as Snowflake,
+          role: mapRole(updatedRole),
+        });
+      }
+
       return reply.send(mapRole(updatedRole));
     },
   );

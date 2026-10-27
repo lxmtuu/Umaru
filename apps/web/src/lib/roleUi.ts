@@ -11,7 +11,10 @@ export const PERMISSION_ROWS: Array<{ flag: bigint; label: MessageKey }> = [
   { flag: Permission.MANAGE_ROLES, label: "permManageRoles" },
   { flag: Permission.KICK_MEMBERS, label: "permKickMembers" },
   { flag: Permission.BAN_MEMBERS, label: "permBanMembers" },
+  { flag: Permission.CONNECT, label: "permConnect" },
+  { flag: Permission.SPEAK, label: "permSpeak" },
   { flag: Permission.MENTION_EVERYONE, label: "permMentionEveryone" },
+  { flag: Permission.MANAGE_EXPRESSIONS, label: "permManageExpressions" },
   { flag: Permission.ADMINISTRATOR, label: "permAdministrator" },
 ];
 

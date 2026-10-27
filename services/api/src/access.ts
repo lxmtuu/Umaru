@@ -150,7 +150,7 @@ export async function loadChannelContext(
   required: bigint | null = null,
 ): Promise<ChannelContext> {
   const channelResult = await pool.query<ChannelRow>(
-    `SELECT id, guild_id, type, name, topic, parent_id, position
+    `SELECT id, guild_id, type, name, topic, parent_id, position, slowmode_seconds
        FROM channels WHERE id = $1`,
     [channelId],
   );
@@ -204,8 +204,10 @@ export async function listGuildChannelsForUser(
   if (context === null) throw notFound("Server không tồn tại");
 
   const channelResult = await pool.query<ChannelRow>(
-    `SELECT id, guild_id, type, name, topic, parent_id, position
-       FROM channels WHERE guild_id = $1 ORDER BY position, id`,
+    `SELECT id, guild_id, type, name, topic, parent_id, position, slowmode_seconds
+       FROM channels
+      WHERE guild_id = $1 AND type <> 'guild_thread'
+      ORDER BY position, id`,
     [guildId],
   );
   const overwriteResult = await pool.query<{

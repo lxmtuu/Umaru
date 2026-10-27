@@ -12,6 +12,13 @@ export interface EventPublisher {
     event: E,
     data: GatewayEventMap[E],
   ): void;
+  /**
+   * `VOICE_STATE_UPDATE`: gửi cho người **xem được** kênh thoại + chính người
+   * liên quan (kể cả khi họ vừa mất quyền xem kênh — họ vẫn phải biết mình đã bị
+   * đưa ra khỏi phòng). Không dùng `publishToChannel` trực tiếp vì hàm đó lọc
+   * theo `visibleChannels` và sẽ bỏ sót đúng người cần biết.
+   */
+  publishVoiceState(channelId: string, data: GatewayEventMap["VOICE_STATE_UPDATE"]): void;
   /** Phát tới mọi session đang mở của một user (DM, thông báo riêng). */
   publishToUser<E extends GatewayEventName>(
     userId: string,
@@ -20,8 +27,23 @@ export interface EventPublisher {
   ): void;
   /** Cho phép session nhận fan-out của kênh mới (DM tạo lúc user đang online). */
   grantChannelAccess(channelId: string, userIds: string[]): void;
+  /**
+   * Ngược lại `grantChannelAccess`: ngừng fan-out + phát `CHANNEL_DELETE`
+   * (`guildId: null`) để client bỏ kênh khỏi sidebar. Dùng khi từ chối yêu cầu
+   * nhắn tin (kênh bị xoá) — session đang mở sẽ không thấy kênh ma.
+   */
+  revokeChannelAccess(channelId: string, userIds: string[]): void;
   /** Tính lại tập kênh hiển thị cho mọi session đang mở của một guild. */
   refreshGuildVisibility(guildId: string): Promise<void>;
   /** Tính lại guild + kênh cho mọi session của một user (tạo guild, join invite). */
   refreshUserVisibility(userId: string): Promise<void>;
+  /**
+   * Tính lại **danh sách bạn** cho session của một user (kết bạn, xoá bạn).
+   *
+   * Khác `refreshUserVisibility` ở chỗ nó còn gửi `PRESENCE_UPDATE` cho chính
+   * người đó và cho bạn của họ. Khi chạy nhiều node, session của user có thể nằm
+   * ở node khác — nếu chỉ tính cục bộ thì bạn mới kết sẽ không thấy nhau "đang
+   * online" cho tới lần reconnect sau.
+   */
+  refreshFriendAudience(userId: string): Promise<void>;
 }

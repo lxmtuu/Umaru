@@ -1,5 +1,7 @@
 import type {
   Channel,
+  FriendRequestSummary,
+  FriendSummary,
   Guild,
   GuildMember,
   Message,
@@ -7,6 +9,8 @@ import type {
   ReadState,
   Role,
   User,
+  UserProfile,
+  UserSettings,
 } from "./api.js";
 import type { Snowflake } from "./snowflake.js";
 
@@ -47,7 +51,21 @@ export interface ResumePayload {
   d: { token: string; sessionId: string; seq: number };
 }
 
-export type GatewaySendPayload = HeartbeatPayload | IdentifyPayload | ResumePayload;
+/**
+ * client → server: đổi trạng thái hiển thị (mục "Trực tuyến / Không làm phiền /
+ * Đang chờ / Ẩn" như Discord). `"offline"` ở đây nghĩa là **ẩn** — người khác
+ * thấy offline nhưng tài khoản vẫn nhận tin; không có opcode riêng cho ẩn.
+ */
+export interface PresenceUpdatePayload {
+  op: 3;
+  d: { status: PresenceStatus };
+}
+
+export type GatewaySendPayload =
+  | HeartbeatPayload
+  | IdentifyPayload
+  | ResumePayload
+  | PresenceUpdatePayload;
 
 // —— server → client ——
 
@@ -94,6 +112,12 @@ export type GatewayReceivePayload =
 // —— sự kiện server → client ——
 
 /** Thông tin tối thiểu để render tên/avatar thành viên trong tin nhắn. */
+/** Một dòng trạng thái trong READY / event `PRESENCE_UPDATE`. */
+export interface PresenceEntry {
+  userId: Snowflake;
+  status: PresenceStatus;
+}
+
 export interface GuildMemberSummary {
   userId: Snowflake;
   username: string;
@@ -115,8 +139,78 @@ export interface GuildSnapshot {
 /** DM 1-1: channel không thuộc guild nào + thông tin người ở đầu bên kia. */
 export interface DmChannelSummary {
   channel: Channel;
-  recipient: GuildMemberSummary;
+  /** DM 1-1: người bên kia. Group DM: `null` (xem `recipients`). */
+  recipient: GuildMemberSummary | null;
+  /** Mọi người khác trong cuộc, không gồm chính mình (1-1: đúng 1 phần tử). */
+  recipients: GuildMemberSummary[];
+  /** Chủ nhóm — chỉ group DM mới có; người tạo lúc đầu. */
+  ownerId: Snowflake | null;
+  /** Tên nhóm do người dùng đặt; `null` = hiển thị bằng cách ghép tên thành viên. */
+  name: string | null;
+  /**
+   * `true` = DM này đang là **yêu cầu chờ duyệt** do chính mình gửi (người kia
+   * đặt `dm_privacy = 'friends'`). Chỉ người gửi thấy cờ này — người nhận không
+   * có kênh trong danh sách cho tới khi họ đồng ý (xem `MessageRequestSummary`).
+   */
+  requestPending: boolean;
 }
+
+/**
+ * Một yêu cầu nhắn tin đang chờ **mình** duyệt: người lạ đã mở DM, mình chưa
+ * đồng ý nên kênh không nằm trong danh sách DM bình thường.
+ */
+export interface MessageRequestSummary {
+  channelId: Snowflake;
+  /** Người đã mở cuộc trò chuyện. */
+  sender: UserProfile;
+  createdAt: string;
+  /** Nội dung tin mới nhất (cắt 200 ký tự) — đủ để quyết định, không tải cả lịch sử. */
+  preview: string | null;
+  messageCount: number;
+}
+
+/** Số người tối đa trong group DM (tính cả mình) — giống Discord. */
+export const MAX_GROUP_DM_MEMBERS = 10;
+
+/**
+ * Trạng thái một người trong kênh thoại (G2, chưa có SFU).
+ *
+ * Cố tình **không** có `speaking`: trạng thái đó chỉ có nghĩa khi có audio thật
+ * và đổi liên tục; khi cắm LiveKit vào thì nó đi qua data channel của SFU, không
+ * qua gateway.
+ */
+export interface VoiceState {
+  guildId: Snowflake;
+  channelId: Snowflake;
+  userId: Snowflake;
+  selfMute: boolean;
+  selfDeaf: boolean;
+  joinedAt: string;
+}
+
+/**
+ * Token vào phòng âm thanh (LiveKit). Chỉ xin được khi đã vào phòng bằng
+ * `PUT /channels/:id/voice` và có quyền `CONNECT`.
+ *
+ * `canPublish: false` (thiếu `SPEAK`) vẫn nghe được — giống Discord: bị mute
+ * vĩnh viễn thì không nói, nhưng không bị đá ra khỏi phòng.
+ */
+export interface VoiceToken {
+  url: string;
+  token: string;
+  room: Snowflake;
+  identity: Snowflake;
+  expiresAt: string;
+  canPublish: boolean;
+  canSubscribe: boolean;
+}
+
+/**
+ * `VOICE_STATE_UPDATE` dùng **cùng shape** với `VoiceState` để client chỉ cần
+ * một mapper; `channelId: null` = người đó đã rời phòng (client xoá khỏi danh
+ * sách mọi phòng của guild đó).
+ */
+export type VoiceStateUpdate = Omit<VoiceState, "channelId"> & { channelId: Snowflake | null };
 
 export type GatewayEventName = keyof GatewayEventMap;
 
@@ -135,6 +229,25 @@ export interface GatewayEventMap {
      * Kênh tạo sau khi READY chưa có trong map (xem lại sau khi reconnect).
      */
     channelPermissions: Record<Snowflake, string>;
+    /**
+     * Ai đang ở phòng thoại nào trong các guild user **xem được** (đã lọc quyền
+     * qua `visibleChannels`) — đúng theo tiêu chí "permission leak" ở §8.
+     */
+    voiceStates: VoiceState[];
+    /**
+     * Thread **đang mở** trong các server user là thành viên.
+     *
+     * Không nằm trong `guilds[].channels` vì thread không thuộc sidebar; client
+     * tự gắn vào kênh cha khi hiện chỉ báo.
+     */
+    threads: import("./api.js").ThreadSummary[];
+    /**
+     * Trạng thái hiện tại của những người **có chung guild** với mình.
+     *
+     * Không có trong danh sách = chưa từng kết nối (offline). Chỉ gửi người có
+     * chung guild để không lộ "ai đang online" ngoài phạm vi được thấy.
+     */
+    presences: PresenceEntry[];
   };
   RESUMED: Record<string, never>;
   /**
@@ -147,10 +260,72 @@ export interface GatewayEventMap {
   MESSAGE_UPDATE: {
     id: Snowflake;
     channelId: Snowflake;
-    content: string | null;
-    editedAt: string | null;
+    /** Vắng mặt = giữ nguyên nội dung (embed tới sau cũng dùng event này). */
+    content?: string | null;
+    /** Vắng mặt = giữ nguyên. Chỉ dùng `null` khi thật sự muốn xoá nhãn "đã sửa". */
+    editedAt?: string | null;
+    /**
+     * Có mặt = thay danh sách embed (`[]` là xoá thẻ cũ). Vắng mặt = giữ nguyên.
+     *
+     * Embed tới **sau** tin (server tải trang bên ngoài ở nền) nên client phải
+     * phân biệt "không đổi" với "đã xoá" — payload sửa nội dung không mang
+     * trường này.
+     */
+    embeds?: import("./api.js").Embed[];
   };
   MESSAGE_DELETE: { id: Snowflake; channelId: Snowflake };
+  /**
+   * Thread vừa được tạo. Client nào đang mở kênh cha thì hiện chỉ báo; client
+   * nào chưa biết thread này thì **được phép** bỏ qua (không phải lỗi).
+   */
+  THREAD_CREATE: import("./api.js").ThreadSummary;
+  /** Đổi tên / lưu trữ / bỏ lưu trữ / có tin mới (đếm + hoạt động). */
+  THREAD_UPDATE: import("./api.js").ThreadSummary;
+  /** Thread bị xoá hẳn (kèm tin nhắn của nó). */
+  THREAD_DELETE: { id: Snowflake; parentChannelId: Snowflake };
+  /**
+   * Ghim/bỏ ghim. Tách khỏi `MESSAGE_UPDATE` vì sửa nội dung và ghim là hai
+   * thao tác khác quyền nhau (sửa: tác giả; ghim: `MANAGE_MESSAGES`), và client
+   * cần phân biệt để chỉ cập nhật đúng trường `pinned`.
+   */
+  MESSAGE_PIN_UPDATE: { id: Snowflake; channelId: Snowflake; pinned: boolean };
+  /**
+   * Một reaction vừa được thả hoặc bỏ.
+   *
+   * Gửi **delta** chứ không gửi cả danh sách: danh sách đầy đủ phải tính `me`
+   * riêng cho từng người xem, mà broadcast là một payload chung cho cả kênh.
+   * Delta (`count` tuyệt đối + ai vừa làm) thì client nào cũng áp được đúng:
+   * `count` gán thẳng, `me` chỉ đổi khi `userId` là chính mình.
+   */
+  MESSAGE_REACTION_UPDATE: {
+    messageId: Snowflake;
+    channelId: Snowflake;
+    emoji: string;
+    /** Số người đã thả emoji này **sau** thay đổi. 0 = vừa bị bỏ hết. */
+    count: number;
+    /** Ai vừa thả/bỏ — client so với id của mình để cập nhật `me`. */
+    userId: Snowflake;
+    added: boolean;
+  };
+  /**
+   * Một lựa chọn của poll vừa đổi số phiếu.
+   *
+   * Cũng là **delta** vì cùng lý do với reaction: `me` của poll phải tính theo
+   * người xem, mà broadcast chỉ có một payload cho cả kênh. `votes` và
+   * `totalVotes` là số tuyệt đối (giống nhau với mọi người), `me` thì client tự
+   * suy ra bằng cách so `userId` với chính mình.
+   */
+  POLL_VOTE_UPDATE: {
+    messageId: Snowflake;
+    channelId: Snowflake;
+    optionId: Snowflake;
+    userId: Snowflake;
+    added: boolean;
+    /** Số phiếu của **lựa chọn này** sau thay đổi. */
+    votes: number;
+    /** Số **người** đã bỏ phiếu trong poll sau thay đổi (không phải tổng phiếu). */
+    totalVotes: number;
+  };
   TYPING_START: { channelId: Snowflake; userId: Snowflake; timestamp: number };
   PRESENCE_UPDATE: { userId: Snowflake; status: PresenceStatus };
   CHANNEL_CREATE: Channel;
@@ -162,6 +337,12 @@ export interface GatewayEventMap {
     roles: Role[];
     members: GuildMember[];
   };
+  /**
+   * Hồ sơ người dùng đổi (hiện tại: avatar). Gửi tới mọi server mà người đó là
+   * thành viên và tới các session của chính họ. Client chỉ cập nhật
+   * username/displayName/avatarUrl — trạng thái online vẫn do `PRESENCE_UPDATE` quản.
+   */
+  USER_UPDATE: { user: UserProfile };
   GUILD_MEMBER_ADD: { guildId: Snowflake; member: GuildMemberSummary };
   /**
    * Thứ thuộc về thành viên vừa đổi (hiện tại: role được gán/thu). Gửi kèm
@@ -175,13 +356,21 @@ export interface GatewayEventMap {
   ROLE_DELETE: { guildId: Snowflake; roleId: Snowflake };
   /** DM mới được mở — `recipient` là người ở đầu bên kia (khác nhau theo phía nhận). */
   DM_CHANNEL_CREATE: DmChannelSummary;
-  VOICE_STATE_UPDATE: {
-    guildId: Snowflake | null;
-    channelId: Snowflake | null;
-    userId: Snowflake;
-    sessionId: string;
-    muted: boolean;
-    deafened: boolean;
-    speaking: boolean;
-  };
+  /** Tên nhóm hoặc danh sách thành viên đổi → gửi lại toàn bộ summary. */
+  DM_CHANNEL_UPDATE: DmChannelSummary;
+  /** Bị mời ra khỏi nhóm (hoặc nhóm bị xoá) → client bỏ khỏi sidebar. */
+  DM_CHANNEL_DELETE: { channelId: Snowflake };
+  MESSAGE_REQUEST_CREATE: MessageRequestSummary;
+  /** Đã xử lý xong (đồng ý, từ chối, kết bạn, chặn) → bỏ khỏi danh sách chờ. */
+  MESSAGE_REQUEST_REMOVE: { channelId: Snowflake };
+  READ_STATE_UPDATE: ReadState;
+  VOICE_STATE_UPDATE: VoiceStateUpdate;
+  /** Có người gửi lời mời kết bạn cho mình (kèm người gửi để vẽ ngay). */
+  FRIEND_REQUEST_CREATE: FriendRequestSummary;
+  /** Hai người đã thành bạn — gửi cho **cả hai** để danh sách hai bên khớp. */
+  FRIEND_ADD: FriendSummary;
+  /** Hết bạn (tự huỷ kết bạn, từ chối lời mời, huỷ lời mời đã gửi, hoặc bị chặn). */
+  FRIEND_REMOVE: { userId: Snowflake };
+  /** Cài đặt riêng của chính mình vừa đổi — gửi cho mọi session của mình. */
+  USER_SETTINGS_UPDATE: UserSettings;
 }

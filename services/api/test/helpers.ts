@@ -1,9 +1,19 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { WebSocket } from "ws";
 import { buildApp } from "../src/app.js";
 import type { GatewayHub } from "../src/gateway/hub.js";
 import { loadConfig, type Config } from "../src/config.js";
 import { createPool, migrate, truncateAll, type Pool } from "../src/db.js";
+import { MemoryMailer } from "../src/mail.js";
+import type { ReportNotifier } from "../src/admin/notify.js";
+import type { PushSender, PushTransport } from "../src/push/sender.js";
+import type { EventBus } from "../src/gateway/bus.js";
+import type { SessionStore } from "../src/gateway/sessionStore.js";
+import type { EventPublisher } from "../src/events.js";
+import type { LinkEmbedResolver } from "../src/embeds/resolver.js";
 
 export const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? "postgres://umaru:umaru@127.0.0.1:55432/umaru_test";
@@ -13,10 +23,47 @@ export interface TestContext {
   hub: GatewayHub;
   pool: Pool;
   config: Config;
+  /** Thư mục upload riêng cho từng lần chạy test (xoá khi close). */
+  uploadsDir: string;
+  /** Hộp thư trong bộ nhớ — test khẳng định mail xác thực đã gửi. */
+  mailer: MemoryMailer;
+  /** Mail báo admin khi có báo cáo mới — `await whenIdle()` để chờ gửi xong. */
+  reportNotifier: ReportNotifier;
+  /** Thông báo đẩy — `await whenIdle()` để chờ các lần gửi bất đồng bộ xong. */
+  pushSender: PushSender;
+  /** Lớp phát sự kiện route dùng (hub, hoặc hub + bus khi nhiều node). */
+  publisher: EventPublisher;
+  bus: EventBus | null;
+  sessionStore: SessionStore | null;
+  /** Bộ dựng embed (`null` khi tắt) — `await whenIdle()` trước khi khẳng định. */
+  embeds: LinkEmbedResolver | null;
   close(): Promise<void>;
 }
 
-export async function createTestContext(): Promise<TestContext> {
+export interface TestContextOptions {
+  pushTransport?: PushTransport | null;
+  /** Bus bơm vào — dùng để dựng nhiều node nói chuyện với nhau trong test. */
+  bus?: EventBus;
+  /**
+   * Dùng lại pool của node khác: node thứ hai **không** migrate/truncate (sẽ
+   * xoá sạch dữ liệu node một vừa tạo) và không `end()` pool khi đóng.
+   */
+  pool?: Pool;
+  /** Tên node trong bus — nhiều node trong cùng tiến trình phải khác nhau. */
+  nodeId?: string;
+  /** Store session/replay dùng chung giữa các node trong test. */
+  sessionStore?: SessionStore;
+  /** Bộ dựng embed dùng `config.embeds` thật (test embed bơm `fetch` giả). */
+  embeds?: LinkEmbedResolver;
+  /** `fetch` giả cho luồng OAuth (Google/GitHub) — xem `oauth/routes.ts`. */
+  oauthFetch?: typeof fetch;
+}
+
+export async function createTestContext(
+  envOverrides: NodeJS.ProcessEnv = {},
+  options: TestContextOptions = {},
+): Promise<TestContext> {
+  const uploadsDir = await mkdtemp(path.join(tmpdir(), "umaru-uploads-"));
   const config: Config = {
     ...loadConfig({
       ...process.env,
@@ -26,21 +73,62 @@ export async function createTestContext(): Promise<TestContext> {
       HEARTBEAT_INTERVAL_MS: "5000",
       SESSION_TTL_MS: "5000",
       ACCESS_TOKEN_TTL_SEC: "900",
+      UPLOADS_DIR: uploadsDir,
+      // Rate limit (spec §7) **vẫn chạy** trong test nhưng nới rộng, để đường
+      // code luôn được thực thi mà test nghiệp vụ không phải chờ. Test riêng của
+      // rate limit tự đặt giới hạn thấp để kiểm hành vi chặn.
+      RATE_LIMIT_MESSAGES_PER_USER: "1000",
+      RATE_LIMIT_MESSAGES_PER_CHANNEL: "5000",
+      RATE_LIMIT_GATEWAY_FRAMES_PER_MINUTE: "100000",
+      RATE_LIMIT_SESSIONS_PER_USER: "100",
+      RATE_LIMIT_VOICE_MUTATIONS: "1000",
+      // Đăng nhập sai: nới rộng cho test nghiệp vụ (test riêng tự đặt trần thấp).
+      RATE_LIMIT_AUTH_PER_IP: "1000",
+      RATE_LIMIT_AUTH_PER_EMAIL: "1000",
+      // Test dựng HTTP server trên 127.0.0.1 để kiểm embed; guard SSRF chặn
+      // loopback theo mặc định nên phải mở **chỉ trong test**.
+      EMBEDS_ALLOW_PRIVATE: "1",
+      EMBEDS_TIMEOUT_MS: "2000",
+      ...envOverrides,
     }),
     logger: false,
   };
-  const pool = createPool(config.databaseUrl, { max: 5 });
-  await migrate(pool, config.migrationsDir);
-  await truncateAll(pool);
-  const { app, hub } = await buildApp({ config, pool });
+  const ownsPool = options.pool === undefined;
+  if (options.nodeId !== undefined) config.nodeId = options.nodeId;
+  const pool = options.pool ?? createPool(config.databaseUrl, { max: 5 });
+  if (ownsPool) {
+    await migrate(pool, config.migrationsDir);
+    await truncateAll(pool);
+  }
+  const mailer = new MemoryMailer();
+  const built = await buildApp({
+    config,
+    pool,
+    mailer,
+    pushTransport: options.pushTransport,
+    bus: options.bus,
+    sessionStore: options.sessionStore,
+    embeds: options.embeds,
+    oauthFetch: options.oauthFetch,
+  });
+  const { app, hub, reportNotifier, pushSender } = built;
   return {
     app,
     hub,
     pool,
     config,
+    uploadsDir,
+    mailer,
+    reportNotifier,
+    pushSender,
+    publisher: built.publisher,
+    bus: built.bus,
+    sessionStore: built.sessionStore,
+    embeds: built.embeds,
     async close() {
       await app.close();
-      await pool.end();
+      if (ownsPool) await pool.end();
+      await rm(uploadsDir, { recursive: true, force: true });
     },
   };
 }
@@ -65,6 +153,8 @@ export async function registerUser(
       displayName: username,
       email: `${username}@example.com`,
       password,
+      // Đăng ký luôn phải đồng ý điều khoản; test nào cố tình bỏ sẽ tự gửi tay.
+      acceptedTerms: true,
     },
   });
   if (response.statusCode !== 201) {

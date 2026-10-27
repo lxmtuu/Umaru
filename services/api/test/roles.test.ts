@@ -33,8 +33,16 @@ interface RoleBody {
   isEveryone: boolean;
 }
 
+/**
+ * Quyền `@everyone` mặc định khi tạo server — có `CONNECT`/`SPEAK` để kênh thoại
+ * dùng được ngay (xem `DEFAULT_EVERYONE_PERMISSIONS` ở guilds/routes.ts).
+ */
 const DEFAULT_EVERYONE =
-  Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES | Permission.READ_HISTORY;
+  Permission.VIEW_CHANNEL |
+  Permission.SEND_MESSAGES |
+  Permission.READ_HISTORY |
+  Permission.CONNECT |
+  Permission.SPEAK;
 
 beforeAll(async () => {
   ctx = await createTestContext();

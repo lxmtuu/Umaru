@@ -51,9 +51,14 @@ describe("guild & channel", () => {
     );
     expect(roles.rows).toHaveLength(1);
     expect(roles.rows[0]?.is_everyone).toBe(true);
+    // Mặc định có cả CONNECT/SPEAK để kênh thoại dùng được ngay sau khi tạo.
     expect(roles.rows[0]?.permissions).toBe(
       serializePermissions(
-        Permission.VIEW_CHANNEL | Permission.SEND_MESSAGES | Permission.READ_HISTORY,
+        Permission.VIEW_CHANNEL |
+          Permission.SEND_MESSAGES |
+          Permission.READ_HISTORY |
+          Permission.CONNECT |
+          Permission.SPEAK,
       ),
     );
   });

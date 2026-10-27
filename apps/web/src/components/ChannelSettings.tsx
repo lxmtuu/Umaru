@@ -2,7 +2,7 @@ import type { ChannelOverwrite } from "@umaru/protocol";
 import { parsePermissions } from "@umaru/protocol";
 import { useMemo, useState } from "react";
 import { useChat } from "../lib/chatStore.js";
-import { useT } from "../lib/i18n.js";
+import { useT, type MessageKey } from "../lib/i18n.js";
 import { PERMISSION_ROWS, colorToHex } from "../lib/roleUi.js";
 
 interface Target {
@@ -140,6 +140,35 @@ export function ChannelSettings() {
               </option>
             ))}
           </select>
+        </div>
+      )}
+
+      {channel.type === "guild_text" && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+          <label htmlFor="channel-slowmode" className="text-slate-400">
+            {t("slowmode")}
+          </label>
+          <select
+            id="channel-slowmode"
+            value={String(channel.slowmodeSeconds ?? 0)}
+            disabled={busy}
+            onChange={(event) => {
+              const seconds = Number(event.target.value);
+              setBusy(true);
+              void state.setChannelSlowmode(settingsChannelId, seconds).then((ok) => {
+                setBusy(false);
+                if (!ok) setTargetKey("");
+              });
+            }}
+            className="rounded-lg border border-white/10 bg-slate-950/70 px-2 py-1 outline-none focus:border-emerald-400/60 disabled:opacity-40"
+          >
+            {SLOWMODE_CHOICES.map((seconds) => (
+              <option key={seconds} value={seconds}>
+                {slowmodeLabel(seconds, t)}
+              </option>
+            ))}
+          </select>
+          <p className="w-full text-[11px] text-slate-500">{t("slowmodeHint")}</p>
         </div>
       )}
 
@@ -306,6 +335,20 @@ export function ChannelSettings() {
       )}
     </div>
   );
+}
+
+/** Các mốc slowmode Discord có — số giây, 0 = tắt. */
+export const SLOWMODE_CHOICES = [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600];
+
+/** Nhãn ngắn cho một mốc slowmode ("Tắt", "5s", "1 phút", "6 giờ"). */
+export function slowmodeLabel(
+  seconds: number,
+  t: (key: MessageKey, vars?: Record<string, string | number>) => string,
+): string {
+  if (seconds <= 0) return t("slowmodeOff");
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  return `${Math.round(seconds / 60)}m`;
 }
 
 function bitSummary(entry: ChannelOverwrite): string {

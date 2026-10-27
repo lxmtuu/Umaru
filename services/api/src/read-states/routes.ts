@@ -10,8 +10,11 @@ import { loadChannelContext } from "../access.js";
 import { createAuthGuard, requireUserId } from "../auth/guard.js";
 import type { TokenService } from "../auth/tokens.js";
 import type { Pool } from "../db.js";
+import type { EventPublisher } from "../events.js";
 import { badRequest, readId, readLimit } from "../http.js";
-import { loadBootstrap } from "../bootstrap.js";
+import { loadAttachmentsByMessage } from "../attachments.js";
+import { notBlockedAuthorSql } from "../blocks.js";
+import { loadBootstrap, loadReadStates } from "../bootstrap.js";
 
 interface MentionRow {
   id: string;
@@ -28,6 +31,7 @@ interface MentionRow {
   channel_topic: string | null;
   channel_parent_id: string | null;
   channel_position: number;
+  channel_slowmode_seconds: number;
   author_username: string;
   author_display_name: string;
   author_avatar_url: string | null;
@@ -41,6 +45,7 @@ interface MentionRow {
 export interface ReadStateDeps {
   pool: Pool;
   tokens: TokenService;
+  publisher: EventPublisher;
 }
 
 /**
@@ -88,6 +93,13 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
         [userId, channelId, messageId],
       );
 
+      // Cùng một người, nhiều thiết bị: tab khác (điện thoại) phải thấy badge
+      // tắt ngay, không đợi mở lại kênh. Số liệu lấy lại từ DB (không tự tính ở
+      // client) vì `GREATEST` có thể đã bị tab khác đẩy mốc xa hơn.
+      const [readState] = await loadReadStates(pool, userId as Snowflake, [channelId]);
+      if (readState !== undefined) {
+        deps.publisher.publishToUser(userId, "READ_STATE_UPDATE", readState);
+      }
       return reply.code(204).send();
     },
   );
@@ -129,6 +141,7 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
                 m.created_at, m.edited_at,
                 c.guild_id, c.type AS channel_type, c.name AS channel_name,
                 c.topic AS channel_topic, c.parent_id AS channel_parent_id, c.position AS channel_position,
+                c.slowmode_seconds AS channel_slowmode_seconds,
                 u.username AS author_username, u.display_name AS author_display_name,
                 u.avatar_url AS author_avatar_url,
                 g.name AS guild_name,
@@ -151,6 +164,16 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
           WHERE mm.user_id = $1
             AND ($2::bigint IS NULL OR m.id < $2)
             AND c.id = ANY($4::bigint[])
+            -- Người tôi chặn (hoặc chặn tôi) không còn chen vào hộp thư nhắc.
+            AND ${notBlockedAuthorSql("$1", "m.author_id")}
+            AND NOT EXISTS (
+              SELECT 1
+                FROM channel_members other
+                JOIN relationships rb ON rb.type = 'blocked'
+                 AND ((rb.user_id = $1 AND rb.target_id = other.user_id)
+                   OR (rb.user_id = other.user_id AND rb.target_id = $1))
+               WHERE other.channel_id = c.id AND other.user_id <> $1
+            )
           ORDER BY m.id DESC
           LIMIT $3`,
         [userId, before, limit, visibleIds],
@@ -166,6 +189,7 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
           topic: row.channel_topic,
           categoryId: (row.channel_parent_id ?? null) as Snowflake | null,
           position: row.channel_position,
+          slowmodeSeconds: row.channel_slowmode_seconds,
         };
 
         const author: UserSummary = {
@@ -194,6 +218,9 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
           replyToId: row.reply_to_id === null ? null : (row.reply_to_id as Snowflake),
           attachments: [],
           pinned: row.pinned,
+          // Mentions inbox chỉ hiện trích đoạn, không render chip reaction → không
+          // nạp thêm một câu SQL cho mỗi trang chỉ vì một trường không dùng.
+          reactions: [],
         };
 
         mentions.push({
@@ -203,6 +230,14 @@ export function registerReadStateRoutes(app: FastifyInstance, deps: ReadStateDep
           author,
           recipient,
         });
+      }
+      // Nạp attachment theo lô cho cả trang (một câu SQL).
+      const attachments = await loadAttachmentsByMessage(
+        pool,
+        result.rows.map((row) => row.id),
+      );
+      for (const mention of mentions) {
+        mention.message.attachments = attachments.get(mention.message.id) ?? [];
       }
       return mentions;
     },
