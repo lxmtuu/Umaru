@@ -67,7 +67,16 @@ export function ChatScreen() {
   const setLocale = useLocale((state) => state.setLocale);
   const state = useChat();
 
-  const [draft, setDraft] = useState("");
+  /**
+   * Nháp tin **theo kênh**, nằm trong store (xem `lib/drafts.ts`): đổi kênh rồi
+   * quay lại, hay F5, đều không mất đoạn đang gõ. `setDraft` ở đây chỉ là cầu
+   * nối để các chỗ gọi cũ giữ nguyên.
+   */
+  const draft = state.activeChannelId === null ? "" : (state.drafts[state.activeChannelId] ?? "");
+  const setDraft = (text: string): void => {
+    if (state.activeChannelId === null) return;
+    state.setDraft(state.activeChannelId, text);
+  };
   /** Tệp chờ gửi kèm tin kế tiếp (tối đa 4, kiểm ở lib/attachments). */
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);

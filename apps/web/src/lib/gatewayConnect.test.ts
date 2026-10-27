@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "@umaru/protocol";
 import { useLocale } from "./i18n.js";
+import { readDrafts, writeDraft } from "./drafts.js";
 
 /**
  * Test cho **đường khởi động kết nối gateway** — chỗ đã làm mất toàn bộ sidebar
@@ -83,6 +84,14 @@ vi.mock("./session.js", () => ({
     getGatewayUrl: async () => ({ url: session.gatewayUrl, version: 1 }),
   },
   authedApi: {
+    getCurrentUser: async () => ({
+      id: "1",
+      username: "demo_user",
+      displayName: "Demo",
+      avatarUrl: null,
+    }),
+    getAdminStatus: async () => ({ admin: false }),
+    getPushPublicKey: async () => ({ publicKey: null }),
     listMessageRequests: async () => [],
     listMessages: async () => {
       if (session.failMessages) throw new Error("mất mạng");
@@ -379,5 +388,47 @@ describe("POLL_VOTE_UPDATE — delta của bình chọn", () => {
       }),
     ).not.toThrow();
     expect(useChat.getState().messages["100"]![0]!.poll).toBeNull();
+  });
+});
+
+describe("nháp tin theo kênh", () => {
+  it("giữ nháp riêng cho từng kênh — đổi kênh rồi quay lại vẫn còn", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    useChat.setState({ drafts: {} });
+
+    useChat.getState().setDraft("100", "đang viết dở");
+    useChat.getState().setDraft("200", "kênh khác");
+    expect(useChat.getState().drafts).toMatchObject({
+      "100": "đang viết dở",
+      "200": "kênh khác",
+    });
+  });
+
+  it("gửi xong (xoá nháp) thì nháp biến mất khỏi state và localStorage", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    useChat.getState().setDraft("100", "sắp gửi");
+    expect(readDrafts(localStorage, "1")["100"]).toBe("sắp gửi");
+
+    useChat.getState().setDraft("100", "");
+    expect(useChat.getState().drafts["100"]).toBeUndefined();
+    expect(readDrafts(localStorage, "1")["100"]).toBeUndefined();
+  });
+
+  it("vào phiên mới (F5) thì nháp được nạp lại từ localStorage", async () => {
+    writeDraft(localStorage, "1", "100", "còn dở sau F5");
+    useChat.setState({ drafts: {} });
+    await useChat.getState().startSession();
+    expect(useChat.getState().drafts["100"]).toBe("còn dở sau F5");
+  });
+
+  it("đăng xuất xoá nháp của tài khoản đó (không để lại cho người sau)", async () => {
+    await useChat.getState().connectGateway();
+    fake.FakeGatewayClient.last?.emit("READY", readyPayload());
+    useChat.getState().setDraft("100", "riêng tư");
+    await useChat.getState().logout();
+    expect(readDrafts(localStorage, "1")).toEqual({});
+    expect(useChat.getState().drafts).toEqual({});
   });
 });

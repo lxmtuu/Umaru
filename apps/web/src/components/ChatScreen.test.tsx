@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message, Snowflake } from "@umaru/protocol";
 
@@ -227,6 +227,8 @@ function seedChat() {
     admin: false,
     // Mỗi test bắt đầu ở mật độ mặc định — test thu gọn không được rò sang test sau.
     displaySettings: { compact: false },
+    // Nháp đi qua store (localStorage) — mỗi test bắt đầu không có nháp.
+    drafts: {},
     error: null,
     notice: null,
     banner: null,
@@ -801,5 +803,38 @@ describe("ChatScreen — nhắc role", () => {
     fireEvent.change(box, { target: { value: "@", selectionStart: 1 } });
     const list = await screen.findByTestId("mention-suggest");
     expect(within(list).getByText("Quản trị")).toBeTruthy();
+  });
+});
+
+describe("ChatScreen — nháp tin theo kênh", () => {
+  it("gõ dở rồi đổi kênh: mỗi kênh giữ nháp riêng, quay lại vẫn còn", () => {
+    render(<ChatScreen />);
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "nháp của kênh chung" } });
+    expect(useChat.getState().drafts[CHANNEL.id as string]).toBe("nháp của kênh chung");
+
+    // Thêm kênh thứ hai và chuyển sang: ô soạn phải **trống**, không dính nháp
+    // của kênh trước (đây là lỗi người dùng thấy ngay nếu quên tách theo kênh).
+    const second = { ...CHANNEL, id: "3001", name: "phu" };
+    act(() => {
+      useChat.setState({ channels: { "2000": [CHANNEL, second] }, activeChannelId: second.id } as never);
+    });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "nháp kênh phụ" } });
+    act(() => {
+      useChat.setState({ activeChannelId: CHANNEL.id } as never);
+    });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("nháp của kênh chung");
+    expect(useChat.getState().drafts[second.id]).toBe("nháp kênh phụ");
+  });
+
+  it("gửi xong thì nháp của kênh bị xoá", async () => {
+    render(<ChatScreen />);
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "tin sắp gửi" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(useChat.getState().drafts[CHANNEL.id as string]).toBeUndefined());
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
   });
 });

@@ -73,6 +73,7 @@ import {
 } from "./displayPrefs.js";
 import { readVerificationToken, withoutVerificationToken } from "./verification.js";
 import { readOAuthResult, withoutOAuthParams } from "./oauthQuery.js";
+import { clearDrafts, readDrafts, writeDraft, type DraftStorage } from "./drafts.js";
 import { mergeAfterResync } from "./resync.js";
 import {
   api,
@@ -277,6 +278,11 @@ interface ChatState {
   /** Id tin đang gửi phiếu poll (chặn bấm liên tiếp trên cùng một tin). */
   pollBusy: string | null;
   /**
+   * Nháp tin theo kênh (`channelId → chữ chưa gửi`), đọc từ `localStorage` khi
+   * vào app. Không chứa tệp đính kèm hay "đang trả lời tin X" — xem `drafts.ts`.
+   */
+  drafts: Record<string, string>;
+  /**
    * Đồng bộ lại sau khi socket **resume**: replay chỉ phát lại frame còn trong
    * log, nên frame bị mất (node chết) có thể là `MESSAGE_DELETE` — phải tải lại
    * kênh đang mở chứ không tin replay.
@@ -338,6 +344,8 @@ interface ChatState {
   ): Promise<boolean>;
   /** Bỏ/rút phiếu trong poll — gửi **toàn bộ** lựa chọn của mình. */
   votePoll(messageId: string, optionIds: string[]): Promise<boolean>;
+  /** Ghi nháp của một kênh (rỗng = xoá); lưu ngay xuống `localStorage`. */
+  setDraft(channelId: string, text: string): void;
   /** Sửa nội dung tin của mình; server đã đẩy `MESSAGE_UPDATE` cho mọi client. */
   editMessage(messageId: string, content: string): Promise<boolean>;
   /** Xoá tin của mình (hoặc bất kỳ tin nào nếu có `MANAGE_MESSAGES`). */
@@ -919,6 +927,7 @@ const initialState = {
   oauthProviders: [],
   oauthPendingCode: null,
   pollBusy: null,
+  drafts: {},
 };
 
 /** Trường hồ sơ có thể đổi; presence là ephemeral nên không nằm ở đây. */
@@ -1281,6 +1290,11 @@ export const useChat = create<ChatState>()((set, get) => ({
     }
     gateway?.close();
     gateway = null;
+    // Nháp là nội dung riêng tư của tài khoản vừa đăng xuất — không để lại cho
+    // người đăng nhập sau trên cùng máy (khoá đã theo userId, đây là dọn luôn).
+    const account = get().me?.id;
+    const storage = draftStorage();
+    if (account !== undefined && storage !== null) clearDrafts(storage, account);
     clearTokens();
     // Giải phóng object URL của tệp đã tải (đổi tài khoản là không dùng lại được).
     clearAttachmentCache();
@@ -1290,7 +1304,15 @@ export const useChat = create<ChatState>()((set, get) => ({
 
   async startSession() {
     const me = await authedApi.getCurrentUser();
-    set({ screen: "chat", me, error: null });
+    // Nháp thuộc về tài khoản này; đọc lại mỗi lần vào phiên để hai tab không
+    // ghi đè bằng bản cũ trong bộ nhớ.
+    const storage = draftStorage();
+    set({
+      screen: "chat",
+      me,
+      error: null,
+      drafts: storage === null ? {} : readDrafts(storage, me.id as string),
+    });
     void get().checkAdmin();
     // Không chặn luồng vào app vì đăng ký service worker (có thể chậm trên máy
     // yếu) — nhưng phải chạy sau khi biết mình là ai để trỏ đúng tài khoản.
@@ -2156,6 +2178,21 @@ export const useChat = create<ChatState>()((set, get) => ({
       set({ error: describeError(error) });
       return false;
     }
+  },
+
+  setDraft(channelId, text) {
+    const me = get().me;
+    if (me === null) return;
+    const storage = draftStorage();
+    if (storage === null) {
+      // Không có kho: vẫn giữ trong bộ nhớ để chuyển kênh không mất chữ.
+      const next = { ...get().drafts };
+      if (text.trim().length === 0) delete next[channelId];
+      else next[channelId] = text.slice(0, 2000);
+      set({ drafts: next });
+      return;
+    }
+    set({ drafts: writeDraft(storage, me.id as string, channelId, text) });
   },
 
   async votePoll(messageId, optionIds) {
@@ -3470,6 +3507,16 @@ function upsertMessage(list: Message[], message: Message): Message[] {
     return next;
   }
   return [...list, message].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+}
+
+/**
+ * `localStorage` của trình duyệt, hoặc `null` khi không có (SSR, test không
+ * jsdom) hay bị chặn (chế độ riêng tư). Truy cập qua getter để không đọc
+ * `window` lúc import module.
+ */
+function draftStorage(): DraftStorage | null {
+  if (typeof localStorage === "undefined") return null;
+  return localStorage;
 }
 
 /**
