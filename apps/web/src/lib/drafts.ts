@@ -110,3 +110,25 @@ export function clearDrafts(storage: DraftStorage, userId: string): void {
     /* bị chặn thì thôi */
   }
 }
+
+/**
+ * Nháp của **tab khác** vừa đổi (sự kiện `storage`), hoặc `null` nếu sự kiện
+ * không liên quan tới khoá nháp của tài khoản này.
+ *
+ * `localStorage` phát `storage` cho mọi tab **trừ** tab vừa ghi, nên đây là
+ * đường duy nhất để hai tab thấy nháp của nhau. Hai tab cùng sửa một kênh thì
+ * tab ghi sau thắng (đúng như `localStorage` — không có cách nào "merge" hai
+ * đoạn văn bản đang gõ dở mà không đoán ý người dùng).
+ */
+export function draftsFromStorageEvent(
+  event: { key: string | null; newValue: string | null },
+  userId: string,
+): Record<string, string> | null {
+  // `localStorage.clear()` phát `key: null` — mọi nháp đều đã mất.
+  if (event.key === null) return {};
+  if (event.key !== draftsKey(userId)) return null;
+  const stored = parse(event.newValue);
+  return Object.fromEntries(
+    Object.entries(stored).map(([channelId, draft]) => [channelId, draft.text]),
+  );
+}

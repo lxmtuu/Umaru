@@ -3,6 +3,7 @@ import {
   MAX_DRAFT_CHANNELS,
   MAX_DRAFT_LENGTH,
   clearDrafts,
+  draftsFromStorageEvent,
   draftsKey,
   readDrafts,
   writeDraft,
@@ -132,5 +133,37 @@ describe("drafts", () => {
     clearDrafts(storage, "a");
     expect(readDrafts(storage, "a")).toEqual({});
     expect(readDrafts(storage, "b")).toEqual({ "100": "của b" });
+  });
+});
+
+describe("draftsFromStorageEvent", () => {
+  it("sự kiện của khoá khác → null (không đụng nháp)", () => {
+    expect(draftsFromStorageEvent({ key: "umaru.locale", newValue: "vi" }, "u")).toBeNull();
+    expect(draftsFromStorageEvent({ key: draftsKey("khác"), newValue: "{}" }, "u")).toBeNull();
+  });
+
+  it("tab khác ghi nháp → đọc ra đúng bản đồ", () => {
+    const storage = memoryStorage();
+    writeDraft(storage, "u", "100", "chữ của tab kia");
+    writeDraft(storage, "u", "200", "kênh khác");
+    const event = { key: draftsKey("u"), newValue: storage.getItem(draftsKey("u")) };
+    expect(draftsFromStorageEvent(event, "u")).toEqual({
+      "100": "chữ của tab kia",
+      "200": "kênh khác",
+    });
+  });
+
+  it("tab khác xoá hết nháp (newValue null) → bản đồ rỗng", () => {
+    expect(draftsFromStorageEvent({ key: draftsKey("u"), newValue: null }, "u")).toEqual({});
+  });
+
+  it("localStorage.clear() (key null) → bản đồ rỗng", () => {
+    expect(draftsFromStorageEvent({ key: null, newValue: null }, "u")).toEqual({});
+  });
+
+  it("JSON rác từ tab khác → rỗng, không ném lỗi", () => {
+    expect(
+      draftsFromStorageEvent({ key: draftsKey("u"), newValue: "{không phải json" }, "u"),
+    ).toEqual({});
   });
 });

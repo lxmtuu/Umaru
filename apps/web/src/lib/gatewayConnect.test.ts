@@ -423,6 +423,45 @@ describe("nháp tin theo kênh", () => {
     expect(useChat.getState().drafts["100"]).toBe("còn dở sau F5");
   });
 
+  it("tab khác ghi nháp → tab này cập nhật theo sự kiện `storage`", async () => {
+    // Dọn nháp các test trước để khẳng định chính xác bản đồ sau sự kiện.
+    localStorage.clear();
+    await useChat.getState().startSession();
+    useChat.setState({ drafts: {} });
+
+    // Tab kia vừa lưu nháp cho đúng tài khoản này.
+    writeDraft(localStorage, "1", "300", "từ tab khác");
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "umaru.drafts.v1:1",
+        newValue: localStorage.getItem("umaru.drafts.v1:1"),
+      }),
+    );
+    expect(useChat.getState().drafts).toEqual({ "300": "từ tab khác" });
+
+    // Khoá của người khác thì phải bỏ qua.
+    writeDraft(localStorage, "2", "400", "của người khác");
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "umaru.drafts.v1:2",
+        newValue: localStorage.getItem("umaru.drafts.v1:2"),
+      }),
+    );
+    expect(useChat.getState().drafts).toEqual({ "300": "từ tab khác" });
+  });
+
+  it("đăng xuất gỡ listener: sự kiện `storage` sau đó không đổi state", async () => {
+    await useChat.getState().startSession();
+    await useChat.getState().logout();
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "umaru.drafts.v1:1",
+        newValue: JSON.stringify({ 500: { text: "sau khi đăng xuất", at: 1 } }),
+      }),
+    );
+    expect(useChat.getState().drafts).toEqual({});
+  });
+
   it("đăng xuất xoá nháp của tài khoản đó (không để lại cho người sau)", async () => {
     await useChat.getState().connectGateway();
     fake.FakeGatewayClient.last?.emit("READY", readyPayload());

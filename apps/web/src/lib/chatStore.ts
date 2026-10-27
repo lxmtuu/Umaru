@@ -75,7 +75,13 @@ import {
 } from "./displayPrefs.js";
 import { readVerificationToken, withoutVerificationToken } from "./verification.js";
 import { readOAuthResult, withoutOAuthParams } from "./oauthQuery.js";
-import { clearDrafts, readDrafts, writeDraft, type DraftStorage } from "./drafts.js";
+import {
+  clearDrafts,
+  draftsFromStorageEvent,
+  readDrafts,
+  writeDraft,
+  type DraftStorage,
+} from "./drafts.js";
 import { mergeAfterResync } from "./resync.js";
 import {
   api,
@@ -1349,6 +1355,7 @@ export const useChat = create<ChatState>()((set, get) => ({
     clearAttachmentCache();
     clearAvatarCache();
     clearStickerCache();
+    unwatchDrafts();
     set({ ...initialState, screen: "auth" });
   },
 
@@ -1363,6 +1370,9 @@ export const useChat = create<ChatState>()((set, get) => ({
       error: null,
       drafts: storage === null ? {} : readDrafts(storage, me.id as string),
     });
+    // Tab khác sửa nháp → tab này cập nhật (localStorage không phát sự kiện cho
+    // tab vừa ghi, nên đây là đường duy nhất để hai tab khớp nhau).
+    watchDrafts((partial) => set(partial), get);
     void get().checkAdmin();
     // Không chặn luồng vào app vì đăng ký service worker (có thể chậm trên máy
     // yếu) — nhưng phải chạy sau khi biết mình là ai để trỏ đúng tài khoản.
@@ -3685,6 +3695,33 @@ function upsertMessage(list: Message[], message: Message): Message[] {
 function draftStorage(): DraftStorage | null {
   if (typeof localStorage === "undefined") return null;
   return localStorage;
+}
+
+/**
+ * Nghe `storage` để hai tab thấy nháp của nhau (xem `draftsFromStorageEvent`).
+ * Giữ handle ở cấp module để `logout` gỡ được — không gỡ thì tab đã đăng xuất
+ * vẫn nhận nháp của tài khoản vừa đăng nhập.
+ */
+let draftsListener: ((event: StorageEvent) => void) | null = null;
+
+function watchDrafts(set: (partial: Partial<ChatState>) => void, get: () => ChatState): void {
+  if (typeof window === "undefined") return;
+  if (draftsListener !== null) window.removeEventListener("storage", draftsListener);
+  draftsListener = null;
+  const me = get().me;
+  if (me === null) return;
+  const userId = me.id as string;
+  draftsListener = (event) => {
+    const drafts = draftsFromStorageEvent(event, userId);
+    if (drafts !== null) set({ drafts });
+  };
+  window.addEventListener("storage", draftsListener);
+}
+
+function unwatchDrafts(): void {
+  if (typeof window === "undefined" || draftsListener === null) return;
+  window.removeEventListener("storage", draftsListener);
+  draftsListener = null;
 }
 
 /**
