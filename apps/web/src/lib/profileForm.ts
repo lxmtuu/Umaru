@@ -1,7 +1,7 @@
 import type { User } from "@umaru/protocol";
 
 /**
- * Phần thuần của form hồ sơ (mục 53): chuẩn hoá và so sánh **trước khi** gửi.
+ * Phần thuần của form hồ sơ (mục 52): chuẩn hoá và so sánh **trước khi** gửi.
  *
  * Tách khỏi component để kiểm được các ca khó bằng vitest, và để giới hạn ký tự
  * chỉ nằm ở một chỗ — component chỉ hiển thị bộ đếm, không tự cắt chuỗi.

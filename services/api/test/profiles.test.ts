@@ -12,7 +12,7 @@ import {
 } from "./helpers.js";
 
 /**
- * Hồ sơ công khai (mục 53): giới thiệu, đại từ, màu banner.
+ * Hồ sơ công khai (mục 52): giới thiệu, đại từ, màu banner.
  *
  * Trọng tâm: `PATCH` chỉ ghi trường được gửi (không xoá trường khác), dữ liệu
  * bẩn bị chặn trước khi vào DB, và `GET` chỉ mở cho người **có liên hệ**.
