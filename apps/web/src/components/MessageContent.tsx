@@ -1,5 +1,6 @@
-import { Fragment, useMemo, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { parseMessage, type InlineNode, type ParseOptions } from "../lib/markdown.js";
+import { useT } from "../lib/i18n.js";
 
 /**
  * Render nội dung tin nhắn thành React element.
@@ -74,10 +75,40 @@ function renderInline(nodes: InlineNode[], keyPrefix: string): ReactNode[] {
             {renderInline(node.children, key)}
           </s>
         );
+      case "spoiler":
+        return <Spoiler key={key} nodes={node.children} keyPrefix={key} />;
       default:
         return null;
     }
   });
+}
+
+/**
+ * Nội dung bị che (`||...||`): bấm để hiện, bấm lại để che.
+ *
+ * Dùng `<button>` chứ không `<span onClick>` để bàn phím và trình đọc màn hình
+ * dùng được. Khi đang che, chữ **vẫn nằm trong DOM** nhưng bị `text-transparent`
+ * — cố ý: `display:none`/không render sẽ làm trình đọc màn hình đọc to nội dung
+ * (mất tác dụng che), còn ảnh chụp/`Ctrl+F` vẫn không thấy chữ.
+ */
+function Spoiler({ nodes, keyPrefix }: { nodes: InlineNode[]; keyPrefix: string }) {
+  const t = useT();
+  const [revealed, setRevealed] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => setRevealed((value) => !value)}
+      aria-expanded={revealed}
+      aria-label={revealed ? t("spoilerHide") : t("spoilerShow")}
+      className={
+        revealed
+          ? "rounded bg-slate-800/60 px-0.5 text-left"
+          : "rounded bg-slate-700/80 px-0.5 text-left text-transparent transition-colors hover:bg-slate-600/80"
+      }
+    >
+      {renderInline(nodes, `${keyPrefix}-spoiler`)}
+    </button>
+  );
 }
 
 export function MessageContent({

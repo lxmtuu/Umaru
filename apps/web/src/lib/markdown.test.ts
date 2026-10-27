@@ -176,3 +176,41 @@ describe("nhắc role trong markdown", () => {
     expect(nodes.some((node) => node.type === "mention" && node.role === true)).toBe(false);
   });
 });
+
+describe("spoiler ||...||", () => {
+  it("che nội dung ở giữa", () => {
+    expect(serialize(parseInline("trước ||bí mật|| sau"))).toEqual([
+      "trước ",
+      { spoiler: ["bí mật"] },
+      " sau",
+    ]);
+  });
+
+  it("nội dung bên trong vẫn parse markdown", () => {
+    expect(serialize(parseInline("||**đậm** và `code`||"))).toEqual([
+      { spoiler: [{ strong: ["đậm"] }, " và ", { code: "code" }] },
+    ]);
+  });
+
+  it("`a || b` (phép hoặc trong code của dev) không thành spoiler", () => {
+    expect(serialize(parseInline("a || b"))).toEqual(["a || b"]);
+    // Khoảng trắng hai đầu cũng không đủ để coi là spoiler.
+    expect(serialize(parseInline("x ||   || y"))).toEqual(["x ||   || y"]);
+  });
+
+  it("thiếu dấu đóng thì hiện nguyên văn", () => {
+    expect(serialize(parseInline("||chưa đóng"))).toEqual(["||chưa đóng"]);
+  });
+
+  it("spoiler hoạt động trong quote", () => {
+    expect(blocksOf("> ||bí mật||")).toEqual([{ quote: [{ spoiler: ["bí mật"] }] }]);
+  });
+
+  it("spoiler không phá link/mention đi kèm", () => {
+    expect(serialize(parseInline("||xem https://a.test|| @bob"))).toEqual([
+      { spoiler: ["xem ", { link: "https://a.test" }] },
+      " ",
+      { mention: "@bob", role: false },
+    ]);
+  });
+});

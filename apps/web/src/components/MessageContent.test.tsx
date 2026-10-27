@@ -48,3 +48,28 @@ describe("MessageContent", () => {
     expect(html).toContain("text-emerald-300");
   });
 });
+
+describe("spoiler", () => {
+  it("mặc định bị che: chữ vẫn nằm trong DOM nhưng trong suốt", () => {
+    const html = render("trước ||bí mật|| sau");
+    expect(html).toContain("bí mật");
+    // Che bằng màu trong suốt chứ không bỏ khỏi DOM: bỏ hẳn thì trình đọc màn
+    // hình vẫn đọc to (mất tác dụng che) và `Ctrl+F` vẫn tìm thấy.
+    expect(html).toContain("text-transparent");
+    expect(html).toContain("aria-expanded=\"false\"");
+  });
+
+  it("là nút bấm được (không phải span onClick)", () => {
+    const html = render("||bí mật||");
+    expect(html).toContain("<button");
+    expect(html).toContain("aria-label=\"Reveal spoiler\"");
+    // Không lộ dấu `||` ra ngoài.
+    expect(html).not.toContain("||");
+  });
+
+  it("nội dung markdown bên trong spoiler vẫn được render", () => {
+    const html = render("||**đậm**||");
+    expect(html).toContain("<strong");
+    expect(html).toContain("đậm");
+  });
+});

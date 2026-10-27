@@ -7,7 +7,7 @@
  * test được bằng unit test, không cần DOM, và chỉ bundle ~2 KiB.
  *
  * Hỗ trợ: ```fence```, `code`, **đậm**, *nghiêng*, __gạch chân__,
- * ~~gạch ngang~~, > quote, link tự động http(s), @mention.
+ * ~~gạch ngang~~, ||spoiler||, > quote, link tự động http(s), @mention.
  * Không hỗ trợ (cố ý): HTML thô, ảnh nhúng, bảng — nội dung độc hại sẽ hiện
  * nguyên văn thay vì được diễn giải.
  */
@@ -45,7 +45,24 @@ export interface MarkNode {
   children: InlineNode[];
 }
 
-export type InlineNode = TextNode | CodeNode | LinkNode | MentionNode | MarkNode;
+/**
+ * `||nội dung bị che||` — bấm để hiện (giống Discord).
+ *
+ * Là node riêng chứ không phải `MarkNode`: phần hiển thị cần **trạng thái** (đã
+ * mở hay chưa) và nhãn cho trình đọc màn hình, không chỉ một thẻ trang trí.
+ */
+export interface SpoilerNode {
+  type: "spoiler";
+  children: InlineNode[];
+}
+
+export type InlineNode =
+  | TextNode
+  | CodeNode
+  | LinkNode
+  | MentionNode
+  | MarkNode
+  | SpoilerNode;
 
 export interface ParagraphBlock {
   type: "paragraph";
@@ -108,6 +125,20 @@ function findClosing(input: string, from: number, token: string): number {
     index = found + 1;
   }
   return -1;
+}
+
+/**
+ * Vị trí `||` đóng spoiler, hoặc `-1`.
+ *
+ * Nội dung rỗng hoặc chỉ khoảng trắng thì **không** coi là spoiler: `a || b` là
+ * phép "hoặc" trong tin nhắn của dev, biến nó thành ô che là trò đùa khó chịu.
+ */
+function findSpoilerClose(input: string, from: number): number {
+  const found = input.indexOf("||", from);
+  if (found === -1) return -1;
+  const inner = input.slice(from, found);
+  if (inner.length === 0 || /^\s+$/.test(inner)) return -1;
+  return found;
 }
 
 function wrap(marks: MarkNode["type"][], children: InlineNode[]): InlineNode {
@@ -192,6 +223,21 @@ export function parseInline(input: string, depth = 0, options: ParseOptions = {}
 
   while (index < input.length) {
     const rest = input.slice(index);
+
+    // `||spoiler||` — phải xét **trước** để `||` không bị hiểu thành text và để
+    // nội dung bên trong vẫn parse markdown (`**đậm** trong spoiler` vẫn đậm).
+    if (rest.startsWith("||")) {
+      const close = findSpoilerClose(input, index + 2);
+      if (close !== -1) {
+        flushText();
+        nodes.push({
+          type: "spoiler",
+          children: parseInline(input.slice(index + 2, close), depth + 1, options),
+        });
+        index = close + 2;
+        continue;
+      }
+    }
 
     // `code` — nội dung trong backtick là nguyên văn, không parse tiếp.
     if (rest[0] === "`") {

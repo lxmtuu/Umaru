@@ -442,6 +442,8 @@ const en = {
   stickerTooLarge: "Stickers must be 512KB or smaller",
   stickerFileEmpty: "That file is empty",
   stickerUnavailable: "Sticker unavailable",
+  spoilerShow: "Reveal spoiler",
+  spoilerHide: "Hide spoiler",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -882,6 +884,8 @@ const vi: Record<MessageKey, string> = {
   stickerTooLarge: "Sticker tối đa 512KB",
   stickerFileEmpty: "Tệp rỗng",
   stickerUnavailable: "Sticker không còn",
+  spoilerShow: "Hiện nội dung bị che",
+  spoilerHide: "Che lại nội dung",
 };
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, vi };
