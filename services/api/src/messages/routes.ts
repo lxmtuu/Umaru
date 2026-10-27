@@ -193,9 +193,10 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       if (
         payload.content.trim().length === 0 &&
         payload.files.length === 0 &&
-        payload.poll === null
+        payload.poll === null &&
+        payload.stickerId === null
       ) {
-        throw badRequest('Thiếu trường "content" (hoặc đính kèm tệp, hoặc poll)');
+        throw badRequest('Thiếu trường "content" (hoặc đính kèm tệp, poll, sticker)');
       }
       if (payload.replyToId !== null) {
         const parent = await pool.query<{ channel_id: string }>(
@@ -205,6 +206,23 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         if (parent.rows[0]?.channel_id !== channelId) {
           throw badRequest("replyToId phải là tin nhắn trong cùng kênh");
         }
+      }
+
+      if (payload.stickerId !== null) {
+        // Sticker thuộc **một server**: DM không có gói sticker nào, và gửi
+        // sticker của server A vào kênh server B là rò nội dung giữa hai nơi.
+        const sticker = await pool.query<{ guild_id: string }>(
+          `SELECT p.guild_id FROM stickers s JOIN sticker_packs p ON p.id = s.pack_id
+            WHERE s.id = $1`,
+          [payload.stickerId],
+        );
+        const owner = sticker.rows[0]?.guild_id ?? null;
+        if (owner === null || owner !== context.channel.guild_id) {
+          throw badRequest("Sticker không thuộc server của kênh này");
+        }
+        // Sticker và poll cùng lúc: hai khối nội dung trong một tin, mỗi thứ
+        // đã chiếm trọn bong bóng — Discord cũng không cho trộn.
+        if (payload.poll !== null) throw badRequest("Một tin không thể vừa sticker vừa poll");
       }
 
       // Thread đã lưu trữ chỉ đọc: phải mở lại trước khi viết, nếu không
@@ -236,10 +254,10 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
       try {
         await client.query("BEGIN");
         const inserted = await client.query<MessageRow>(
-          `INSERT INTO messages (id, channel_id, author_id, content, reply_to_id)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, sticker_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING id, channel_id, author_id, content, reply_to_id, pinned, created_at, edited_at`,
-          [id, channelId, userId, payload.content, payload.replyToId],
+          [id, channelId, userId, payload.content, payload.replyToId, payload.stickerId],
         );
         const created = inserted.rows[0];
         if (created === undefined) throw new Error("Không đọc được message vừa tạo");
@@ -291,6 +309,13 @@ export function registerMessageRoutes(app: FastifyInstance, deps: MessageDeps): 
         // Đọc lại từ DB thay vì dựng từ input: id lựa chọn do DB sinh, và `me`
         // phải là `false` (chưa ai bỏ phiếu, kể cả tác giả).
         message.poll = await loadPoll(pool, id, userId);
+      }
+
+      if (payload.stickerId !== null) {
+        // Đọc lại để có `guild_id`/`imageUrl` đúng như trang tin trả về — dựng
+        // tay ở đây là hai nguồn sự thật cho cùng một trường.
+        const [withSticker] = await mapMessagesWithAttachments(pool, [row], userId);
+        message.sticker = withSticker?.sticker ?? null;
       }
 
       // @mention ghi ngay lúc gửi để badge tính được bằng một câu SQL.
@@ -771,23 +796,28 @@ interface MessagePayload {
   files: PendingFile[];
   /** Chỉ đường JSON mới nhận poll (multipart = tin có tệp, không trộn poll). */
   poll: PollInput | null;
+  /** Sticker gửi kèm tin; `null` = tin thường. Chỉ đường JSON (không trộn tệp). */
+  stickerId: string | null;
 }
 
 /** Thân JSON cũ: chỉ text (+ reply), không kèm file. */
 function readJsonMessage(body: unknown): MessagePayload {
   const record = body as Record<string, unknown> | undefined;
   const poll = readPollInput(body);
-  // Tin chỉ có poll là hợp lệ (giống Discord): nội dung để trống được, nhưng phải
-  // có poll. Không có poll thì vẫn bắt buộc có chữ như trước.
+  const stickerId = readId(record, "stickerId");
+  // Tin chỉ có poll hoặc chỉ có sticker là hợp lệ (giống Discord): nội dung để
+  // trống được, nhưng phải có một trong hai. Không có gì thì vẫn bắt buộc có chữ.
+  const emptyOk = poll !== null || stickerId !== null;
   const content =
-    poll !== null && record?.content === undefined
+    emptyOk && record?.content === undefined
       ? ""
-      : readString(record, "content", { min: poll === null ? 1 : 0, max: 2000, trim: false });
+      : readString(record, "content", { min: emptyOk ? 0 : 1, max: 2000, trim: false });
   return {
     content,
     replyToId: readId(record, "replyToId"),
     files: [],
     poll,
+    stickerId,
   };
 }
 
@@ -800,7 +830,13 @@ async function readMultipartMessage(
   config: Config,
   store: FileStore,
 ): Promise<MessagePayload> {
-  const payload: MessagePayload = { content: "", replyToId: null, files: [], poll: null };
+  const payload: MessagePayload = {
+    content: "",
+    replyToId: null,
+    files: [],
+    poll: null,
+    stickerId: null,
+  };
 
   try {
     for await (const part of request.parts()) {

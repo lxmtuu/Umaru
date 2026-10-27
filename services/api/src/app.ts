@@ -36,6 +36,7 @@ import { registerReadStateRoutes } from "./read-states/routes.js";
 import { registerSafetyRoutes } from "./safety/routes.js";
 import { registerSearchRoutes } from "./search/routes.js";
 import { registerUploadRoutes } from "./uploads/routes.js";
+import { registerStickerRoutes } from "./stickers/routes.js";
 import { registerUserRoutes } from "./users/routes.js";
 import { registerVoiceRoutes } from "./voice/routes.js";
 import { MAX_FILES_PER_MESSAGE, createStores } from "./uploads/storage.js";
@@ -256,6 +257,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
       registerAdminRoutes(api, { pool, tokens, config });
       registerUploadRoutes(api, { pool, config, tokens , storage });
       registerUserRoutes(api, { pool, config, tokens, publisher, storage });
+      registerStickerRoutes(api, { pool, config, tokens, storage });
       registerVoiceRoutes(api, { pool, config, tokens, publisher });
       registerPushRoutes(api, { pool, config, tokens, sender: pushSender });
       registerFriendRoutes(api, {

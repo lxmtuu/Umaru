@@ -287,6 +287,40 @@ describe("UmaruApi", () => {
     expect(profile.bio).toBeNull();
   });
 
+  it("uploadSticker gửi multipart kèm name, không tự đặt content-type", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "3", name: "Mèo" } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const file = new File([new Uint8Array([1, 2, 3])], "meo.png", { type: "image/png" });
+    await api.uploadSticker("9", "Mèo cười", file);
+
+    expect(calls[0]?.url).toBe("/api/v1/sticker-packs/9/stickers");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.body).toBeInstanceOf(FormData);
+    const form = calls[0]?.init?.body as FormData;
+    expect(form.get("name")).toBe("Mèo cười");
+    // Trình duyệt tự đặt `content-type` kèm boundary — tự đặt là mất boundary.
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(headers["content-type"]).toBeUndefined();
+  });
+
+  it("listStickerPacks gọi GET theo guild", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: [] });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.listStickerPacks("9");
+    expect(calls[0]?.url).toBe("/api/v1/guilds/9/sticker-packs");
+  });
+
+  it("sendMessage gửi stickerId trong JSON (không phải multipart)", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 201, body: { id: "5" } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.sendMessage("7", "", { stickerId: "3" });
+
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      content: "",
+      stickerId: "3",
+    });
+  });
+
   it("fetchAvatar ghép baseUrl với avatarUrl và gửi Bearer", async () => {
     const calls: { url: string; init?: RequestInit }[] = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {

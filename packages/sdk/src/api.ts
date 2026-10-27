@@ -25,6 +25,8 @@ import type {
   UserSettings,
   ThreadSummary,
   PublicProfile,
+  Sticker,
+  StickerPack,
 } from "@umaru/protocol";
 
 function buildSearchParams(query: string, options: { before?: string; limit?: number }): string {
@@ -657,11 +659,15 @@ export class UmaruApi {
    * Gửi tin. Có `files` → dùng `multipart/form-data` (cùng đường dẫn API); không
    * có file → JSON như cũ. Tham số thứ ba nhận cả chuỗi `replyToId` (kiểu cũ)
    * lẫn object tuỳ chọn để không phải sửa mọi chỗ gọi.
+   *
+   * `stickerId` chỉ đi đường JSON: sticker không trộn với tệp hay poll.
    */
   sendMessage(
     channelId: string,
     content: string,
-    options: string | { replyToId?: string; files?: File[]; poll?: PollInput } = {},
+    options:
+      | string
+      | { replyToId?: string; files?: File[]; poll?: PollInput; stickerId?: string } = {},
   ): Promise<Message> {
     const settings = typeof options === "string" ? { replyToId: options } : options;
     const path = `${API_PREFIX}/channels/${channelId}/messages`;
@@ -686,6 +692,7 @@ export class UmaruApi {
         content,
         replyToId: settings.replyToId,
         ...(settings.poll === undefined ? {} : { poll: settings.poll }),
+        ...(settings.stickerId === undefined ? {} : { stickerId: settings.stickerId }),
       }),
     });
   }
@@ -706,6 +713,66 @@ export class UmaruApi {
       method: "PATCH",
       body: JSON.stringify({ content }),
     });
+  }
+
+  // ---------- sticker ----------
+
+  /** Gói sticker của một server, kèm sticker bên trong. */
+  listStickerPacks(guildId: string): Promise<StickerPack[]> {
+    return this.request<StickerPack[]>(`${API_PREFIX}/guilds/${guildId}/sticker-packs`);
+  }
+
+  createStickerPack(guildId: string, name: string): Promise<StickerPack> {
+    return this.request<StickerPack>(`${API_PREFIX}/guilds/${guildId}/sticker-packs`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  renameStickerPack(packId: string, name: string): Promise<StickerPack> {
+    return this.request<StickerPack>(`${API_PREFIX}/sticker-packs/${packId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  deleteStickerPack(packId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/sticker-packs/${packId}`, { method: "DELETE" });
+  }
+
+  /**
+   * Tải sticker lên. `FormData` gửi `name` + file; không tự đặt `content-type`
+   * để trình duyệt tự thêm `boundary`.
+   */
+  uploadSticker(packId: string, name: string, file: File): Promise<Sticker> {
+    const form = new FormData();
+    form.set("name", name);
+    form.append("file", file, file.name);
+    return this.request<Sticker>(`${API_PREFIX}/sticker-packs/${packId}/stickers`, {
+      method: "POST",
+      body: form,
+    });
+  }
+
+  deleteSticker(stickerId: string): Promise<void> {
+    return this.request<void>(`${API_PREFIX}/stickers/${stickerId}`, { method: "DELETE" });
+  }
+
+  /**
+   * Tải nội dung ảnh sticker. Nhận đúng `Sticker.imageUrl`; trả `Blob` để client
+   * dựng object URL — token không nằm trong `<img src>`.
+   */
+  async fetchSticker(imageUrl: string): Promise<Blob> {
+    const url = imageUrl.startsWith("http") ? imageUrl : `${this.baseUrl}${imageUrl}`;
+    const token = this.getToken();
+    const response = await this.fetchImpl(url, {
+      headers:
+        token !== null ? { authorization: `Bearer ${token}`, "x-umaru-token": token } : {},
+    });
+    if (!response.ok) {
+      throw new ApiError(response.status, `API ${url} thất bại: ${response.status}`);
+    }
+    return response.blob();
   }
 
   /**

@@ -4,6 +4,7 @@ import { mapMessage, type MessageRow } from "./mappers.js";
 import { loadReactionsByMessage } from "./reactions.js";
 import { loadEmbedsByMessage } from "./embeds/store.js";
 import { loadPollsByMessage } from "./polls.js";
+import { loadStickersByMessage } from "./stickers.js";
 
 /**
  * Truy vấn + ánh xạ bảng `attachments`.
@@ -78,11 +79,12 @@ export async function mapMessagesWithAttachments(
   viewerId: string,
 ): Promise<Message[]> {
   const messageIds = rows.map((row) => row.id);
-  const [byMessage, reactions, embeds, polls] = await Promise.all([
+  const [byMessage, reactions, embeds, polls, stickers] = await Promise.all([
     loadAttachmentsByMessage(pool, messageIds),
     loadReactionsByMessage(pool, messageIds, viewerId),
     loadEmbedsByMessage(pool, messageIds),
     loadPollsByMessage(pool, messageIds, viewerId),
+    loadStickersByMessage(pool, messageIds),
   ]);
   return rows.map((row) => {
     const message = mapMessage(row);
@@ -90,6 +92,7 @@ export async function mapMessagesWithAttachments(
     message.reactions = reactions.get(row.id) ?? [];
     message.embeds = embeds.get(row.id) ?? [];
     message.poll = polls.get(row.id) ?? null;
+    message.sticker = stickers.get(row.id) ?? null;
     return message;
   });
 }

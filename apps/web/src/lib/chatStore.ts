@@ -16,6 +16,7 @@ import type {
   PresenceStatus,
   Role,
   Snowflake,
+  StickerPack,
   User,
 } from "@umaru/protocol";
 import { parsePermissions, serializePermissions, type ThreadSummary } from "@umaru/protocol";
@@ -31,6 +32,7 @@ import {
 import { create } from "zustand";
 import { clearAttachmentCache } from "./attachments.js";
 import { clearAvatarCache, validateAvatar } from "./avatars.js";
+import { clearStickerCache, validateSticker } from "./stickers.js";
 import { dmPeer, dmTitle } from "./dms.js";
 import { resolveGatewayUrl } from "./gatewayUrl.js";
 import { readChannelDeepLink } from "./deepLink.js";
@@ -192,6 +194,11 @@ interface ChatState {
   avatarUploading: boolean;
   /** Lỗi riêng của avatar (hiện trong panel hồ sơ). */
   avatarError: string | null;
+  /** Gói sticker theo guild; `null` = chưa tải lần nào. */
+  stickerPacks: Record<string, StickerPack[] | null>;
+  /** Đang tải/tạo/xoá sticker — khoá nút để không bấm hai lần. */
+  stickerBusy: boolean;
+  stickerError: string | null;
   /** Đang lưu hồ sơ công khai (giới thiệu/đại từ/màu banner). */
   profileSaving: boolean;
   /** Lỗi của lần lưu hồ sơ gần nhất; `null` = không có lỗi. */
@@ -344,7 +351,7 @@ interface ChatState {
    */
   sendMessage(
     content: string,
-    options?: { files?: File[]; replyToId?: string; poll?: PollInput },
+    options?: { files?: File[]; replyToId?: string; poll?: PollInput; stickerId?: string },
   ): Promise<boolean>;
   /** Bỏ/rút phiếu trong poll — gửi **toàn bộ** lựa chọn của mình. */
   votePoll(messageId: string, optionIds: string[]): Promise<boolean>;
@@ -475,6 +482,14 @@ interface ChatState {
     bannerColor?: string | null;
   }): Promise<boolean>;
   clearProfileError(): void;
+  /** Tải danh sách gói sticker của một server (bảng chọn gọi khi mở). */
+  loadStickerPacks(guildId: string): Promise<void>;
+  createStickerPack(guildId: string, name: string): Promise<boolean>;
+  deleteStickerPack(guildId: string, packId: string): Promise<boolean>;
+  /** Tải sticker lên gói; `name` rỗng thì lấy từ tên tệp. */
+  uploadSticker(guildId: string, packId: string, name: string, file: File): Promise<boolean>;
+  deleteSticker(guildId: string, stickerId: string): Promise<boolean>;
+  clearStickerError(): void;
   /** Gửi lại mail xác thực; ở dev có token echo thì xác thực luôn. */
   resendVerification(): Promise<void>;
   /** Xác thực email bằng token trong link (`?verifyToken=...`). */
@@ -905,6 +920,9 @@ const initialState = {
   reportSending: false,
   avatarUploading: false,
   avatarError: null,
+  stickerPacks: {},
+  stickerBusy: false,
+  stickerError: null,
   profileSaving: false,
   profileError: null,
   admin: null,
@@ -1330,6 +1348,7 @@ export const useChat = create<ChatState>()((set, get) => ({
     // Giải phóng object URL của tệp đã tải (đổi tài khoản là không dùng lại được).
     clearAttachmentCache();
     clearAvatarCache();
+    clearStickerCache();
     set({ ...initialState, screen: "auth" });
   },
 
@@ -2191,14 +2210,23 @@ export const useChat = create<ChatState>()((set, get) => ({
     const channelId = get().activeChannelId;
     const files = options.files ?? [];
     const poll = options.poll;
-    // Tin chỉ có tệp hoặc chỉ có poll (không text) vẫn hợp lệ.
+    const stickerId = options.stickerId;
+    // Tin chỉ có tệp / poll / sticker (không text) vẫn hợp lệ.
     if (channelId === null) return false;
-    if (content.trim().length === 0 && files.length === 0 && poll === undefined) return false;
+    if (
+      content.trim().length === 0 &&
+      files.length === 0 &&
+      poll === undefined &&
+      stickerId === undefined
+    ) {
+      return false;
+    }
     try {
       const message = await authedApi.sendMessage(channelId, content, {
         files,
         replyToId: options.replyToId,
         ...(poll === undefined ? {} : { poll }),
+        ...(stickerId === undefined ? {} : { stickerId }),
       });
       const list = get().messages[channelId] ?? [];
       set({ messages: { ...get().messages, [channelId]: upsertMessage(list, message) } });
@@ -2997,6 +3025,98 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
   clearAvatarError() {
     set({ avatarError: null });
+  },
+  async loadStickerPacks(guildId) {
+    set({ stickerBusy: true, stickerError: null });
+    try {
+      const packs = await authedApi.listStickerPacks(guildId);
+      set({ stickerPacks: { ...get().stickerPacks, [guildId]: packs }, stickerBusy: false });
+    } catch (error) {
+      set({ stickerBusy: false, stickerError: describeError(error) });
+    }
+  },
+  async createStickerPack(guildId, name) {
+    set({ stickerBusy: true, stickerError: null });
+    try {
+      const pack = await authedApi.createStickerPack(guildId, name);
+      const current = get().stickerPacks[guildId] ?? [];
+      set({
+        stickerPacks: { ...get().stickerPacks, [guildId]: [...current, pack] },
+        stickerBusy: false,
+      });
+      return true;
+    } catch (error) {
+      set({ stickerBusy: false, stickerError: describeError(error) });
+      return false;
+    }
+  },
+  async deleteStickerPack(guildId, packId) {
+    set({ stickerBusy: true, stickerError: null });
+    try {
+      await authedApi.deleteStickerPack(packId);
+      const current = get().stickerPacks[guildId] ?? [];
+      set({
+        stickerPacks: {
+          ...get().stickerPacks,
+          [guildId]: current.filter((pack) => pack.id !== packId),
+        },
+        stickerBusy: false,
+      });
+      return true;
+    } catch (error) {
+      set({ stickerBusy: false, stickerError: describeError(error) });
+      return false;
+    }
+  },
+  async uploadSticker(guildId, packId, name, file) {
+    // Kiểm ở client để báo lỗi ngay; server vẫn kiểm magic bytes + tỉ lệ vuông.
+    const invalid = validateSticker(file);
+    if (invalid !== null) {
+      set({ stickerError: translate(invalid) });
+      return false;
+    }
+    set({ stickerBusy: true, stickerError: null });
+    try {
+      const sticker = await authedApi.uploadSticker(packId, name, file);
+      const current = get().stickerPacks[guildId] ?? [];
+      set({
+        stickerPacks: {
+          ...get().stickerPacks,
+          [guildId]: current.map((pack) =>
+            pack.id === packId ? { ...pack, stickers: [...pack.stickers, sticker] } : pack,
+          ),
+        },
+        stickerBusy: false,
+      });
+      return true;
+    } catch (error) {
+      set({ stickerBusy: false, stickerError: describeError(error) });
+      return false;
+    }
+  },
+  async deleteSticker(guildId, stickerId) {
+    set({ stickerBusy: true, stickerError: null });
+    try {
+      await authedApi.deleteSticker(stickerId);
+      const current = get().stickerPacks[guildId] ?? [];
+      set({
+        stickerPacks: {
+          ...get().stickerPacks,
+          [guildId]: current.map((pack) => ({
+            ...pack,
+            stickers: pack.stickers.filter((sticker) => sticker.id !== stickerId),
+          })),
+        },
+        stickerBusy: false,
+      });
+      return true;
+    } catch (error) {
+      set({ stickerBusy: false, stickerError: describeError(error) });
+      return false;
+    }
+  },
+  clearStickerError() {
+    set({ stickerError: null });
   },
   async saveProfile(patch) {
     set({ profileSaving: true, profileError: null });

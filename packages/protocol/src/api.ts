@@ -192,6 +192,32 @@ export interface Attachment {
 }
 
 /**
+ * Một sticker đã sẵn sàng hiển thị.
+ *
+ * `imageUrl` trỏ endpoint có xác thực (`/guilds/:guildId/stickers/:id/image`),
+ * client tải bằng fetch + Bearer rồi dựng blob URL — cùng lý do với avatar:
+ * token không nằm trong `<img src>`.
+ */
+export interface Sticker {
+  id: Snowflake;
+  packId: Snowflake;
+  name: string;
+  imageUrl: string;
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
+/** Gói sticker của một server. */
+export interface StickerPack {
+  id: Snowflake;
+  guildId: Snowflake;
+  name: string;
+  createdBy: Snowflake;
+  stickers: Sticker[];
+}
+
+/**
  * Trạng thái đã đọc của một kênh.
  * `unread` = số tin người khác gửi sau mốc đã đọc;
  * `mentions` = số tin trong đó có @gọi tên mình (badge đỏ, tính riêng).
@@ -289,6 +315,11 @@ export interface Message {
    * đã hết hạn để client hiện kết quả cuối cùng.
    */
   poll?: Poll | null;
+  /**
+   * Sticker gắn với tin. `null`/thiếu = tin thường. Tin sticker có `content`
+   * rỗng (giống Discord): nội dung chữ và sticker không trộn trong một tin.
+   */
+  sticker?: Sticker | null;
 }
 
 /** Thông tin tối thiểu để render tên/avatar người gửi trong danh sách mention. */

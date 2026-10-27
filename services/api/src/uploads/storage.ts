@@ -99,6 +99,8 @@ export interface FileStore {
 export interface Stores {
   attachments: FileStore;
   avatars: FileStore;
+  /** Ảnh sticker — tách thư mục/prefix để vòng đời khác avatar (xoá gói là xoá). */
+  stickers: FileStore;
   driver: "local" | "s3";
 }
 
@@ -203,6 +205,7 @@ export function createStores(config: Config): Stores {
     return {
       attachments: new LocalFileStore(config.uploadsDir),
       avatars: new LocalFileStore(config.avatarsDir),
+      stickers: new LocalFileStore(config.stickersDir),
       driver: "local",
     };
   }
@@ -218,6 +221,7 @@ export function createStores(config: Config): Stores {
   return {
     attachments: new S3FileStore({ ...shared, prefix: join("attachments") }),
     avatars: new S3FileStore({ ...shared, prefix: join("avatars") }),
+    stickers: new S3FileStore({ ...shared, prefix: join("stickers") }),
     driver: "s3",
   };
 }

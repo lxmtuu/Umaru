@@ -137,5 +137,7 @@ export function mapMessage(row: MessageRow): Message {
     embeds: [],
     // Poll nạp riêng theo lô: cần `viewerId` cho cờ `me` và đếm phiếu.
     poll: null,
+    // Sticker nạp riêng theo lô (join `stickers`/`sticker_packs`).
+    sticker: null,
   };
 }

@@ -14,6 +14,7 @@ export const PERMISSION_ROWS: Array<{ flag: bigint; label: MessageKey }> = [
   { flag: Permission.CONNECT, label: "permConnect" },
   { flag: Permission.SPEAK, label: "permSpeak" },
   { flag: Permission.MENTION_EVERYONE, label: "permMentionEveryone" },
+  { flag: Permission.MANAGE_EXPRESSIONS, label: "permManageExpressions" },
   { flag: Permission.ADMINISTRATOR, label: "permAdministrator" },
 ];
 

@@ -318,6 +318,7 @@ const en = {
   permReadHistory: "Read history",
   permManageMessages: "Manage messages",
   permManageChannels: "Manage channels",
+  permManageExpressions: "Manage stickers",
   permManageRoles: "Manage roles",
   permKickMembers: "Kick members",
   permBanMembers: "Ban members",
@@ -425,6 +426,22 @@ const en = {
   profileCardNotFound: "This account is no longer available.",
   profileCardRetry: "Try again",
   profileEmptyAbout: "Nothing here yet.",
+  // Sticker theo server.
+  stickerSend: "Send a sticker",
+  stickerPickerTitle: "Stickers",
+  stickerEmpty: "This server has no stickers yet.",
+  stickerEmptyManager: "No sticker packs yet — create one below and upload some stickers.",
+  stickerPackEmpty: "This pack is empty — upload a sticker below.",
+  stickerPackName: "Pack name",
+  stickerNewPack: "New pack",
+  stickerUpload: "Upload sticker",
+  stickerDelete: "Delete sticker",
+  stickerDeletePack: "Delete pack",
+  stickerUploaded: "Sticker added",
+  stickerTypeBlocked: "Stickers must be PNG, APNG, GIF, WebP or AVIF",
+  stickerTooLarge: "Stickers must be 512KB or smaller",
+  stickerFileEmpty: "That file is empty",
+  stickerUnavailable: "Sticker unavailable",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -741,6 +758,7 @@ const vi: Record<MessageKey, string> = {
   permReadHistory: "Đọc lịch sử",
   permManageMessages: "Quản lý tin nhắn",
   permManageChannels: "Quản lý kênh",
+  permManageExpressions: "Quản lý sticker",
   permManageRoles: "Quản lý role",
   permKickMembers: "Kick thành viên",
   permBanMembers: "Ban thành viên",
@@ -848,6 +866,22 @@ const vi: Record<MessageKey, string> = {
   profileCardNotFound: "Tài khoản này không còn tồn tại.",
   profileCardRetry: "Thử lại",
   profileEmptyAbout: "Chưa viết gì.",
+  // Sticker theo server.
+  stickerSend: "Gửi sticker",
+  stickerPickerTitle: "Sticker",
+  stickerEmpty: "Server này chưa có sticker nào.",
+  stickerEmptyManager: "Chưa có gói sticker — tạo gói bên dưới rồi tải sticker lên.",
+  stickerPackEmpty: "Gói này đang trống — tải sticker lên bên dưới.",
+  stickerPackName: "Tên gói",
+  stickerNewPack: "Gói mới",
+  stickerUpload: "Tải sticker lên",
+  stickerDelete: "Xoá sticker",
+  stickerDeletePack: "Xoá gói",
+  stickerUploaded: "Đã thêm sticker",
+  stickerTypeBlocked: "Sticker phải là PNG, APNG, GIF, WebP hoặc AVIF",
+  stickerTooLarge: "Sticker tối đa 512KB",
+  stickerFileEmpty: "Tệp rỗng",
+  stickerUnavailable: "Sticker không còn",
 };
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, vi };

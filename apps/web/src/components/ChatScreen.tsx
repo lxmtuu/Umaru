@@ -31,6 +31,8 @@ import { PollCard } from "./PollCard.js";
 import { PollComposer } from "./PollComposer.js";
 import { MemberList } from "./MemberList.js";
 import { MessageContent } from "./MessageContent.js";
+import { MessageSticker } from "./MessageSticker.js";
+import { StickerPicker } from "./StickerPicker.js";
 import { legalPath } from "../lib/legalRoute.js";
 import { buildTimeline, dividerLabel } from "../lib/messageTimeline.js";
 import { resultText, snippetAround, splitHighlight } from "../lib/search.js";
@@ -51,6 +53,7 @@ import { BlocksPanel, ReportDialog } from "./SafetyPanels.js";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu.js";
 import { MentionSuggest } from "./MentionSuggest.js";
 import { DEFAULT_EMOJI_GROUPS, EmojiPicker } from "./EmojiPicker.js";
+import { canManageStickers } from "../lib/stickers.js";
 import { activeMention, applyMention, insertSnippet, rankMentionCandidates } from "../lib/composer.js";
 import { copyToClipboard } from "../lib/clipboard.js";
 
@@ -132,6 +135,7 @@ export function ChatScreen() {
   const [caret, setCaret] = useState(0);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [stickerOpen, setStickerOpen] = useState(false);
   /** Hộp tạo bình chọn — mở bằng 📊 cạnh nút emoji. */
   const [pollOpen, setPollOpen] = useState(false);
   const [pollBusy, setPollBusy] = useState(false);
@@ -262,6 +266,14 @@ export function ChatScreen() {
       hasPermission(bits, Permission.MANAGE_CHANNELS) ||
       hasPermission(bits, Permission.MANAGE_ROLES)
     );
+  }, [guildId, channelId, activeGuild, state.me, state.permissions]);
+  /** Tạo/xoá gói sticker: `MANAGE_EXPRESSIONS` ở kênh này, hoặc là owner. */
+  const canManageStickersHere = useMemo(() => {
+    if (guildId === null) return false;
+    if (activeGuild !== null && state.me !== null && activeGuild.ownerId === state.me.id) {
+      return true;
+    }
+    return canManageStickers(state.permissions[channelId ?? ""] ?? 0n);
   }, [guildId, channelId, activeGuild, state.me, state.permissions]);
   /** Có `MANAGE_MESSAGES` ở kênh này thì sửa/xoá được tin của người khác. */
   const canManageMessages = useMemo(() => {
@@ -1895,6 +1907,9 @@ export function ChatScreen() {
                                   <MessageContent content={message.content} roleNames={roleNames} />
                                 </div>
                               ))}
+                            {message.sticker !== undefined && message.sticker !== null && (
+                              <MessageSticker sticker={message.sticker} />
+                            )}
                             <MessageAttachments attachments={message.attachments} />
                             <MessageEmbeds embeds={message.embeds} />
                             {message.poll !== undefined && message.poll !== null && (
@@ -2073,6 +2088,20 @@ export function ChatScreen() {
                   className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:border-emerald-400/40 hover:text-emerald-200"
                 >
                   📎
+                </button>
+                <button
+                  type="button"
+                  disabled={guildId === null}
+                  onClick={() => {
+                    setEmojiOpen(false);
+                    setStickerOpen(true);
+                  }}
+                  title={t("stickerSend")}
+                  aria-label={t("stickerSend")}
+                  aria-haspopup="dialog"
+                  className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:border-emerald-400/40 hover:text-emerald-200 disabled:opacity-40"
+                >
+                  🖼️
                 </button>
                 <button
                   type="button"
@@ -2351,6 +2380,19 @@ export function ChatScreen() {
       )}
 
       {showProfile && <ProfileDialog onClose={() => setShowProfile(false)} />}
+
+      {stickerOpen && guildId !== null && (
+        <StickerPicker
+          guildId={guildId}
+          canManage={canManageStickersHere}
+          onPick={(sticker) => {
+            setStickerOpen(false);
+            // Tin chỉ có sticker: nội dung rỗng, không kèm tệp (server chặn trộn).
+            void state.sendMessage("", { stickerId: sticker.id });
+          }}
+          onClose={() => setStickerOpen(false)}
+        />
+      )}
 
       {profileUserId !== null && (
         <UserProfileCard userId={profileUserId} onClose={() => setProfileUserId(null)} />

@@ -67,6 +67,8 @@ export interface Config {
   avatarsDir: string;
   /** Trần kích thước ảnh đại diện — nhỏ hơn tệp đính kèm vì đây là ảnh hiển thị. */
   maxAvatarBytes: number;
+  /** Thư mục riêng cho ảnh sticker (mặc định `<uploadsDir>/stickers`). */
+  stickersDir: string;
   /** `SMTP_URL` (vd `smtps://user:pass@smtp.example.com:465`). Bỏ trống = ghi mail ra log (dev). */
   smtpUrl: string | null;
   /** Địa chỉ gửi, hiện trong From của mail xác thực. */
@@ -377,6 +379,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // test cũng tự dùng thư mục tạm thay vì ghi vào repo).
     avatarsDir: env.AVATARS_DIR ?? path.join(defaultUploadsDir, "avatars"),
     maxAvatarBytes: Number(env.MAX_AVATAR_BYTES ?? String(5 * 1024 * 1024)),
+    stickersDir: env.STICKERS_DIR ?? path.join(defaultUploadsDir, "stickers"),
     smtpUrl: env.SMTP_URL ?? null,
     mailFrom: env.MAIL_FROM ?? "Umaru <no-reply@umaru.local>",
     publicWebUrl: env.PUBLIC_WEB_URL ?? "http://localhost:5173",
