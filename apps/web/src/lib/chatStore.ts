@@ -192,6 +192,10 @@ interface ChatState {
   avatarUploading: boolean;
   /** Lỗi riêng của avatar (hiện trong panel hồ sơ). */
   avatarError: string | null;
+  /** Đang lưu hồ sơ công khai (giới thiệu/đại từ/màu banner). */
+  profileSaving: boolean;
+  /** Lỗi của lần lưu hồ sơ gần nhất; `null` = không có lỗi. */
+  profileError: string | null;
   /** `null` = chưa kiểm tra; dùng để ẩn lối vào khu quản trị. */
   admin: boolean | null;
   /** Hàng đợi báo cáo cho admin; `null` = chưa tải. */
@@ -461,6 +465,16 @@ interface ChatState {
   /** Gỡ ảnh đại diện (quay lại chữ cái đầu). */
   removeAvatar(): Promise<boolean>;
   clearAvatarError(): void;
+  /**
+   * Lưu hồ sơ công khai. Chỉ gửi trường đã đổi (`buildProfilePatch` lo việc
+   * đó) để hai tab không ghi đè lẫn nhau. Trả `true` khi server đã nhận.
+   */
+  saveProfile(patch: {
+    bio?: string | null;
+    pronouns?: string | null;
+    bannerColor?: string | null;
+  }): Promise<boolean>;
+  clearProfileError(): void;
   /** Gửi lại mail xác thực; ở dev có token echo thì xác thực luôn. */
   resendVerification(): Promise<void>;
   /** Xác thực email bằng token trong link (`?verifyToken=...`). */
@@ -891,6 +905,8 @@ const initialState = {
   reportSending: false,
   avatarUploading: false,
   avatarError: null,
+  profileSaving: false,
+  profileError: null,
   admin: null,
   adminReports: null,
   adminCounts: null,
@@ -930,8 +946,15 @@ const initialState = {
   drafts: {},
 };
 
-/** Trường hồ sơ có thể đổi; presence là ephemeral nên không nằm ở đây. */
-type ProfileFields = Pick<User, "id" | "username" | "displayName" | "avatarUrl">;
+/**
+ * Trường hồ sơ có thể đổi; presence là ephemeral nên không nằm ở đây.
+ *
+ * `bio`/`pronouns`/`bannerColor` là tuỳ chọn vì `USER_UPDATE` từ bản cũ (hoặc
+ * từ đường phát không kèm hồ sơ) không có chúng — khi vắng mặt thì **giữ
+ * nguyên** giá trị đang có, không ghi thành `undefined`.
+ */
+type ProfileFields = Pick<User, "id" | "username" | "displayName" | "avatarUrl"> &
+  Partial<Pick<User, "bio" | "pronouns" | "bannerColor">>;
 
 /**
  * Áp hồ sơ mới (avatar/tên) vào mọi nơi đang hiển thị người đó: chính mình,
@@ -945,6 +968,11 @@ export function applyProfile(state: ChatState, profile: ProfileFields): Partial<
     displayName: profile.displayName,
     avatarUrl: profile.avatarUrl,
   };
+  const profileExtras = {
+    ...(profile.bio !== undefined ? { bio: profile.bio } : {}),
+    ...(profile.pronouns !== undefined ? { pronouns: profile.pronouns } : {}),
+    ...(profile.bannerColor !== undefined ? { bannerColor: profile.bannerColor } : {}),
+  };
   const members: ChatState["members"] = {};
   for (const [guildId, list] of Object.entries(state.members)) {
     members[guildId] = list.map((member) =>
@@ -952,7 +980,10 @@ export function applyProfile(state: ChatState, profile: ProfileFields): Partial<
     );
   }
   return {
-    me: state.me !== null && state.me.id === profile.id ? { ...state.me, ...fields } : state.me,
+    me:
+      state.me !== null && state.me.id === profile.id
+        ? { ...state.me, ...fields, ...profileExtras }
+        : state.me,
     members,
     dms: state.dms.map((dm) => {
       const recipients = dm.recipients.map((member) =>
@@ -2966,6 +2997,23 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
   clearAvatarError() {
     set({ avatarError: null });
+  },
+  async saveProfile(patch) {
+    set({ profileSaving: true, profileError: null });
+    try {
+      const user = await authedApi.updateProfile(patch);
+      // Áp ngay; `USER_UPDATE` phát sau đó ghi đè cùng giá trị (và cập nhật
+      // giúp người khác đang mở thẻ hồ sơ).
+      set(applyProfile(get(), user));
+      set({ profileSaving: false });
+      return true;
+    } catch (error) {
+      set({ profileSaving: false, profileError: describeError(error) });
+      return false;
+    }
+  },
+  clearProfileError() {
+    set({ profileError: null });
   },
   async resendVerification() {
     try {

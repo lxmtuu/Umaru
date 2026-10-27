@@ -265,6 +265,28 @@ describe("UmaruApi", () => {
     expect(user.avatarUrl).toBeNull();
   });
 
+  it("updateProfile gửi PATCH với JSON (không phải [object Object])", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { id: "1", bio: "hi" } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    await api.updateProfile({ bio: "hi", bannerColor: null });
+
+    expect(calls[0]?.url).toBe("/api/v1/users/@me/profile");
+    expect(calls[0]?.init?.method).toBe("PATCH");
+    // Thiếu JSON.stringify thì body thành "[object Object]" và server trả 400.
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ bio: "hi", bannerColor: null });
+  });
+
+  it("getPublicProfile gọi GET /users/:id/profile", async () => {
+    const { fetchImpl, calls } = fakeFetch({ status: 200, body: { id: "7", bio: null } });
+    const api = new UmaruApi({ baseUrl: "", fetchImpl });
+    const profile = await api.getPublicProfile("7");
+
+    expect(calls[0]?.url).toBe("/api/v1/users/7/profile");
+    // Không đặt `method` = GET mặc định của fetch; cũng không có body.
+    expect(calls[0]?.init?.body).toBeUndefined();
+    expect(profile.bio).toBeNull();
+  });
+
   it("fetchAvatar ghép baseUrl với avatarUrl và gửi Bearer", async () => {
     const calls: { url: string; init?: RequestInit }[] = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {

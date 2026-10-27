@@ -24,6 +24,7 @@ import type {
   MessageRequestSummary,
   UserSettings,
   ThreadSummary,
+  PublicProfile,
 } from "@umaru/protocol";
 
 function buildSearchParams(query: string, options: { before?: string; limit?: number }): string {
@@ -740,6 +741,28 @@ export class UmaruApi {
   /** Gỡ ảnh đại diện (quay lại chữ cái đầu). */
   removeAvatar(): Promise<User> {
     return this.request<User>(`${API_PREFIX}/users/@me/avatar`, { method: "DELETE" });
+  }
+
+  /**
+   * Sửa hồ sơ công khai. Trường vắng mặt = giữ nguyên, `null` = xoá.
+   */
+  updateProfile(patch: {
+    bio?: string | null;
+    pronouns?: string | null;
+    bannerColor?: string | null;
+  }): Promise<User> {
+    return this.request<User>(`${API_PREFIX}/users/@me/profile`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  /**
+   * Hồ sơ một người khác. Chỉ trả khi có liên hệ (chung server/bạn/DM), nếu
+   * không là 404 — đừng coi 404 là "người này không tồn tại".
+   */
+  getPublicProfile(userId: string): Promise<PublicProfile> {
+    return this.request<PublicProfile>(`${API_PREFIX}/users/${userId}/profile`);
   }
 
   /**

@@ -11,6 +11,12 @@ export interface User {
   /** Đã xác thực email chưa (client hiện nhắc khi còn `false`). */
   emailVerified: boolean;
   createdAt: string; // ISO-8601
+  /** Giới thiệu ngắn (≤ 190 ký tự). `null` = chưa đặt. */
+  bio?: string | null;
+  /** Đại từ tuỳ chọn (`they/them`, `cô ấy`…) ≤ 40 ký tự. */
+  pronouns?: string | null;
+  /** Màu banner `#rrggbb`; `null` = dùng màu mặc định. */
+  bannerColor?: string | null;
 }
 
 /**
@@ -22,6 +28,26 @@ export interface UserProfile {
   username: string;
   displayName: string;
   avatarUrl: string | null;
+  bio?: string | null;
+  pronouns?: string | null;
+  bannerColor?: string | null;
+}
+
+/**
+ * Hồ sơ một người **khác** nhìn thấy được (`GET /users/:id/profile`).
+ *
+ * Chỉ trả khi hai người có liên hệ (chung server, đã kết bạn, hoặc đang có DM) —
+ * hồ sơ là thông tin tự nguyện chia sẻ, không phải danh bạ toàn hệ thống.
+ */
+export interface PublicProfile {
+  id: Snowflake;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  bio: string | null;
+  pronouns: string | null;
+  bannerColor: string | null;
+  createdAt: string;
 }
 
 /**

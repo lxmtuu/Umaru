@@ -8,6 +8,7 @@ import type { EventPublisher } from "../events.js";
 import { HttpError, badRequest, notFound } from "../http.js";
 import { avatarUrl, isAvatarMime } from "../avatars.js";
 import { mapUser, type UserRow } from "../mappers.js";
+import { parseProfilePatch, profileUpdateFields, toPublicProfile } from "../profiles.js";
 import { HEADER_BYTES, detectImageMime, readImageSize } from "../uploads/imageSize.js";
 import type { Stores } from "../uploads/storage.js";
 
@@ -44,12 +45,7 @@ export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
   const broadcastUser = async (row: UserRow): Promise<void> => {
     // Chỉ gửi phần hồ sơ: presence là trạng thái ephemeral, không được bịa
     // "online" ở đây (client sẽ tự bỏ qua nếu trường không có).
-    const user: UserProfile = {
-      id: row.id as UserProfile["id"],
-      username: row.username,
-      displayName: row.display_name,
-      avatarUrl: row.avatar_url,
-    };
+    const user: UserProfile = profileUpdateFields(row);
     const guilds = await pool.query<{ guild_id: string }>(
       "SELECT guild_id FROM guild_members WHERE user_id = $1",
       [user.id],
@@ -230,4 +226,99 @@ export function registerUserRoutes(app: FastifyInstance, deps: UserDeps): void {
     return reply.send(mapUser(user, "online"));
   });
 
+  /**
+   * Sửa hồ sơ công khai (giới thiệu / đại từ / màu banner). Bỏ trường nào thì
+   * trường đó giữ nguyên; gửi `null` (hoặc chuỗi rỗng) để xoá.
+   *
+   * Trả về chính `User` của mình và phát `USER_UPDATE` — người khác đang mở thẻ
+   * hồ sơ thấy chữ đổi ngay, không phải tải lại trang.
+   */
+  app.patch("/users/@me/profile", { preHandler: guard }, async (request, reply) => {
+    const userId = requireUserId(request);
+    const patch = parseProfilePatch(request.body);
+
+    // Dựng câu UPDATE theo đúng trường có mặt: gửi một trường không được phép
+    // ghi đè trường khác thành NULL (PATCH nghĩa là "chỉ đổi cái này").
+    const sets: string[] = [];
+    const values: Array<string | null> = [];
+    if (patch.bio !== undefined) {
+      values.push(patch.bio);
+      sets.push(`bio = $${values.length + 1}`);
+    }
+    if (patch.pronouns !== undefined) {
+      values.push(patch.pronouns);
+      sets.push(`pronouns = $${values.length + 1}`);
+    }
+    if (patch.bannerColor !== undefined) {
+      values.push(patch.bannerColor);
+      sets.push(`banner_color = $${values.length + 1}`);
+    }
+
+    if (sets.length === 0) {
+      // Không có gì để đổi: trả hồ sơ hiện tại thay vì 400 — client gửi form
+      // rỗng (bấm Lưu khi không sửa gì) không đáng bị coi là lỗi.
+      const current = await pool.query<UserRow>("SELECT * FROM users WHERE id = $1", [userId]);
+      const row = current.rows[0];
+      if (row === undefined) throw notFound("Người dùng không tồn tại");
+      return reply.send(mapUser(row, "online"));
+    }
+
+    const updated = await pool.query<UserRow>(
+      `UPDATE users SET ${sets.join(", ")}, updated_at = now() WHERE id = $1 RETURNING *`,
+      [userId, ...values],
+    );
+    const user = updated.rows[0];
+    if (user === undefined) throw notFound("Người dùng không tồn tại");
+
+    await broadcastUser(user);
+    return reply.send(mapUser(user, "online"));
+  });
+
+  /**
+   * Hồ sơ một người khác.
+   *
+   * Chỉ trả khi hai người **có liên hệ**: chung server, đã là bạn, hoặc đang
+   * chung một DM/nhóm. Hồ sơ là thông tin tự nguyện chia sẻ, không phải danh bạ
+   * tra cứu toàn hệ thống — ai biết id cũng đọc được là rò rỉ.
+   *
+   * Trả 404 (không phải 403) khi không có liên hệ: 403 xác nhận "id này có
+   * thật", đủ để dò tài khoản.
+   */
+  app.get<{ Params: { userId: string } }>(
+    "/users/:userId/profile",
+    { preHandler: guard },
+    async (request, reply) => {
+      const viewerId = requireUserId(request);
+      const targetId = request.params.userId;
+
+      if (targetId === viewerId) {
+        const self = await pool.query<UserRow>("SELECT * FROM users WHERE id = $1", [viewerId]);
+        const row = self.rows[0];
+        if (row === undefined) throw notFound("Người dùng không tồn tại");
+        return reply.send(toPublicProfile(row));
+      }
+
+      const related = await pool.query<{ ok: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM guild_members a
+             JOIN guild_members b ON b.guild_id = a.guild_id
+            WHERE a.user_id = $1 AND b.user_id = $2
+           UNION ALL
+           SELECT 1 FROM relationships r
+            WHERE r.user_id = $1 AND r.target_id = $2 AND r.type = 'friend'
+           UNION ALL
+           SELECT 1 FROM channel_members a
+             JOIN channel_members b ON b.channel_id = a.channel_id
+            WHERE a.user_id = $1 AND b.user_id = $2
+         ) AS ok`,
+        [viewerId, targetId],
+      );
+      if (related.rows[0]?.ok !== true) throw notFound("Không tìm thấy người dùng");
+
+      const result = await pool.query<UserRow>("SELECT * FROM users WHERE id = $1", [targetId]);
+      const row = result.rows[0];
+      if (row === undefined) throw notFound("Không tìm thấy người dùng");
+      return reply.send(toPublicProfile(row));
+    },
+  );
 }

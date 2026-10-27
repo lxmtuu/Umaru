@@ -17,6 +17,9 @@ export interface UserRow {
   /** `null` với tài khoản tạo bằng OAuth (không có mật khẩu để băm). */
   password_hash: string | null;
   avatar_url: string | null;
+  bio: string | null;
+  pronouns: string | null;
+  banner_color: string | null;
   email_verified_at: Date | null;
   terms_accepted_at: Date | null;
   terms_version: string | null;
@@ -75,6 +78,9 @@ export function mapUser(row: UserRow, status: PresenceStatus = "offline"): User 
     status,
     emailVerified: row.email_verified_at !== null,
     createdAt: row.created_at.toISOString(),
+    bio: row.bio,
+    pronouns: row.pronouns,
+    bannerColor: row.banner_color,
   };
 }
 

@@ -38,6 +38,7 @@ import { dmAvatarUrl, dmInitial, dmPeer, dmTitle, isGroupDm } from "../lib/dms.j
 import { Avatar } from "./Avatar.js";
 import { GroupDmPanel } from "./GroupDmPanel.js";
 import { ProfileDialog } from "./ProfileDialog.js";
+import { UserProfileCard } from "./UserProfileCard.js";
 import { RoleSettings } from "./RoleSettings.js";
 import { type DropTarget, resolveDrop } from "../lib/channelDrop.js";
 import { isSpeaking } from "../lib/voice.js";
@@ -98,6 +99,8 @@ export function ChatScreen() {
   const [showNewDm, setShowNewDm] = useState(false);
   /** Hộp thoại hồ sơ (đổi ảnh đại diện). */
   const [showProfile, setShowProfile] = useState(false);
+  /** Hồ sơ người khác đang mở (null = không mở). */
+  const [profileUserId, setProfileUserId] = useState<string | null>(null);
   /** Người đang được chọn trong hộp thoại "Tin nhắn mới" (≥2 → tạo nhóm). */
   const [dmSelection, setDmSelection] = useState<string[]>([]);
   const [guildName, setGuildName] = useState("");
@@ -681,6 +684,12 @@ export function ChatScreen() {
     const isSelf = member.userId === state.me?.id;
     if (isSelf) return [];
     const items: ContextMenuItem[] = [
+      {
+        id: "profile",
+        label: t("profileView"),
+        icon: "🪪",
+        onSelect: () => setProfileUserId(member.userId),
+      },
       {
         id: "dm",
         label: t("sendDirectMessage"),
@@ -2342,6 +2351,10 @@ export function ChatScreen() {
       )}
 
       {showProfile && <ProfileDialog onClose={() => setShowProfile(false)} />}
+
+      {profileUserId !== null && (
+        <UserProfileCard userId={profileUserId} onClose={() => setProfileUserId(null)} />
+      )}
 
       {showNewDm && (
         <Modal

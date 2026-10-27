@@ -5,6 +5,7 @@ import { pushHintKey } from "../lib/push.js";
 import { Avatar } from "./Avatar.js";
 import { TotpSettings } from "./TotpSettings.js";
 import { LinkedAccountsSettings } from "./LinkedAccountsSettings.js";
+import { ProfileFields } from "./ProfileFields.js";
 import { PRESENCE_DOT } from "../lib/presence.js";
 import type { PresenceStatus } from "@umaru/protocol";
 
@@ -78,6 +79,10 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
             <p className="truncate text-xs text-slate-500">@{me?.username}</p>
           </div>
         </div>
+
+        {/* Hồ sơ công khai: khối duy nhất có nút Lưu (soạn văn bản, không gửi
+            từng ký tự như các tuỳ chọn bấm-là-đổi bên dưới). */}
+        <ProfileFields />
 
         {/* Trạng thái hiển thị: đổi là gửi ngay qua gateway, không cần bấm Lưu. */}
         {/* Xác thực hai lớp: khối tự tải trạng thái, ẩn nếu API không trả. */}

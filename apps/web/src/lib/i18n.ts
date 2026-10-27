@@ -406,6 +406,25 @@ const en = {
   voiceStopShare: "Stop sharing",
   voiceShareBlocked: "You can only listen here, so you cannot share",
   voiceScreenSharing: "is sharing a screen",
+  // Hồ sơ công khai (bio / đại từ / màu banner).
+  profileAbout: "About me",
+  profileAboutHint: "Up to {max} characters — shown to people you share a server with.",
+  profileAboutPlaceholder: "A line or two about yourself",
+  profilePronouns: "Pronouns",
+  profilePronounsPlaceholder: "they/them",
+  profileBanner: "Banner colour",
+  profileBannerHint: "Used as the colour band on your profile card.",
+  profileBannerClear: "No colour",
+  profileSave: "Save profile",
+  profileSaving: "Saving…",
+  profileSaved: "Profile saved",
+  profileView: "View profile",
+  profileCardTitle: "Profile",
+  profileCardJoined: "Joined {date}",
+  profileCardPrivate: "You can't view this profile — you need a shared server or a direct connection.",
+  profileCardNotFound: "This account is no longer available.",
+  profileCardRetry: "Try again",
+  profileEmptyAbout: "Nothing here yet.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -810,6 +829,25 @@ const vi: Record<MessageKey, string> = {
   voiceStopShare: "Dừng chia sẻ",
   voiceShareBlocked: "Bạn chỉ nghe được ở kênh này nên không chia sẻ được",
   voiceScreenSharing: "đang chia sẻ màn hình",
+  // Hồ sơ công khai (giới thiệu / đại từ / màu banner).
+  profileAbout: "Giới thiệu",
+  profileAboutHint: "Tối đa {max} ký tự — chỉ người chung server mới thấy.",
+  profileAboutPlaceholder: "Vài dòng về cậu",
+  profilePronouns: "Đại từ",
+  profilePronounsPlaceholder: "cô ấy / anh ấy",
+  profileBanner: "Màu banner",
+  profileBannerHint: "Dải màu phía trên thẻ hồ sơ của cậu.",
+  profileBannerClear: "Không màu",
+  profileSave: "Lưu hồ sơ",
+  profileSaving: "Đang lưu…",
+  profileSaved: "Đã lưu hồ sơ",
+  profileView: "Xem hồ sơ",
+  profileCardTitle: "Hồ sơ",
+  profileCardJoined: "Tham gia {date}",
+  profileCardPrivate: "Không xem được hồ sơ này — cần chung server hoặc có liên hệ trực tiếp.",
+  profileCardNotFound: "Tài khoản này không còn tồn tại.",
+  profileCardRetry: "Thử lại",
+  profileEmptyAbout: "Chưa viết gì.",
 };
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, vi };
